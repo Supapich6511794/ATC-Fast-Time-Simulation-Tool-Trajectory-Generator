@@ -1068,9 +1068,10 @@ body {
   margin: 2px 0 10px;
 }
 
-/* Selected waypoints scroll inside their own box instead of stretching
-   the whole sidebar when the route has many fixes. */
+/* Selected waypoints live in a fixed-height scroll box (it renders only
+   when ≥1 fix is picked), so the form height stays constant from the
+   first pick onward instead of growing with every waypoint. */
 .rb-list {
-  max-height: 168px;
+  height: 132px;
   overflow-y: auto;
 }
