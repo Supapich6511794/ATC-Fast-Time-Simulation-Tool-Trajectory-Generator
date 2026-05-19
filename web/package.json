@@ -1,0 +1,32 @@
+{
+  "name": "aviation-map-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Web UI for the Flight Trajectory Generator (calls the Python trajectory_sim API).",
+  "scripts": {
+    "dev": "node ../scripts/dev.mjs",
+    "dev:serve": "concurrently -k -n api,web -c magenta,cyan --restart-tries -1 --restart-after 1500 \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:web": "next dev",
+    "dev:api": "cd .. && .venv\\Scripts\\uvicorn.exe api.server:app --reload --port 8000",
+    "dev:all": "npm run dev",
+    "build": "set NEXT_DIST_DIR=.next-build&& next build",
+    "start": "set NEXT_DIST_DIR=.next-build&& next start",
+    "clean": "rmdir /s /q .next .next-build 2>nul & echo cleaned",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "leaflet": "1.9.4",
+    "next": "14.2.35",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-leaflet": "4.2.1"
+  },
+  "devDependencies": {
+    "@types/leaflet": "1.9.12",
+    "@types/node": "20.14.10",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "concurrently": "9.1.0",
+    "typescript": "5.5.3"
+  }
+}

@@ -1,0 +1,18 @@
+# Core geospatial / data
+geopandas==1.0.1
+shapely==2.0.6
+pyproj==3.7.0
+pyogrio==0.10.0
+pandas==2.2.3
+numpy==2.1.3
+
+# Aircraft performance (Phase 2+)
+# openap==1.5  # uncomment when Phase 2 starts
+
+# Web API (lets the Next.js app call the real Python pipeline)
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+
+# Testing
+pytest==8.3.4
+pytest-cov==6.0.0
