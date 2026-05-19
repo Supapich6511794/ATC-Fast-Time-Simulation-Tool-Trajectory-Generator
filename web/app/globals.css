@@ -833,12 +833,6 @@ body {
   font-weight: 700;
 }
 
-.field .hint {
-  font-size: 10px;
-  color: var(--muted);
-  font-style: normal;
-  opacity: 0.8;
-}
 
 /* Route sub-mode toggle (keeps typed / pick / airway-csv). */
 .rt-modes {
@@ -1055,11 +1049,6 @@ body {
   gap: 3px;
 }
 
-.gen .field .hint {
-  margin-top: 0;
-  line-height: 1.2;
-}
-
 .gen .field-row {
   gap: 8px;
 }
@@ -1068,10 +1057,24 @@ body {
   margin: 2px 0 10px;
 }
 
+/* Tighter RouteBuilder so the picker doesn't dominate the panel. */
+.gen .rb {
+  padding: 8px;
+}
+
+.gen .rb-search input {
+  padding: 6px 8px;
+}
+
 /* Selected waypoints live in a fixed-height scroll box (it renders only
    when ≥1 fix is picked), so the form height stays constant from the
    first pick onward instead of growing with every waypoint. */
 .rb-list {
-  height: 132px;
+  height: 104px;
   overflow-y: auto;
+  margin-top: 8px;
+}
+
+.rb-list li {
+  padding: 3px 0;
 }

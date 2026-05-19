@@ -246,7 +246,6 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
                 placeholder="THA204"
                 onChange={(e) => setCallsign(e.target.value.toUpperCase())}
               />
-              <em className="hint">airline + flight no.</em>
             </label>
             <label className="field">
               <span>Aircraft type</span>
@@ -272,7 +271,6 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
                 options={AIRPORTS}
                 placeholder="VTBS"
               />
-              <em className="hint">departure ICAO</em>
             </label>
             <label className="field">
               <span>ADES</span>
@@ -282,7 +280,6 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
                 options={AIRPORTS}
                 placeholder="VTSP"
               />
-              <em className="hint">destination ICAO</em>
             </label>
           </div>
 
@@ -293,7 +290,6 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
               value={eobt}
               onChange={(e) => setEobt(e.target.value)}
             />
-            <em className="hint">push-back time</em>
           </label>
 
           <div className="field-row">
@@ -307,7 +303,6 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
                 value={rfl}
                 onChange={(e) => setRfl(Number(e.target.value))}
               />
-              <em className="hint">requested flight level</em>
             </label>
             <label className="field">
               <span>GS (kt)</span>
@@ -318,7 +313,6 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
                 value={gsKt}
                 onChange={(e) => setGsKt(Number(e.target.value))}
               />
-              <em className="hint">ground speed</em>
             </label>
           </div>
 
