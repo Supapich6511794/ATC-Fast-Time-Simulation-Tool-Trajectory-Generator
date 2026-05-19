@@ -8,17 +8,24 @@
  * pyproj/WGS-84 geodesy and GeoPackage/CSV writing happen in the real
  * `trajectory_sim` package server-side — the web is just the front-end.
  *
- * Route sources: pre-resolved airway CSV, a typed Item-15 string, or the
- * point-and-click RouteBuilder (easiest for long multi-waypoint routes).
+ * Two input modes:
+ *   - "กรอกเอง"      — fill the form by hand. The route itself can be a
+ *                       typed Item-15 string, the point-and-click
+ *                       RouteBuilder, or the pre-resolved airway CSV.
+ *   - "อัปโหลดไฟล์"   — drop a .csv/.json/.geojson; it is parsed and the
+ *                       fields are pre-filled and still fully editable.
  */
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import RouteBuilder from "@/components/RouteBuilder";
 import { generateTrajectory } from "@/lib/api";
+import { parseFlightFile, type FlightRecord } from "@/lib/flightFile";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
 
-type RouteSource = "csv" | "fpl" | "build";
+type InputMode = "manual" | "file";
+/** How the route portion is supplied (all three kept, none removed). */
+type RouteMode = "fpl" | "build" | "csv";
 
 interface Props {
   /** Emits the generated trajectory (or null to clear) to the parent. */
@@ -27,15 +34,32 @@ interface Props {
   waypointIdents: string[];
 }
 
+/** Phase 1 flies the B738 only; others are listed for forward-compat. */
+const AIRCRAFT = [
+  ["B738", "B738 — Boeing 737-800"],
+  ["A320", "A320 — Airbus A320"],
+  ["B77W", "B77W — Boeing 777-300ER"],
+] as const;
+
+const QUICK_ROUTES = ["BKK Y8 PUT", "DCT VANKO PUT", "MOTNA Y8 SAVSA"];
+
 export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
-  const [source, setSource] = useState<RouteSource>("csv");
-  const [vtspToVtbs, setVtspToVtbs] = useState(true);
+  const [mode, setMode] = useState<InputMode>("manual");
+  const [routeMode, setRouteMode] = useState<RouteMode>("fpl");
+
+  const [callsign, setCallsign] = useState("THA204");
+  const [actype, setActype] = useState("B738");
+  const [adep, setAdep] = useState("VTBS");
+  const [ades, setAdes] = useState("VTSP");
+  const [eobt, setEobt] = useState("");
+  const [gsKt, setGsKt] = useState(450);
+  const [rfl, setRfl] = useState(350);
   const [routeStr, setRouteStr] = useState("");
   const [builtWpts, setBuiltWpts] = useState<string[]>([]);
-  const [callsign, setCallsign] = useState("THA205");
-  const [eobt, setEobt] = useState("2026-01-03T08:15");
-  const [gsKt, setGsKt] = useState(450);
-  const [rfl, setRfl] = useState(330);
+
+  const [fileNote, setFileNote] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const [result, setResult] = useState<TrajectoryResult | null>(null);
   const [downloads, setDownloads] = useState<{
@@ -53,17 +77,76 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
     [builtWpts],
   );
 
+  // What the FPL route portion resolves to (for the live preview).
+  const previewRoute =
+    routeMode === "csv"
+      ? `(airway CSV · ${adep || "?"}→${ades || "?"})`
+      : routeMode === "build"
+        ? builtRoute
+        : routeStr.trim();
+
+  const previewFpl =
+    callsign && adep && ades && previewRoute
+      ? `${callsign} ${actype} ${adep} ${ades} ${previewRoute}`.trim()
+      : "";
+
+  /** Apply a parsed file record onto the editable fields. */
+  function applyRecord(r: FlightRecord) {
+    if (r.callsign) setCallsign(r.callsign);
+    if (r.actype) setActype(r.actype);
+    if (r.adep) setAdep(r.adep);
+    if (r.ades) setAdes(r.ades);
+    if (r.eobt) setEobt(r.eobt);
+    if (r.rfl != null) setRfl(r.rfl);
+    if (r.route) {
+      setRouteStr(r.route);
+      setRouteMode("fpl");
+    }
+  }
+
+  async function handleFiles(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    setError(null);
+    try {
+      const all: FlightRecord[] = [];
+      for (const f of Array.from(files)) {
+        all.push(...(await parseFlightFile(f)));
+      }
+      if (all.length === 0) throw new Error("No flight rows found in file.");
+      applyRecord(all[0]);
+      setMode("manual");
+      setFileNote(
+        all.length > 1
+          ? `โหลด ${all.length} เที่ยวบิน — แสดงเที่ยวแรกให้ปรับแก้ก่อน Generate`
+          : "โหลดจากไฟล์แล้ว — ตรวจ/ปรับแก้ได้ก่อน Generate",
+      );
+    } catch (e) {
+      setFileNote(null);
+      setError(e instanceof Error ? e.message : "Could not parse file.");
+    }
+  }
+
   async function handleGenerate() {
     setBusy(true);
     setError(null);
     setWarnings([]);
     try {
+      // Direction is implied by the departure aerodrome.
+      const vtspToVtbs = adep.trim().toUpperCase() === "VTSP";
       // "build" piggybacks the FPL pipeline with the composed string.
-      const apiSource = source === "build" ? "fpl" : source;
-      const apiRoute = source === "build" ? builtRoute : routeStr;
+      const apiSource = routeMode === "csv" ? "csv" : "fpl";
+      const apiRoute =
+        routeMode === "build"
+          ? builtRoute
+          : routeMode === "csv"
+            ? ""
+            : routeStr;
 
-      if (source === "build" && builtWpts.length < 2) {
+      if (routeMode === "build" && builtWpts.length < 2) {
         throw new Error("Add at least 2 waypoints to build a route.");
+      }
+      if (routeMode === "fpl" && !routeStr.trim()) {
+        throw new Error("Enter an Item-15 route string.");
       }
 
       const { result, warnings, downloads } = await generateTrajectory({
@@ -91,102 +174,245 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
 
   return (
     <section className="gen">
-      <h2>Generate trajectory</h2>
-
-      <label className="field">
-        <span>Route source</span>
-        <select
-          value={source}
-          onChange={(e) => setSource(e.target.value as RouteSource)}
+      <div className="gen-tabs" role="tablist">
+        <button
+          role="tab"
+          aria-selected={mode === "manual"}
+          className={mode === "manual" ? "active" : undefined}
+          onClick={() => setMode("manual")}
         >
-          <option value="csv">Airway CSV (VTPStoVTBS.csv)</option>
-          <option value="fpl">FPL route string</option>
-          <option value="build">Build by waypoints (pick)</option>
-        </select>
-      </label>
-
-      {source === "csv" && (
-        <label className="field">
-          <span>Direction</span>
-          <select
-            value={vtspToVtbs ? "1" : "0"}
-            onChange={(e) => setVtspToVtbs(e.target.value === "1")}
-          >
-            <option value="1">VTSP → VTBS (Phuket → Bangkok)</option>
-            <option value="0">VTBS → VTSP (Bangkok → Phuket)</option>
-          </select>
-        </label>
-      )}
-
-      {source === "fpl" && (
-        <label className="field">
-          <span>Item-15 route string</span>
-          <input
-            type="text"
-            value={routeStr}
-            onChange={(e) => setRouteStr(e.target.value)}
-            placeholder="DCT MOTNA DCT SABIS DCT"
-          />
-        </label>
-      )}
-
-      {source === "build" && (
-        <div className="field">
-          <span>Pick waypoints (in order)</span>
-          <RouteBuilder
-            idents={waypointIdents}
-            selected={builtWpts}
-            onChange={setBuiltWpts}
-          />
-          {builtRoute && <code className="rb-preview">{builtRoute}</code>}
-        </div>
-      )}
-
-      <div className="field-row">
-        <label className="field">
-          <span>Callsign</span>
-          <input
-            type="text"
-            value={callsign}
-            onChange={(e) => setCallsign(e.target.value.toUpperCase())}
-          />
-        </label>
-        <label className="field">
-          <span>Ground speed (kt)</span>
-          <input
-            type="number"
-            min={100}
-            max={600}
-            value={gsKt}
-            onChange={(e) => setGsKt(Number(e.target.value))}
-          />
-        </label>
+          ⌨ กรอกเอง
+        </button>
+        <button
+          role="tab"
+          aria-selected={mode === "file"}
+          className={mode === "file" ? "active" : undefined}
+          onClick={() => setMode("file")}
+        >
+          ⬆ อัปโหลดไฟล์
+        </button>
       </div>
 
-      <label className="field">
-        <span>RFL — Requested Flight Level (×100 ft)</span>
-        <input
-          type="number"
-          min={50}
-          max={430}
-          step={10}
-          value={rfl}
-          onChange={(e) => setRfl(Number(e.target.value))}
-        />
-      </label>
+      {mode === "file" ? (
+        <>
+          <div
+            className={`dropzone${dragging ? " drag" : ""}`}
+            onClick={() => fileRef.current?.click()}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragging(true);
+            }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragging(false);
+              handleFiles(e.dataTransfer.files);
+            }}
+          >
+            <div className="dz-icon">⬆</div>
+            <p className="dz-main">ลากไฟล์มาวาง หรือคลิกเพื่อเลือก</p>
+            <p className="dz-sub">รองรับ .csv .json .geojson — หลายไฟล์ได้</p>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".csv,.json,.geojson,application/json,text/csv"
+              multiple
+              hidden
+              onChange={(e) => handleFiles(e.target.files)}
+            />
+          </div>
 
-      <label className="field">
-        <span>EOBT (UTC)</span>
-        <input
-          type="datetime-local"
-          value={eobt}
-          onChange={(e) => setEobt(e.target.value)}
-        />
-      </label>
+          <div className="fmt">
+            <strong>FORMAT ที่รองรับ</strong>
+            <div className="fmt-cols">
+              <div>
+                <span className="fmt-h">CSV</span>
+                <pre>{`callsign,actype,adep,ades,eobt,rfl,route
+THA204,B738,VTBS,VTSP,2026-05-19T08:15Z,350,BKK Y8 PUT`}</pre>
+              </div>
+              <div>
+                <span className="fmt-h">JSON</span>
+                <pre>{`{ "callsign":"THA204",
+  "actype":"B738",
+  "adep":"VTBS","ades":"VTSP",
+  "eobt":"2026-05-19T08:15Z",
+  "rfl":350,
+  "route":"BKK Y8 PUT" }`}</pre>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          {fileNote && <p className="file-note">📄 {fileNote}</p>}
 
-      <button className="generate" onClick={handleGenerate} disabled={busy}>
-        {busy ? "Running Python pipeline…" : "▶ Generate trajectory"}
-      </button>
+          <div className="field-row">
+            <label className="field">
+              <span>Callsign</span>
+              <input
+                type="text"
+                value={callsign}
+                onChange={(e) => setCallsign(e.target.value.toUpperCase())}
+              />
+              <em className="hint">airline + flight no.</em>
+            </label>
+            <label className="field">
+              <span>Aircraft type</span>
+              <select
+                value={actype}
+                onChange={(e) => setActype(e.target.value)}
+              >
+                {AIRCRAFT.map(([v, label]) => (
+                  <option key={v} value={v}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+              <em className="hint">ใช้ B738 ใน Phase 1</em>
+            </label>
+          </div>
+
+          <div className="field-row">
+            <label className="field">
+              <span>ADEP</span>
+              <input
+                type="text"
+                value={adep}
+                onChange={(e) => setAdep(e.target.value.toUpperCase())}
+              />
+              <em className="hint">ICAO ต้นทาง</em>
+            </label>
+            <label className="field">
+              <span>ADES</span>
+              <input
+                type="text"
+                value={ades}
+                onChange={(e) => setAdes(e.target.value.toUpperCase())}
+              />
+              <em className="hint">ICAO ปลายทาง</em>
+            </label>
+          </div>
+
+          <div className="field-row">
+            <label className="field">
+              <span>EOBT (UTC)</span>
+              <input
+                type="datetime-local"
+                value={eobt}
+                onChange={(e) => setEobt(e.target.value)}
+              />
+              <em className="hint">เวลา push back</em>
+            </label>
+            <label className="field">
+              <span>RFL</span>
+              <input
+                type="number"
+                min={50}
+                max={430}
+                step={10}
+                value={rfl}
+                onChange={(e) => setRfl(Number(e.target.value))}
+              />
+              <em className="hint">requested flight level</em>
+            </label>
+            <label className="field">
+              <span>GS (kt)</span>
+              <input
+                type="number"
+                min={100}
+                max={600}
+                value={gsKt}
+                onChange={(e) => setGsKt(Number(e.target.value))}
+              />
+              <em className="hint">ground speed</em>
+            </label>
+          </div>
+
+          <div className="field">
+            <span>Route string (Item 15)</span>
+            <div className="rt-modes" role="tablist">
+              <button
+                role="tab"
+                aria-selected={routeMode === "fpl"}
+                className={routeMode === "fpl" ? "active" : undefined}
+                onClick={() => setRouteMode("fpl")}
+              >
+                พิมพ์เอง
+              </button>
+              <button
+                role="tab"
+                aria-selected={routeMode === "build"}
+                className={routeMode === "build" ? "active" : undefined}
+                onClick={() => setRouteMode("build")}
+              >
+                เลือก waypoint
+              </button>
+              <button
+                role="tab"
+                aria-selected={routeMode === "csv"}
+                className={routeMode === "csv" ? "active" : undefined}
+                onClick={() => setRouteMode("csv")}
+              >
+                Airway CSV
+              </button>
+            </div>
+
+            {routeMode === "fpl" && (
+              <>
+                <input
+                  type="text"
+                  value={routeStr}
+                  onChange={(e) => setRouteStr(e.target.value)}
+                  placeholder="BKK Y8 PUT  หรือ  DCT VANKO DCT PUT"
+                />
+                <div className="chips">
+                  {QUICK_ROUTES.map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      className="chip"
+                      onClick={() => setRouteStr(r)}
+                    >
+                      {r}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {routeMode === "build" && (
+              <RouteBuilder
+                idents={waypointIdents}
+                selected={builtWpts}
+                onChange={setBuiltWpts}
+              />
+            )}
+
+            {routeMode === "csv" && (
+              <p className="rt-csv-note">
+                ใช้ route สำเร็จรูปจาก <code>VTPStoVTBS.csv</code> ตามทิศ{" "}
+                <strong>
+                  {adep || "?"} → {ades || "?"}
+                </strong>{" "}
+                (สลับได้ด้วยช่อง ADEP/ADES)
+              </p>
+            )}
+          </div>
+
+          <div className="fpl-prev">
+            <span>PREVIEW FPL STRING</span>
+            <code>{previewFpl || "— กรอกข้อมูลด้านบน —"}</code>
+          </div>
+
+          <button
+            className="generate"
+            onClick={handleGenerate}
+            disabled={busy}
+          >
+            {busy ? "Running Python pipeline…" : "▶ Generate trajectory"}
+          </button>
+        </>
+      )}
 
       {error && <p className="gen-error">⚠ {error}</p>}
 
@@ -231,11 +457,6 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
               ⬇ GeoJSON
             </a>
           </div>
-          {/* <p className="gen-note">
-            Computed by the real Python <code>trajectory_sim</code> ·
-            pyproj.Geod (WGS-84). GeoPackage is the genuine Phase 1
-            deliverable file. Altitude/TAS arrive in Phase 2–3.
-          </p> */}
         </div>
       )}
     </section>

@@ -800,3 +800,213 @@ body {
     justify-content: center;
   }
 }
+
+/* ---- Generator: mode tabs + file upload + FPL preview ---- */
+.gen-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0 14px;
+}
+
+.gen-tabs button {
+  flex: 1;
+  padding: 8px 6px;
+  background: #0f172a;
+  color: var(--muted);
+  border: 1px solid #334155;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.gen-tabs button.active {
+  background: var(--accent);
+  color: #06283d;
+  border-color: var(--accent);
+  font-weight: 700;
+}
+
+.field .hint {
+  font-size: 10px;
+  color: var(--muted);
+  font-style: normal;
+  opacity: 0.8;
+}
+
+/* Route sub-mode toggle (keeps typed / pick / airway-csv). */
+.rt-modes {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.rt-modes button {
+  flex: 1;
+  padding: 5px 4px;
+  background: #0f172a;
+  color: var(--muted);
+  border: 1px solid #334155;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.rt-modes button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.rt-csv-note {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 6px 0 0;
+  line-height: 1.5;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.chip {
+  padding: 4px 10px;
+  background: #0f172a;
+  color: var(--text);
+  border: 1px solid #334155;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.dropzone {
+  border: 2px dashed #334155;
+  border-radius: 10px;
+  padding: 28px 16px;
+  text-align: center;
+  cursor: pointer;
+  margin-bottom: 14px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.dropzone:hover,
+.dropzone.drag {
+  border-color: var(--accent);
+  background: rgba(56, 189, 248, 0.06);
+}
+
+.dz-icon {
+  font-size: 26px;
+  color: var(--accent);
+}
+
+.dz-main {
+  margin: 8px 0 2px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.dz-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.fmt {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.fmt strong {
+  color: var(--text);
+}
+
+.fmt-cols {
+  display: flex;
+  gap: 14px;
+  margin-top: 8px;
+}
+
+.fmt-cols > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.fmt-h {
+  display: block;
+  color: var(--text);
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.fmt pre {
+  margin: 0;
+  padding: 8px;
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.file-note {
+  font-size: 12px;
+  color: var(--accent);
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 7px 9px;
+  margin: 0 0 12px;
+}
+
+.fpl-prev {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 14px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.fpl-prev code {
+  display: block;
+  padding: 8px;
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+/* Light-theme overrides for the new bits. */
+.app.theme-light .gen-tabs button,
+.app.theme-light .rt-modes button,
+.app.theme-light .chip,
+.app.theme-light .fmt pre,
+.app.theme-light .fpl-prev code,
+.app.theme-light .dropzone {
+  background: #fff;
+  border-color: #cbd5e1;
+}
+
+.app.theme-light .gen-tabs button.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.app.theme-light .file-note,
+.app.theme-light .dropzone.drag {
+  background: rgba(2, 132, 199, 0.08);
+}
