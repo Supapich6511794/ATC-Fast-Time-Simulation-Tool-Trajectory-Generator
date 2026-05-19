@@ -16,13 +16,14 @@
  *                       fields are pre-filled and still fully editable.
  */
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import IdentCombobox, { type ComboOption } from "@/components/IdentCombobox";
 import RouteBuilder from "@/components/RouteBuilder";
 import { generateTrajectory } from "@/lib/api";
 import { parseFlightFile, type FlightRecord } from "@/lib/flightFile";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
+import { fetchY8Fixes, kBestY8Routes, type Y8Fix } from "@/lib/y8Routes";
 
 type InputMode = "manual" | "file";
 /** How the route portion is supplied (all three kept, none removed). */
@@ -89,12 +90,18 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
     [builtWpts],
   );
 
-  // The one real VTBS↔VTSP airway route (its fixes). Direction is set by
-  // ADEP/ADES; the server re-orients the fixes to match.
-  const possibleRoute = useMemo(
-    () => waypointIdents.join(" "),
-    [waypointIdents],
-  );
+  // Y8 fixes (with coords) for the best-route search; loaded once.
+  const [y8Fixes, setY8Fixes] = useState<Y8Fix[]>([]);
+  const [showAllRoutes, setShowAllRoutes] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetchY8Fixes()
+      .then((f) => !cancelled && setY8Fixes(f))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Route/fix suggestions only make sense once a valid city pair is
   // entered — they're specific to the VTBS<->VTSP corridor.
@@ -106,6 +113,16 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
     dep !== des &&
     SUPPORTED_PAIR.includes(dep) &&
     SUPPORTED_PAIR.includes(des);
+
+  // K best Y8 routes for the entered direction (constrained search +
+  // distance/compliance ranking). Recomputed only when inputs change.
+  const bestRoutes = useMemo(
+    () =>
+      pairReady && y8Fixes.length >= 2
+        ? kBestY8Routes(y8Fixes, dep, { maxSkip: 2, maxHops: 12, k: 8 })
+        : [],
+    [pairReady, y8Fixes, dep],
+  );
 
   // What the FPL route portion resolves to (for the live preview).
   const previewRoute =
@@ -409,15 +426,35 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
                   <>
                     <div className="rt-routes">
                       <span>
-                        Possible route ({dep} → {des}):
+                        Best routes ({dep} → {des}) · Y8:
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => setRouteStr(possibleRoute)}
-                        title={possibleRoute}
-                      >
-                        Apply {dep} → {des} route
-                      </button>
+                      {bestRoutes.length === 0 && (
+                        <em className="rt-more">computing…</em>
+                      )}
+                      {(showAllRoutes
+                        ? bestRoutes
+                        : bestRoutes.slice(0, 3)
+                      ).map((r) => (
+                        <button
+                          key={r.text}
+                          type="button"
+                          onClick={() => setRouteStr(r.text)}
+                          title={`${r.distanceNm} NM`}
+                        >
+                          {r.text} · {r.distanceNm} NM
+                        </button>
+                      ))}
+                      {bestRoutes.length > 3 && (
+                        <button
+                          type="button"
+                          className="rt-more"
+                          onClick={() => setShowAllRoutes((v) => !v)}
+                        >
+                          {showAllRoutes
+                            ? "See less"
+                            : `See more (${bestRoutes.length - 3})`}
+                        </button>
+                      )}
                     </div>
 
                     <p className="rt-fixes">
