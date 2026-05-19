@@ -42,8 +42,6 @@ const AIRCRAFT = [
   ["B77W", "B77W — Boeing 777-300ER"],
 ] as const;
 
-const QUICK_ROUTES = ["BKK Y8 PUT", "DCT VANKO PUT", "MOTNA Y8 SAVSA"];
-
 /** Suggested ICAO airports (free typing of any code is still allowed). */
 const AIRPORTS: ComboOption[] = [
   { code: "VTBS", label: "Suvarnabhumi · Bangkok" },
@@ -262,7 +260,6 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
                   </option>
                 ))}
               </select>
-              <em className="hint">B738 in Phase 1</em>
             </label>
           </div>
 
@@ -362,18 +359,6 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
                   onChange={(e) => setRouteStr(e.target.value)}
                   placeholder="BKK Y8 PUT   or   DCT VANKO DCT PUT"
                 />
-                <div className="chips">
-                  {QUICK_ROUTES.map((r) => (
-                    <button
-                      key={r}
-                      type="button"
-                      className="chip"
-                      onClick={() => setRouteStr(r)}
-                    >
-                      {r}
-                    </button>
-                  ))}
-                </div>
               </>
             )}
 

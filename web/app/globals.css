@@ -871,29 +871,6 @@ body {
   line-height: 1.5;
 }
 
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.chip {
-  padding: 4px 10px;
-  background: #0f172a;
-  color: var(--text);
-  border: 1px solid #334155;
-  border-radius: 999px;
-  font: inherit;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.chip:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
 .dropzone {
   border: 2px dashed #334155;
   border-radius: 10px;
@@ -960,7 +937,6 @@ body {
 /* Light-theme overrides for the new bits. */
 .app.theme-light .gen-tabs button,
 .app.theme-light .rt-modes button,
-.app.theme-light .chip,
 .app.theme-light .fpl-prev code,
 .app.theme-light .dropzone {
   background: #fff;
