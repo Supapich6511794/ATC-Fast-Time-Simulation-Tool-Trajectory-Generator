@@ -921,45 +921,6 @@ body {
   color: var(--muted);
 }
 
-.fmt {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.fmt strong {
-  color: var(--text);
-}
-
-.fmt-cols {
-  display: flex;
-  gap: 14px;
-  margin-top: 8px;
-}
-
-.fmt-cols > div {
-  flex: 1;
-  min-width: 0;
-}
-
-.fmt-h {
-  display: block;
-  color: var(--text);
-  font-weight: 700;
-  margin-bottom: 4px;
-}
-
-.fmt pre {
-  margin: 0;
-  padding: 8px;
-  background: #0f172a;
-  border: 1px solid #334155;
-  border-radius: 6px;
-  font-size: 10.5px;
-  line-height: 1.5;
-  overflow-x: auto;
-  white-space: pre;
-}
-
 .file-note {
   font-size: 12px;
   color: var(--accent);
@@ -994,7 +955,6 @@ body {
 .app.theme-light .gen-tabs button,
 .app.theme-light .rt-modes button,
 .app.theme-light .chip,
-.app.theme-light .fmt pre,
 .app.theme-light .fpl-prev code,
 .app.theme-light .dropzone {
   background: #fff;
@@ -1009,4 +969,60 @@ body {
 .app.theme-light .file-note,
 .app.theme-light .dropzone.drag {
   background: rgba(2, 132, 199, 0.08);
+}
+
+/* No horizontal scroll: inputs fill their column and may shrink/wrap. */
+.gen .field {
+  min-width: 0;
+}
+
+.gen .field input,
+.gen .field select {
+  width: 100%;
+}
+
+.gen .field-row {
+  flex-wrap: wrap;
+}
+
+.gen .field-row .field {
+  flex: 1 1 120px;
+}
+
+/* Polished tabs + dropzone. */
+.gen-tabs button {
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.gen-tabs button.active {
+  box-shadow: 0 2px 10px rgba(56, 189, 248, 0.25);
+}
+
+.dropzone {
+  padding: 40px 18px;
+  background: linear-gradient(
+    180deg,
+    rgba(56, 189, 248, 0.04),
+    transparent
+  );
+}
+
+.dz-icon {
+  display: inline-flex;
+  width: 46px;
+  height: 46px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(56, 189, 248, 0.12);
+  font-size: 22px;
+}
+
+.dz-main {
+  font-weight: 600;
+}
+
+.fpl-prev span,
+.field > span {
+  letter-spacing: 0.04em;
 }

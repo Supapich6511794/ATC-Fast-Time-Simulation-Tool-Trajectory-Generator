@@ -9,10 +9,10 @@
  * `trajectory_sim` package server-side — the web is just the front-end.
  *
  * Two input modes:
- *   - "กรอกเอง"      — fill the form by hand. The route itself can be a
+ *   - "Manual"       — fill the form by hand. The route itself can be a
  *                       typed Item-15 string, the point-and-click
  *                       RouteBuilder, or the pre-resolved airway CSV.
- *   - "อัปโหลดไฟล์"   — drop a .csv/.json/.geojson; it is parsed and the
+ *   - "Upload file"  — drop a .csv/.json/.geojson; it is parsed and the
  *                       fields are pre-filled and still fully editable.
  */
 
@@ -117,8 +117,8 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
       setMode("manual");
       setFileNote(
         all.length > 1
-          ? `โหลด ${all.length} เที่ยวบิน — แสดงเที่ยวแรกให้ปรับแก้ก่อน Generate`
-          : "โหลดจากไฟล์แล้ว — ตรวจ/ปรับแก้ได้ก่อน Generate",
+          ? `Loaded ${all.length} flights — showing the first; edit before Generate`
+          : "Loaded from file — review and edit before Generate",
       );
     } catch (e) {
       setFileNote(null);
@@ -181,7 +181,7 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
           className={mode === "manual" ? "active" : undefined}
           onClick={() => setMode("manual")}
         >
-          ⌨ กรอกเอง
+          ⌨ Manual
         </button>
         <button
           role="tab"
@@ -189,7 +189,7 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
           className={mode === "file" ? "active" : undefined}
           onClick={() => setMode("file")}
         >
-          ⬆ อัปโหลดไฟล์
+          ⬆ Upload file
         </button>
       </div>
 
@@ -210,8 +210,10 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
             }}
           >
             <div className="dz-icon">⬆</div>
-            <p className="dz-main">ลากไฟล์มาวาง หรือคลิกเพื่อเลือก</p>
-            <p className="dz-sub">รองรับ .csv .json .geojson — หลายไฟล์ได้</p>
+            <p className="dz-main">Drag a file here, or click to choose</p>
+            <p className="dz-sub">
+              .csv · .json · .geojson — multiple files supported
+            </p>
             <input
               ref={fileRef}
               type="file"
@@ -220,26 +222,6 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
               hidden
               onChange={(e) => handleFiles(e.target.files)}
             />
-          </div>
-
-          <div className="fmt">
-            <strong>FORMAT ที่รองรับ</strong>
-            <div className="fmt-cols">
-              <div>
-                <span className="fmt-h">CSV</span>
-                <pre>{`callsign,actype,adep,ades,eobt,rfl,route
-THA204,B738,VTBS,VTSP,2026-05-19T08:15Z,350,BKK Y8 PUT`}</pre>
-              </div>
-              <div>
-                <span className="fmt-h">JSON</span>
-                <pre>{`{ "callsign":"THA204",
-  "actype":"B738",
-  "adep":"VTBS","ades":"VTSP",
-  "eobt":"2026-05-19T08:15Z",
-  "rfl":350,
-  "route":"BKK Y8 PUT" }`}</pre>
-              </div>
-            </div>
           </div>
         </>
       ) : (
@@ -268,7 +250,7 @@ THA204,B738,VTBS,VTSP,2026-05-19T08:15Z,350,BKK Y8 PUT`}</pre>
                   </option>
                 ))}
               </select>
-              <em className="hint">ใช้ B738 ใน Phase 1</em>
+              <em className="hint">B738 in Phase 1</em>
             </label>
           </div>
 
@@ -280,7 +262,7 @@ THA204,B738,VTBS,VTSP,2026-05-19T08:15Z,350,BKK Y8 PUT`}</pre>
                 value={adep}
                 onChange={(e) => setAdep(e.target.value.toUpperCase())}
               />
-              <em className="hint">ICAO ต้นทาง</em>
+              <em className="hint">departure ICAO</em>
             </label>
             <label className="field">
               <span>ADES</span>
@@ -289,20 +271,21 @@ THA204,B738,VTBS,VTSP,2026-05-19T08:15Z,350,BKK Y8 PUT`}</pre>
                 value={ades}
                 onChange={(e) => setAdes(e.target.value.toUpperCase())}
               />
-              <em className="hint">ICAO ปลายทาง</em>
+              <em className="hint">destination ICAO</em>
             </label>
           </div>
 
+          <label className="field">
+            <span>EOBT (UTC)</span>
+            <input
+              type="datetime-local"
+              value={eobt}
+              onChange={(e) => setEobt(e.target.value)}
+            />
+            <em className="hint">push-back time</em>
+          </label>
+
           <div className="field-row">
-            <label className="field">
-              <span>EOBT (UTC)</span>
-              <input
-                type="datetime-local"
-                value={eobt}
-                onChange={(e) => setEobt(e.target.value)}
-              />
-              <em className="hint">เวลา push back</em>
-            </label>
             <label className="field">
               <span>RFL</span>
               <input
@@ -337,7 +320,7 @@ THA204,B738,VTBS,VTSP,2026-05-19T08:15Z,350,BKK Y8 PUT`}</pre>
                 className={routeMode === "fpl" ? "active" : undefined}
                 onClick={() => setRouteMode("fpl")}
               >
-                พิมพ์เอง
+                Type
               </button>
               <button
                 role="tab"
@@ -345,7 +328,7 @@ THA204,B738,VTBS,VTSP,2026-05-19T08:15Z,350,BKK Y8 PUT`}</pre>
                 className={routeMode === "build" ? "active" : undefined}
                 onClick={() => setRouteMode("build")}
               >
-                เลือก waypoint
+                Pick waypoints
               </button>
               <button
                 role="tab"
@@ -363,7 +346,7 @@ THA204,B738,VTBS,VTSP,2026-05-19T08:15Z,350,BKK Y8 PUT`}</pre>
                   type="text"
                   value={routeStr}
                   onChange={(e) => setRouteStr(e.target.value)}
-                  placeholder="BKK Y8 PUT  หรือ  DCT VANKO DCT PUT"
+                  placeholder="BKK Y8 PUT   or   DCT VANKO DCT PUT"
                 />
                 <div className="chips">
                   {QUICK_ROUTES.map((r) => (
@@ -390,18 +373,19 @@ THA204,B738,VTBS,VTSP,2026-05-19T08:15Z,350,BKK Y8 PUT`}</pre>
 
             {routeMode === "csv" && (
               <p className="rt-csv-note">
-                ใช้ route สำเร็จรูปจาก <code>VTPStoVTBS.csv</code> ตามทิศ{" "}
+                Uses the pre-resolved route from{" "}
+                <code>VTPStoVTBS.csv</code> in the direction{" "}
                 <strong>
                   {adep || "?"} → {ades || "?"}
                 </strong>{" "}
-                (สลับได้ด้วยช่อง ADEP/ADES)
+                (swap via the ADEP/ADES fields).
               </p>
             )}
           </div>
 
           <div className="fpl-prev">
             <span>PREVIEW FPL STRING</span>
-            <code>{previewFpl || "— กรอกข้อมูลด้านบน —"}</code>
+            <code>{previewFpl || "— fill in the fields above —"}</code>
           </div>
 
           <button
