@@ -16,7 +16,7 @@
  */
 
 import L from "leaflet";
-import { useEffect, useMemo } from "react";
+import { type ReactNode, useEffect, useMemo } from "react";
 import {
   CircleMarker,
   GeoJSON,
@@ -86,6 +86,42 @@ function planeIcon(track: number): L.DivIcon {
   });
 }
 
+/**
+ * A dot with a much larger *invisible* hit circle on top, so hovering a
+ * waypoint is easy without enlarging the visible marker. The visible
+ * circle is non-interactive; the transparent one carries tooltip/popup.
+ */
+function HoverFix({
+  center,
+  radius,
+  hitRadius,
+  pathOptions,
+  children,
+}: {
+  center: L.LatLngExpression;
+  radius: number;
+  hitRadius: number;
+  pathOptions: L.PathOptions;
+  children: ReactNode;
+}) {
+  return (
+    <>
+      <CircleMarker
+        center={center}
+        radius={radius}
+        pathOptions={{ ...pathOptions, interactive: false }}
+      />
+      <CircleMarker
+        center={center}
+        radius={hitRadius}
+        pathOptions={{ stroke: false, fill: true, fillOpacity: 0 }}
+      >
+        {children}
+      </CircleMarker>
+    </>
+  );
+}
+
 /** Start/End marker — the route's first/last fix, kept off the small
  *  intermediate markers so their tooltips don't stack and fight. */
 function EndpointMarker({
@@ -106,22 +142,28 @@ function EndpointMarker({
   detail: string;
 }) {
   return (
-    <CircleMarker
+    <HoverFix
       center={position}
       radius={7}
-      pathOptions={{ color: stroke, weight: 2, fillColor: fill, fillOpacity: 1 }}
+      hitRadius={18}
+      pathOptions={{
+        color: stroke,
+        weight: 2,
+        fillColor: fill,
+        fillOpacity: 1,
+      }}
     >
-      <Tooltip direction="top" offset={[0, -7]} sticky>
-        {ident} · {role} ({airport})
+      <Tooltip direction="top" offset={[0, -9]} sticky>
+        <strong>{ident}</strong> · {role} ({airport})
       </Tooltip>
       <Popup>
         <strong>
-          {role} — {ident} ({airport})
+          {ident} — {role} ({airport})
         </strong>
         <br />
         {detail}
       </Popup>
-    </CircleMarker>
+    </HoverFix>
   );
 }
 
@@ -177,10 +219,11 @@ export default function LeafletMap({
   const waypointLayer = useMemo(
     () =>
       waypoints?.map((w) => (
-        <CircleMarker
+        <HoverFix
           key={`wp-${w.ident}`}
           center={[w.lat, w.lon]}
           radius={2.5}
+          hitRadius={10}
           pathOptions={{
             color: "#f59e0b",
             weight: 1,
@@ -188,10 +231,10 @@ export default function LeafletMap({
             fillOpacity: 0.5,
           }}
         >
-          <Tooltip direction="top" offset={[0, -3]} sticky>
+          <Tooltip direction="top" offset={[0, -6]} sticky>
             {w.ident}
           </Tooltip>
-        </CircleMarker>
+        </HoverFix>
       )),
     [waypoints],
   );
@@ -212,10 +255,11 @@ export default function LeafletMap({
         {/* Intermediate fixes only; the first/last are the Start/End
             markers below (avoids stacked overlapping markers). */}
         {route.slice(1, -1).map((w) => (
-          <CircleMarker
+          <HoverFix
             key={w.ident}
             center={[w.lat, w.lon]}
             radius={4}
+            hitRadius={13}
             pathOptions={{
               color: "#0f172a",
               weight: 1,
@@ -223,7 +267,7 @@ export default function LeafletMap({
               fillOpacity: 1,
             }}
           >
-            <Tooltip direction="top" offset={[0, -4]} sticky>
+            <Tooltip direction="top" offset={[0, -7]} sticky>
               {w.ident}
             </Tooltip>
             <Popup>
@@ -231,7 +275,7 @@ export default function LeafletMap({
               <br />
               {w.lat.toFixed(5)}, {w.lon.toFixed(5)}
             </Popup>
-          </CircleMarker>
+          </HoverFix>
         ))}
 
         <EndpointMarker

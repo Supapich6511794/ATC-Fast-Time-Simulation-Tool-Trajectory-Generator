@@ -21,6 +21,9 @@ export const API_BASE =
 export interface GenerateInput {
   source: "csv" | "fpl";
   vtsp_to_vtbs: boolean;
+  /** Departure / destination ICAO — drive direction + meta server-side. */
+  adep: string;
+  ades: string;
   route: string;
   callsign: string;
   /** ISO local string from the datetime-local input (treated as UTC). */

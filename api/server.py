@@ -43,6 +43,15 @@ _AIRWAY_GEOJSON = _DATA / "airway_waypoint.geojson"
 _OUT_DIR = _ROOT / "api" / "_outputs"
 _OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+# Approx airport reference coords (lat, lon), used only to orient an
+# fpl/picked route to the requested ADEP (so swapping ADEP/ADES really
+# reverses the written file and the animation).
+_AIRPORT_LL = {"VTBS": (13.6811, 100.7475), "VTSP": (8.1132, 98.3169)}
+
+
+def _sq_dist(a: tuple[float, float], b: tuple[float, float]) -> float:
+    return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
+
 app = FastAPI(title="Flight Trajectory Generator API", version="1.0")
 
 # Allowed browser origins:
@@ -67,6 +76,10 @@ class GenerateRequest(BaseModel):
     source: str = Field("csv", description='"csv" or "fpl"')
     # CSV mode: True => VTSP->VTBS (reverse of the file's seqno order).
     vtsp_to_vtbs: bool = True
+    # Departure / destination ICAO. These now actually drive direction
+    # and the written meta (previously hardcoded for fpl mode).
+    adep: str = "VTBS"
+    ades: str = "VTSP"
     # FPL mode: raw Item-15 route string.
     route: str = "DCT MOTNA DCT SABIS DCT VANKO DCT"
     callsign: str = "SIM738"
@@ -107,11 +120,28 @@ def health() -> dict[str, object]:
 def generate(req: GenerateRequest) -> dict[str, object]:
     warnings: list[str] = []
 
-    if req.source == "csv":
-        adep, ades = (
-            ("VTSP", "VTBS") if req.vtsp_to_vtbs else ("VTBS", "VTSP")
+    # --- Validate the city pair (Phase 1 scope: VTBS <-> VTSP only) ---
+    adep = req.adep.strip().upper()
+    ades = req.ades.strip().upper()
+    supported = {"VTBS", "VTSP"}
+    if not adep or not ades:
+        raise HTTPException(400, "ADEP and ADES are required.")
+    if adep == ades:
+        raise HTTPException(
+            400, f"ADEP and ADES must differ (both {adep})."
         )
-        route = load_route_csv(_CSV_PATH, reverse=req.vtsp_to_vtbs)
+    unsupported = {adep, ades} - supported
+    if unsupported:
+        raise HTTPException(
+            400,
+            "Phase 1 supports only the VTBS <-> VTSP route. "
+            f"Unsupported: {', '.join(sorted(unsupported))}.",
+        )
+    # Direction is implied by the departure aerodrome.
+    vtsp_to_vtbs = adep == "VTSP"
+
+    if req.source == "csv":
+        route = load_route_csv(_CSV_PATH, reverse=vtsp_to_vtbs)
         route_pts = [(w.ident, w.lat, w.lon) for w in route]
     elif req.source == "fpl":
         idents = parse_route(req.route)
@@ -130,7 +160,14 @@ def generate(req: GenerateRequest) -> dict[str, object]:
             warnings.append(
                 f"Not found in airway data (skipped): {', '.join(missing)}"
             )
-        adep, ades = "VTBS", "VTSP"
+        # Orient the route by ADEP so the file/animation actually follow
+        # the city pair: the path must start at the fix nearest ADEP.
+        if len(route_pts) >= 2:
+            adep_ll = _AIRPORT_LL[adep]
+            d0 = _sq_dist(route_pts[0][1:], adep_ll)
+            dN = _sq_dist(route_pts[-1][1:], adep_ll)
+            if dN < d0:
+                route_pts.reverse()
     else:
         raise HTTPException(400, f"Unknown source {req.source!r}")
 

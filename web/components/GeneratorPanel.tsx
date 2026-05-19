@@ -86,6 +86,13 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
     [builtWpts],
   );
 
+  // The one real VTBS↔VTSP airway route (its fixes). Direction is set by
+  // ADEP/ADES; the server re-orients the fixes to match.
+  const possibleRoute = useMemo(
+    () => waypointIdents.join(" "),
+    [waypointIdents],
+  );
+
   // What the FPL route portion resolves to (for the live preview).
   const previewRoute =
     routeMode === "csv"
@@ -140,8 +147,26 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
     setError(null);
     setWarnings([]);
     try {
+      const dep = adep.trim().toUpperCase();
+      const des = ades.trim().toUpperCase();
+
+      // Phase 1 scope: VTBS <-> VTSP only (validate before the round-trip).
+      const SUPPORTED = ["VTBS", "VTSP"];
+      if (!dep || !des) {
+        throw new Error("ADEP and ADES are required.");
+      }
+      if (dep === des) {
+        throw new Error(`ADEP and ADES must differ (both ${dep}).`);
+      }
+      const bad = [dep, des].filter((a) => !SUPPORTED.includes(a));
+      if (bad.length) {
+        throw new Error(
+          `Phase 1 supports only VTBS ↔ VTSP. Unsupported: ${bad.join(", ")}.`,
+        );
+      }
+
       // Direction is implied by the departure aerodrome.
-      const vtspToVtbs = adep.trim().toUpperCase() === "VTSP";
+      const vtspToVtbs = dep === "VTSP";
       // "build" piggybacks the FPL pipeline with the composed string.
       const apiSource = routeMode === "csv" ? "csv" : "fpl";
       const apiRoute =
@@ -161,6 +186,8 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
       const { result, warnings, downloads } = await generateTrajectory({
         source: apiSource,
         vtsp_to_vtbs: vtspToVtbs,
+        adep: dep,
+        ades: des,
         route: apiRoute,
         callsign,
         eobt, // datetime-local; server treats as UTC
@@ -353,6 +380,51 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
                   onChange={(e) => setRouteStr(e.target.value)}
                   placeholder="BKK Y8 PUT   or   DCT VANKO DCT PUT"
                 />
+
+                {waypointIdents.length > 0 && (
+                  <>
+                    <div className="rt-routes">
+                      <span>Possible routes (VTBS ↔ VTSP):</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAdep("VTBS");
+                          setAdes("VTSP");
+                          setRouteStr(possibleRoute);
+                        }}
+                      >
+                        VTBS → VTSP
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAdep("VTSP");
+                          setAdes("VTBS");
+                          setRouteStr(possibleRoute);
+                        }}
+                      >
+                        VTSP → VTBS
+                      </button>
+                    </div>
+
+                    <p className="rt-fixes">
+                      <span>Allowed fixes — click to append:</span>
+                      {waypointIdents.map((id) => (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() =>
+                            setRouteStr((s) =>
+                              s.trim() ? `${s.trim()} ${id}` : id,
+                            )
+                          }
+                        >
+                          {id}
+                        </button>
+                      ))}
+                    </p>
+                  </>
+                )}
               </>
             )}
 
