@@ -16,6 +16,7 @@ by `trajectory_sim.output.write_geopackage`.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -44,12 +45,17 @@ _OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Flight Trajectory Generator API", version="1.0")
 
-# The Next.js dev server is normally on :3000, but it falls back to
-# :3001/:3002… if the port is busy. Allow any localhost port so the web
-# can always reach the API.
+# Allowed browser origins:
+#   - any localhost port  (dev server falls back to :3001/:3002… if busy)
+#   - any *.vercel.app    (the deployed Next.js front-end)
+#   - an explicit origin from $WEB_ORIGIN  (custom domain, if set)
+# $WEB_ORIGIN lets a custom production domain be whitelisted without a
+# code change on the API host.
+_extra_origin = os.environ.get("WEB_ORIGIN", "").strip()
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
+    allow_origins=[_extra_origin] if _extra_origin else [],
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+|https://[\w-]+\.vercel\.app",
     allow_methods=["*"],
     allow_headers=["*"],
 )

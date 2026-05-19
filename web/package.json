@@ -9,6 +9,7 @@
     "dev:web": "next dev",
     "dev:api": "cd .. && .venv\\Scripts\\uvicorn.exe api.server:app --reload --port 8000",
     "dev:all": "npm run dev",
+    "vercel-build": "next build",
     "build": "set NEXT_DIST_DIR=.next-build&& next build",
     "start": "set NEXT_DIST_DIR=.next-build&& next start",
     "clean": "rmdir /s /q .next .next-build 2>nul & echo cleaned",
