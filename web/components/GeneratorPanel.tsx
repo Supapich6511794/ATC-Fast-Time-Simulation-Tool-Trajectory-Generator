@@ -426,7 +426,8 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
                   <>
                     <div className="rt-routes">
                       <span>
-                        Best routes ({dep} → {des}) · Y8:
+                        Best routes ({dep} → {des}) · Y8 — ranked by
+                        compliance (full airway first), not raw distance.
                       </span>
                       {bestRoutes.length === 0 && (
                         <em className="rt-more">computing…</em>
@@ -434,16 +435,30 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
                       {(showAllRoutes
                         ? bestRoutes
                         : bestRoutes.slice(0, 3)
-                      ).map((r) => (
-                        <button
-                          key={r.text}
-                          type="button"
-                          onClick={() => setRouteStr(r.text)}
-                          title={`${r.distanceNm} NM`}
-                        >
-                          {r.text} · {r.distanceNm} NM
-                        </button>
-                      ))}
+                      ).map((r, i) => {
+                        const best = bestRoutes[0];
+                        const tag =
+                          i === 0
+                            ? " ★ recommended"
+                            : r.distanceNm < best.distanceNm
+                              ? " · shorter via DCT"
+                              : "";
+                        return (
+                          <button
+                            key={r.text}
+                            type="button"
+                            className={i === 0 ? "rt-best" : undefined}
+                            onClick={() => setRouteStr(r.text)}
+                            title={
+                              i === 0
+                                ? `Recommended — full Y8, ${r.distanceNm} NM`
+                                : `${r.distanceNm} NM`
+                            }
+                          >
+                            {r.text} · {r.distanceNm} NM{tag}
+                          </button>
+                        );
+                      })}
                       {bestRoutes.length > 3 && (
                         <button
                           type="button"

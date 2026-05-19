@@ -947,6 +947,19 @@ body {
   color: var(--accent);
 }
 
+/* The #1 compliance-recommended route stands out from the rest. */
+.rt-routes button.rt-best {
+  background: var(--accent);
+  color: #06283d;
+  font-weight: 700;
+  border-color: var(--accent);
+}
+
+.rt-routes button.rt-best:hover {
+  color: #06283d;
+  filter: brightness(1.08);
+}
+
 .app.theme-light .rt-routes button,
 .app.theme-light .rt-fixes button {
   background: #fff;
