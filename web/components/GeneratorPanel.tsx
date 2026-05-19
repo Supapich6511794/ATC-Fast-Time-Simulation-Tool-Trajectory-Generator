@@ -119,9 +119,9 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
   const bestRoutes = useMemo(
     () =>
       pairReady && y8Fixes.length >= 2
-        ? kBestY8Routes(y8Fixes, dep, { maxSkip: 2, maxHops: 12, k: 8 })
+        ? kBestY8Routes(y8Fixes, dep, des, { maxSkip: 2, maxHops: 12, k: 8 })
         : [],
-    [pairReady, y8Fixes, dep],
+    [pairReady, y8Fixes, dep, des],
   );
 
   // What the FPL route portion resolves to (for the live preview).

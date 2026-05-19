@@ -92,6 +92,14 @@ function haversineNm(a: Y8Fix, b: Y8Fix): number {
  *  airway-compliant routes over aggressive DCT shortcuts. */
 const SKIP_PENALTY_NM = 6;
 
+/** Approx airport reference coords, so "best" = shortest *total*
+ *  ADEP→…→ADES distance (incl. the airport-to-fix legs), not just the
+ *  shortest fix-to-fix stretch along the airway. */
+const AIRPORT_LL: Record<string, { lat: number; lon: number }> = {
+  VTBS: { lat: 13.6811, lon: 100.7475 },
+  VTSP: { lat: 8.1132, lon: 98.3169 },
+};
+
 interface Opts {
   /** Max fixes that may be skipped in one DCT leg. */
   maxSkip?: number;
@@ -129,17 +137,26 @@ function toItem15(path: number[], fixes: Y8Fix[], n: number): string {
 export function kBestY8Routes(
   fixesInOrder: Y8Fix[],
   adep: string,
+  ades: string,
   opts: Opts = {},
 ): RouteOption[] {
   const { maxSkip = 2, maxHops = 12, k = 8 } = opts;
   if (fixesInOrder.length < 2) return [];
 
+  const A = adep.trim().toUpperCase();
+  const B = ades.trim().toUpperCase();
   // Orient the airway so index 0 is the ADEP-side fix.
-  const fixes =
-    adep.trim().toUpperCase() === "VTSP"
-      ? [...fixesInOrder].reverse()
-      : fixesInOrder;
+  const fixes = A === "VTSP" ? [...fixesInOrder].reverse() : fixesInOrder;
   const n = fixes.length;
+
+  // Airport endpoints — the route's true start/end. Fall back to the
+  // airway termini if an airport's coords are unknown.
+  const adepLL = AIRPORT_LL[A]
+    ? ({ ident: A, ...AIRPORT_LL[A] } as Y8Fix)
+    : fixes[0];
+  const adesLL = AIRPORT_LL[B]
+    ? ({ ident: B, ...AIRPORT_LL[B] } as Y8Fix)
+    : fixes[n - 1];
 
   type Cand = { cost: number; distanceNm: number; path: number[] };
   const found: Cand[] = [];
@@ -171,11 +188,16 @@ export function kBestY8Routes(
         }
       };
       dfsSub([0], 0, 0);
+      // Airport-to-fix legs make the score the true ADEP→ADES distance.
+      const legIn = haversineNm(adepLL, fixes[s]);
+      const legOut = haversineNm(fixes[e], adesLL);
       for (const f of subFound) {
-        // Map sub indices back to absolute, render with leading/trailing
-        // DCT when the entry/exit isn't the airway terminus.
         const abs = f.path.map((p) => p + s);
-        found.push({ cost: f.cost, distanceNm: f.distanceNm, path: abs });
+        found.push({
+          cost: legIn + f.cost + legOut,
+          distanceNm: legIn + f.distanceNm + legOut,
+          path: abs,
+        });
       }
     }
   }
