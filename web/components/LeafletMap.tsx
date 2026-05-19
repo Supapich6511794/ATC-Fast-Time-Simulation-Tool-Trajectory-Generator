@@ -145,7 +145,7 @@ function EndpointMarker({
     <HoverFix
       center={position}
       radius={7}
-      hitRadius={18}
+      hitRadius={26}
       pathOptions={{
         color: stroke,
         weight: 2,
@@ -223,7 +223,7 @@ export default function LeafletMap({
           key={`wp-${w.ident}`}
           center={[w.lat, w.lon]}
           radius={2.5}
-          hitRadius={10}
+          hitRadius={18}
           pathOptions={{
             color: "#f59e0b",
             weight: 1,
@@ -259,7 +259,7 @@ export default function LeafletMap({
             key={w.ident}
             center={[w.lat, w.lon]}
             radius={4}
-            hitRadius={13}
+            hitRadius={22}
             pathOptions={{
               color: "#0f172a",
               weight: 1,
