@@ -786,6 +786,12 @@ body {
     flex-wrap: wrap;
     justify-content: flex-end;
   }
+
+  /* The mobile hamburger sits top-left; push Leaflet's zoom control
+     below it so the +/- box no longer covers the menu button. */
+  .leaflet-top.leaflet-left {
+    top: 62px;
+  }
 }
 
 @media (max-width: 480px) {
@@ -1042,4 +1048,26 @@ body {
 
 .rb-suggest button.active .combo-label {
   color: #06283d;
+}
+
+/* Grey placeholder for emptied default fields (callsign/ADEP/ADES…). */
+.gen .field input::placeholder,
+.gen .field .rb-search input::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+/* Make the native date/time picker button visible on the dark field
+   (the dark glyph was invisible on the dark fill). */
+.gen .field input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  opacity: 0.85;
+  cursor: pointer;
+}
+
+.app.theme-light
+  .gen
+  .field
+  input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  filter: none;
 }

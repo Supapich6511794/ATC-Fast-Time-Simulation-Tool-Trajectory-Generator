@@ -58,10 +58,10 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
   const [mode, setMode] = useState<InputMode>("manual");
   const [routeMode, setRouteMode] = useState<RouteMode>("fpl");
 
-  const [callsign, setCallsign] = useState("THA204");
+  const [callsign, setCallsign] = useState("");
   const [actype, setActype] = useState("B738");
-  const [adep, setAdep] = useState("VTBS");
-  const [ades, setAdes] = useState("VTSP");
+  const [adep, setAdep] = useState("");
+  const [ades, setAdes] = useState("");
   const [eobt, setEobt] = useState("");
   const [gsKt, setGsKt] = useState(450);
   const [rfl, setRfl] = useState(350);
@@ -245,6 +245,7 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
               <input
                 type="text"
                 value={callsign}
+                placeholder="THA204"
                 onChange={(e) => setCallsign(e.target.value.toUpperCase())}
               />
               <em className="hint">airline + flight no.</em>
