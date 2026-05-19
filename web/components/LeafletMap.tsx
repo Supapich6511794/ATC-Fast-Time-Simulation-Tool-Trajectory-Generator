@@ -16,7 +16,7 @@
  */
 
 import L from "leaflet";
-import { type ReactNode, useEffect, useMemo } from "react";
+import { Fragment, type ReactNode, useEffect, useMemo } from "react";
 import {
   CircleMarker,
   GeoJSON,
@@ -31,7 +31,7 @@ import {
 
 import { BASEMAPS, type Basemap } from "@/lib/mapPrefs";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
-import type { AircraftState } from "@/lib/useSimPlayback";
+import { aircraftAt, toSamples } from "@/lib/useSimPlayback";
 import type {
   AirwayCollection,
   FirCollection,
@@ -44,30 +44,48 @@ interface Props {
   /** Reference waypoint layer (all fixes), or null to hide. */
   waypoints: Waypoint[] | null;
   fir: FirCollection | null;
-  trajectory: TrajectoryResult | null;
-  aircraft: AircraftState | null;
+  /** One or more generated routes, all shown/animated together. */
+  trajectories: TrajectoryResult[];
+  /** Shared sim clock (seconds); each aircraft is interpolated at it. */
+  simT: number;
 }
+
+/** Per-route colours (cycled if there are more routes than entries). */
+const ROUTE_COLORS = [
+  "#22d3ee",
+  "#f472b6",
+  "#a3e635",
+  "#fbbf24",
+  "#c084fc",
+  "#fb7185",
+];
 
 const DEFAULT_CENTER: L.LatLngExpression = [11.0, 99.5];
 const DEFAULT_ZOOM = 6;
 
-/** Fit to the most relevant data: trajectory if any, otherwise airways. */
+/** Fit to the generated routes if any, otherwise the airway network. */
 function FitBounds({
   airways,
-  trajectory,
-}: Pick<Props, "airways" | "trajectory">) {
+  trajectories,
+}: Pick<Props, "airways" | "trajectories">) {
   const map = useMap();
+  const sig = trajectories
+    .map((t) => t.meta.flightKey)
+    .join("|");
   useEffect(() => {
     const b = L.latLngBounds([]);
-    if (trajectory && trajectory.points.length) {
-      trajectory.points.forEach((p) => b.extend([p.lat, p.lon]));
+    if (trajectories.length) {
+      trajectories.forEach((t) =>
+        t.points.forEach((p) => b.extend([p.lat, p.lon])),
+      );
     } else if (airways) {
       airways.features.forEach((f) =>
         f.geometry.coordinates.forEach(([lon, lat]) => b.extend([lat, lon])),
       );
     }
     if (b.isValid()) map.fitBounds(b, { padding: [40, 40] });
-  }, [map, airways, trajectory]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, airways, sig]);
   return null;
 }
 
@@ -145,7 +163,7 @@ function EndpointMarker({
     <HoverFix
       center={position}
       radius={7}
-      hitRadius={26}
+      hitRadius={20}
       pathOptions={{
         color: stroke,
         weight: 2,
@@ -172,15 +190,15 @@ export default function LeafletMap({
   airways,
   waypoints,
   fir,
-  trajectory,
-  aircraft,
+  trajectories,
+  simT,
 }: Props) {
   const tiles = BASEMAPS[basemap];
 
-  // Round heading so the icon isn't rebuilt every animation frame.
-  const icon = useMemo(
-    () => (aircraft ? planeIcon(Math.round(aircraft.track)) : null),
-    [aircraft],
+  // Elapsed-time sample table per trajectory (rebuilt only on new data).
+  const samplesByRoute = useMemo(
+    () => trajectories.map((t) => toSamples(t.points)),
+    [trajectories],
   );
 
   const firLayer = useMemo(
@@ -223,7 +241,7 @@ export default function LeafletMap({
           key={`wp-${w.ident}`}
           center={[w.lat, w.lon]}
           radius={2.5}
-          hitRadius={18}
+          hitRadius={13}
           pathOptions={{
             color: "#f59e0b",
             weight: 1,
@@ -239,66 +257,70 @@ export default function LeafletMap({
     [waypoints],
   );
 
-  const trajectoryLayer = useMemo(() => {
-    if (!trajectory || trajectory.points.length < 2) return null;
-    const pts = trajectory.points;
-    const line: L.LatLngExpression[] = pts.map((p) => [p.lat, p.lon]);
-    const { route, meta } = trajectory;
+  const trajectoryLayer = useMemo(
+    () =>
+      trajectories.map((trajectory, ti) => {
+        if (trajectory.points.length < 2) return null;
+        const pts = trajectory.points;
+        const line: L.LatLngExpression[] = pts.map((p) => [p.lat, p.lon]);
+        const { route, meta } = trajectory;
+        const color = ROUTE_COLORS[ti % ROUTE_COLORS.length];
+        const kp = meta.flightKey;
 
-    return (
-      <>
-        <Polyline
-          positions={line}
-          pathOptions={{ color: "#22d3ee", weight: 3, opacity: 0.95 }}
-        />
+        return (
+          <Fragment key={kp}>
+            <Polyline
+              positions={line}
+              pathOptions={{ color, weight: 3, opacity: 0.95 }}
+            />
 
-        {/* Intermediate fixes only; the first/last are the Start/End
-            markers below (avoids stacked overlapping markers). */}
-        {route.slice(1, -1).map((w) => (
-          <HoverFix
-            key={w.ident}
-            center={[w.lat, w.lon]}
-            radius={4}
-            hitRadius={22}
-            pathOptions={{
-              color: "#0f172a",
-              weight: 1,
-              fillColor: "#38bdf8",
-              fillOpacity: 1,
-            }}
-          >
-            <Tooltip direction="top" offset={[0, -7]} sticky>
-              {w.ident}
-            </Tooltip>
-            <Popup>
-              <strong>{w.ident}</strong>
-              <br />
-              {w.lat.toFixed(5)}, {w.lon.toFixed(5)}
-            </Popup>
-          </HoverFix>
-        ))}
+            {route.slice(1, -1).map((w) => (
+              <HoverFix
+                key={`${kp}-${w.ident}`}
+                center={[w.lat, w.lon]}
+                radius={4}
+                hitRadius={13}
+                pathOptions={{
+                  color: "#0f172a",
+                  weight: 1,
+                  fillColor: color,
+                  fillOpacity: 1,
+                }}
+              >
+                <Tooltip direction="top" offset={[0, -7]} sticky>
+                  {meta.callsign} · {w.ident}
+                </Tooltip>
+                <Popup>
+                  <strong>{w.ident}</strong>
+                  <br />
+                  {w.lat.toFixed(5)}, {w.lon.toFixed(5)}
+                </Popup>
+              </HoverFix>
+            ))}
 
-        <EndpointMarker
-          position={line[0]}
-          fill="#22c55e"
-          stroke="#052e16"
-          ident={route[0]?.ident ?? ""}
-          role="Start"
-          airport={meta.adep}
-          detail={meta.eobtIso}
-        />
-        <EndpointMarker
-          position={line[line.length - 1]}
-          fill="#ef4444"
-          stroke="#450a0a"
-          ident={route[route.length - 1]?.ident ?? ""}
-          role="End"
-          airport={meta.ades}
-          detail={pts[pts.length - 1].epoch_ts}
-        />
-      </>
-    );
-  }, [trajectory]);
+            <EndpointMarker
+              position={line[0]}
+              fill="#22c55e"
+              stroke="#052e16"
+              ident={route[0]?.ident ?? ""}
+              role="Start"
+              airport={meta.adep}
+              detail={`${meta.callsign} · ${meta.eobtIso}`}
+            />
+            <EndpointMarker
+              position={line[line.length - 1]}
+              fill="#ef4444"
+              stroke="#450a0a"
+              ident={route[route.length - 1]?.ident ?? ""}
+              role="End"
+              airport={meta.ades}
+              detail={`${meta.callsign} · ${pts[pts.length - 1].epoch_ts}`}
+            />
+          </Fragment>
+        );
+      }),
+    [trajectories],
+  );
 
   return (
     <MapContainer
@@ -315,19 +337,27 @@ export default function LeafletMap({
       {waypointLayer}
       {trajectoryLayer}
 
-      {trajectory && aircraft && icon && (
-        <Marker position={[aircraft.lat, aircraft.lon]} icon={icon}>
-          <Tooltip direction="top" offset={[0, -14]}>
-            {trajectory.meta.callsign} ·{" "}
-            {aircraft.altitudeFt != null
-              ? `${Math.round(aircraft.altitudeFt)} ft`
-              : "cruise"}{" "}
-            · {Math.round(aircraft.gsKt)} kt
-          </Tooltip>
-        </Marker>
-      )}
+      {trajectories.map((t, ti) => {
+        const ac = aircraftAt(samplesByRoute[ti] ?? [], simT);
+        if (!ac) return null;
+        return (
+          <Marker
+            key={`ac-${t.meta.flightKey}`}
+            position={[ac.lat, ac.lon]}
+            icon={planeIcon(Math.round(ac.track))}
+          >
+            <Tooltip direction="top" offset={[0, -14]}>
+              {t.meta.callsign} ·{" "}
+              {ac.altitudeFt != null
+                ? `${Math.round(ac.altitudeFt)} ft`
+                : "cruise"}{" "}
+              · {Math.round(ac.gsKt)} kt
+            </Tooltip>
+          </Marker>
+        );
+      })}
 
-      <FitBounds airways={airways} trajectory={trajectory} />
+      <FitBounds airways={airways} trajectories={trajectories} />
     </MapContainer>
   );
 }

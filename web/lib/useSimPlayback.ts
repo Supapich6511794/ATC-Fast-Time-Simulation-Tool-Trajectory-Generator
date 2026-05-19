@@ -53,22 +53,59 @@ export interface SimPlayback {
   seek: (t: number) => void;
 }
 
+/** Build the elapsed-seconds sample table for a trajectory. */
+export function toSamples(points: TrajectoryPoint[] | undefined): Sample[] {
+  if (!points || points.length === 0) return [];
+  const t0 = new Date(points[0].epoch_ts).getTime();
+  return points.map((p) => ({
+    lat: p.lat,
+    lon: p.lon,
+    track: p.track_deg,
+    altitudeFt: p.altitude_ft,
+    gsKt: p.gs_kt,
+    t: (new Date(p.epoch_ts).getTime() - t0) / 1000,
+  }));
+}
+
+/** Interpolate aircraft state at elapsed time `t` (pure; reusable per
+ *  trajectory for the multi-route animation). */
+export function aircraftAt(
+  samples: Sample[],
+  t: number,
+): AircraftState | null {
+  if (samples.length === 0) return null;
+  const total = samples[samples.length - 1].t;
+  if (t <= 0) return samples[0];
+  if (t >= total) return samples[samples.length - 1];
+
+  let lo = 0;
+  let hi = samples.length - 1;
+  while (lo + 1 < hi) {
+    const mid = (lo + hi) >> 1;
+    if (samples[mid].t <= t) lo = mid;
+    else hi = mid;
+  }
+  const a = samples[lo];
+  const b = samples[hi];
+  const span = b.t - a.t || 1;
+  const f = (t - a.t) / span;
+  return {
+    lat: a.lat + (b.lat - a.lat) * f,
+    lon: a.lon + (b.lon - a.lon) * f,
+    track: a.track,
+    altitudeFt:
+      a.altitudeFt != null && b.altitudeFt != null
+        ? a.altitudeFt + (b.altitudeFt - a.altitudeFt) * f
+        : a.altitudeFt,
+    gsKt: a.gsKt,
+  };
+}
+
 export function useSimPlayback(
   points: TrajectoryPoint[] | undefined,
 ): SimPlayback {
   // Build the elapsed-time sample table once per trajectory.
-  const samples = useMemo<Sample[]>(() => {
-    if (!points || points.length === 0) return [];
-    const t0 = new Date(points[0].epoch_ts).getTime();
-    return points.map((p) => ({
-      lat: p.lat,
-      lon: p.lon,
-      track: p.track_deg,
-      altitudeFt: p.altitude_ft,
-      gsKt: p.gs_kt,
-      t: (new Date(p.epoch_ts).getTime() - t0) / 1000,
-    }));
-  }, [points]);
+  const samples = useMemo<Sample[]>(() => toSamples(points), [points]);
 
   const total = samples.length ? samples[samples.length - 1].t : 0;
   const ready = samples.length > 1;
@@ -119,34 +156,10 @@ export function useSimPlayback(
   }, [playing, speed, total]);
 
   // Interpolate aircraft state at the current simT.
-  const aircraft = useMemo<AircraftState | null>(() => {
-    if (samples.length === 0) return null;
-    if (simT <= 0) return samples[0];
-    if (simT >= total) return samples[samples.length - 1];
-
-    // Binary search for the bracketing samples.
-    let lo = 0;
-    let hi = samples.length - 1;
-    while (lo + 1 < hi) {
-      const mid = (lo + hi) >> 1;
-      if (samples[mid].t <= simT) lo = mid;
-      else hi = mid;
-    }
-    const a = samples[lo];
-    const b = samples[hi];
-    const span = b.t - a.t || 1;
-    const f = (simT - a.t) / span;
-    return {
-      lat: a.lat + (b.lat - a.lat) * f,
-      lon: a.lon + (b.lon - a.lon) * f,
-      track: a.track,
-      altitudeFt:
-        a.altitudeFt != null && b.altitudeFt != null
-          ? a.altitudeFt + (b.altitudeFt - a.altitudeFt) * f
-          : a.altitudeFt,
-      gsKt: a.gsKt,
-    };
-  }, [samples, simT, total]);
+  const aircraft = useMemo<AircraftState | null>(
+    () => aircraftAt(samples, simT),
+    [samples, simT],
+  );
 
   const play = useCallback(() => {
     if (!ready) return;

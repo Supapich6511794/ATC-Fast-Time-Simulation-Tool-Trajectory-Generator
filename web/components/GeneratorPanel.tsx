@@ -30,8 +30,9 @@ type InputMode = "manual" | "file";
 type RouteMode = "fpl" | "build" | "csv";
 
 interface Props {
-  /** Emits the generated trajectory (or null to clear) to the parent. */
-  onResult: (result: TrajectoryResult | null) => void;
+  /** Emits the generated trajectories (or null to clear) to the parent.
+   *  An array so several routes can be flown/shown at once. */
+  onResult: (results: TrajectoryResult[] | null) => void;
   /** Selectable waypoint idents (from the airway file) for RouteBuilder. */
   waypointIdents: string[];
 }
@@ -69,6 +70,8 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
   const [rfl, setRfl] = useState(350);
   const [routeStr, setRouteStr] = useState("");
   const [builtWpts, setBuiltWpts] = useState<string[]>([]);
+  /** Extra Item-15 routes to fly together (capped at #possible routes). */
+  const [routes, setRoutes] = useState<string[]>([]);
 
   const [fileNote, setFileNote] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -123,6 +126,17 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
         : [],
     [pairReady, y8Fixes, dep, des],
   );
+
+  // The route the Item-15 box currently resolves to (typed or built).
+  const effectiveRoute =
+    routeMode === "build" ? builtRoute : routeStr.trim();
+  // Can't queue more routes than there are distinct possible ones.
+  const routeCap = Math.max(1, bestRoutes.length);
+  const addRoute = () => {
+    const r = effectiveRoute.trim();
+    if (!r || routes.includes(r) || routes.length >= routeCap) return;
+    setRoutes((xs) => [...xs, r]);
+  };
 
   // What the FPL route portion resolves to (for the live preview).
   const previewRoute =
@@ -210,25 +224,41 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
       if (routeMode === "build" && builtWpts.length < 2) {
         throw new Error("Add at least 2 waypoints to build a route.");
       }
-      if (routeMode === "fpl" && !routeStr.trim()) {
+      if (routeMode === "fpl" && !routeStr.trim() && routes.length === 0) {
         throw new Error("Enter an Item-15 route string.");
       }
 
-      const { result, warnings, downloads } = await generateTrajectory({
-        source: apiSource,
-        vtsp_to_vtbs: vtspToVtbs,
-        adep: dep,
-        ades: des,
-        route: apiRoute,
-        callsign,
-        eobt, // datetime-local; server treats as UTC
-        gs_kt: gsKt,
-        rfl,
-      });
-      setResult(result);
-      setDownloads(downloads);
-      setWarnings(warnings);
-      onResult(result);
+      // One trajectory per route. CSV mode is always a single route;
+      // otherwise fly the queued list, or the single box if none queued.
+      const list =
+        apiSource === "csv"
+          ? [""]
+          : routes.length > 0
+            ? routes
+            : [apiRoute];
+      const multi = list.length > 1;
+
+      const settled = await Promise.all(
+        list.map((r, i) =>
+          generateTrajectory({
+            source: apiSource,
+            vtsp_to_vtbs: vtspToVtbs,
+            adep: dep,
+            ades: des,
+            route: r,
+            // Distinct callsign so each flight's files/keys don't collide.
+            callsign: multi ? `${callsign || "FLT"}${i + 1}` : callsign,
+            eobt,
+            gs_kt: gsKt,
+            rfl,
+          }),
+        ),
+      );
+
+      setResult(settled[0].result);
+      setDownloads(settled[0].downloads);
+      setWarnings(settled.flatMap((s) => s.warnings));
+      onResult(settled.map((s) => s.result));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Generation failed.");
       setResult(null);
@@ -426,8 +456,7 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
                   <>
                     <div className="rt-routes">
                       <span>
-                        Best routes ({dep} → {des}) · Y8 — ranked by
-                        compliance (full airway first), not raw distance.
+                        Best routes ({dep} → {des}) · Y8 — ranked by compliance.
                       </span>
                       {bestRoutes.length === 0 && (
                         <em className="rt-more">computing…</em>
@@ -511,6 +540,44 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
                 (swap via the ADEP/ADES fields).
               </p>
             )}
+
+            {routeMode !== "csv" && (
+              <div className="rt-multi">
+                <button
+                  type="button"
+                  className="rt-add"
+                  onClick={addRoute}
+                  disabled={
+                    !effectiveRoute.trim() || routes.length >= routeCap
+                  }
+                  title={`Fly several routes together — max ${routeCap} (the number of possible routes)`}
+                >
+                  + Add route ({routes.length}/{routeCap})
+                </button>
+                {routes.length > 0 && (
+                  <ul className="rt-queue">
+                    {routes.map((r, i) => (
+                      <li key={`${r}-${i}`}>
+                        <span>
+                          {i + 1}. {r}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setRoutes((xs) =>
+                              xs.filter((_, k) => k !== i),
+                            )
+                          }
+                          title="Remove"
+                        >
+                          ✕
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="fpl-prev">
@@ -523,7 +590,11 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
             onClick={handleGenerate}
             disabled={busy}
           >
-            {busy ? "Running Python pipeline…" : "▶ Generate trajectory"}
+            {busy
+              ? "Running Python pipeline…"
+              : routes.length > 1
+                ? `▶ Generate ${routes.length} routes`
+                : "▶ Generate trajectory"}
           </button>
         </>
       )}

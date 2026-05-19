@@ -907,6 +907,69 @@ body {
   line-height: 1.5;
 }
 
+/* Multi-route queue ("Add route" — fly several routes together). */
+.rt-multi {
+  margin-top: 10px;
+}
+
+.rt-add {
+  padding: 5px 10px;
+  background: #0f172a;
+  color: var(--accent);
+  border: 1px dashed var(--accent);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.rt-add:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.rt-queue {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rt-queue li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text);
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+
+.rt-queue li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rt-queue li button {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: #f87171;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.app.theme-light .rt-add,
+.app.theme-light .rt-queue li {
+  background: #fff;
+}
+
 .rt-routes,
 .rt-fixes {
   display: flex;

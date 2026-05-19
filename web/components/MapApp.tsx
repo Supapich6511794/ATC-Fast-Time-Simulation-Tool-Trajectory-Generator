@@ -30,7 +30,7 @@ const LeafletMap = dynamic(() => import("@/components/LeafletMap"), {
 export default function MapApp() {
   const [airways, setAirways] = useState<AirwayCollection | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [trajectory, setTrajectory] = useState<TrajectoryResult | null>(null);
+  const [trajectories, setTrajectories] = useState<TrajectoryResult[]>([]);
 
   // UI prefs.
   const [theme, setTheme] = useState<Theme>("dark");
@@ -50,8 +50,18 @@ export default function MapApp() {
   // (VTPStoVTBS.csv / airway Y8), not every fix in the airway file.
   const [routeIdents, setRouteIdents] = useState<string[]>([]);
 
-  // Aircraft animation.
-  const sim = useSimPlayback(trajectory?.points);
+  // Aircraft animation. The shared clock runs over the longest of the
+  // generated routes so every flight finishes within the timeline.
+  const longest = useMemo(
+    () =>
+      trajectories.reduce<TrajectoryResult | null>(
+        (best, t) =>
+          !best || t.points.length > best.points.length ? t : best,
+        null,
+      ),
+    [trajectories],
+  );
+  const sim = useSimPlayback(longest?.points);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,7 +114,7 @@ export default function MapApp() {
       <aside className={`sidebar${sidebarOpen ? " open" : ""}`}>
         <h1>Flight Trajectory Generator</h1>
         <GeneratorPanel
-          onResult={setTrajectory}
+          onResult={(rs) => setTrajectories(rs ?? [])}
           waypointIdents={routeIdents}
         />
       </aside>
@@ -141,8 +151,8 @@ export default function MapApp() {
               airways={showAirways ? airways : null}
               waypoints={showWaypoints ? waypoints : null}
               fir={firOn ? fir : null}
-              trajectory={trajectory}
-              aircraft={sim.aircraft}
+              trajectories={trajectories}
+              simT={sim.simT}
             />
             <SimControls sim={sim} />
           </>
