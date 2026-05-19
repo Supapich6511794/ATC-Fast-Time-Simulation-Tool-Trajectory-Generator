@@ -377,7 +377,8 @@ body {
 /* Map overlay + sim bar borders read better with a solid light border. */
 .app.theme-light .ov-chip,
 .app.theme-light .ov-select,
-.app.theme-light .sim-speed {
+.app.theme-light .sim-speed-trigger,
+.app.theme-light .sim-speed-pop {
   border-color: #cbd5e1;
 }
 
@@ -563,26 +564,71 @@ body {
   cursor: pointer;
 }
 
-.sim-speeds {
-  display: flex;
-  gap: 4px;
+/* Speed picker — a drop-up menu (bar is pinned to the screen bottom). */
+.sim-speed-menu {
+  position: relative;
 }
 
-.sim-speed {
+.sim-speed-trigger {
   border: 1px solid #33415544;
   background: var(--bg);
-  color: var(--muted);
+  color: var(--text);
   border-radius: 6px;
-  padding: 5px 7px;
-  font-size: 11px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  min-width: 58px;
+}
+
+.sim-speed-trigger .caret {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.sim-speed-pop {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid #33415544;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 1500;
+  min-width: 120px;
+}
+
+.sim-speed-pop li {
+  margin: 0;
+}
+
+.sim-speed-pop button {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  padding: 7px 10px;
+  font-size: 12px;
+  border-radius: 5px;
   cursor: pointer;
 }
 
-.sim-speed.active {
+.sim-speed-pop button:hover {
+  background: #33415544;
+}
+
+.sim-speed-pop button.active {
   background: var(--accent);
   color: #06283d;
-  border-color: var(--accent);
   font-weight: 700;
+}
+
+.app.theme-light .sim-speed-pop button:hover {
+  background: #e2e8f0;
 }
 
 /* ============================================================= *
@@ -801,10 +847,6 @@ body {
     font-size: 11px;
   }
 
-  .sim-speeds {
-    flex-wrap: wrap;
-    justify-content: center;
-  }
 }
 
 /* ---- Generator: mode tabs + file upload + FPL preview ---- */

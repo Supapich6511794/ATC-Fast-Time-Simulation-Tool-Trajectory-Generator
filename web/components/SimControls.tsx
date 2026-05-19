@@ -8,12 +8,77 @@
  * Hidden until a trajectory has been generated.
  */
 
-import { SIM_SPEEDS, type SimPlayback } from "@/lib/useSimPlayback";
+import { useEffect, useRef, useState } from "react";
+
+import {
+  SIM_SPEEDS,
+  type SimPlayback,
+  type SimSpeed,
+} from "@/lib/useSimPlayback";
 
 function mmss(sec: number): string {
   const s = Math.max(0, Math.round(sec));
   const m = Math.floor(s / 60);
   return `${String(m).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/** Speed picker as a drop-up menu (the bar sits at the screen bottom). */
+function SpeedMenu({
+  speed,
+  setSpeed,
+}: {
+  speed: SimSpeed;
+  setSpeed: (s: SimSpeed) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  return (
+    <div className="sim-speed-menu" ref={ref}>
+      <button
+        className="sim-speed-trigger"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title="Playback speed"
+      >
+        x{speed} <span className="caret">{open ? "▾" : "▴"}</span>
+      </button>
+      {open && (
+        <ul className="sim-speed-pop" role="listbox">
+          {[...SIM_SPEEDS]
+            .slice()
+            .reverse()
+            .map((s) => (
+              <li key={s} role="option" aria-selected={s === speed}>
+                <button
+                  className={s === speed ? "active" : undefined}
+                  onClick={() => {
+                    setSpeed(s);
+                    setOpen(false);
+                  }}
+                  title={s === 1 ? "Real time" : `${s}× faster`}
+                >
+                  x{s}
+                  {s === 1 ? "  (real time)" : ""}
+                </button>
+              </li>
+            ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 export default function SimControls({ sim }: { sim: SimPlayback }) {
@@ -53,18 +118,7 @@ export default function SimControls({ sim }: { sim: SimPlayback }) {
 
       <span className="sim-time">{mmss(sim.total)}</span>
 
-      <div className="sim-speeds">
-        {SIM_SPEEDS.map((s) => (
-          <button
-            key={s}
-            className={`sim-speed${s === sim.speed ? " active" : ""}`}
-            onClick={() => sim.setSpeed(s)}
-            title={s === 1 ? "Real time" : `${s}× faster`}
-          >
-            x{s}
-          </button>
-        ))}
-      </div>
+      <SpeedMenu speed={sim.speed} setSpeed={sim.setSpeed} />
     </div>
   );
 }
