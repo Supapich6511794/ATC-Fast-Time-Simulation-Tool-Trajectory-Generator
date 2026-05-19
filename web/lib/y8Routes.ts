@@ -90,7 +90,7 @@ function haversineNm(a: Y8Fix, b: Y8Fix): number {
 
 /** Penalty (NM-equivalent) added per skipped fix, biasing toward
  *  airway-compliant routes over aggressive DCT shortcuts. */
-const SKIP_PENALTY_NM = 6;
+const SKIP_PENALTY_NM = 15;
 
 /** Approx airport reference coords, so "best" = shortest *total*
  *  ADEP→…→ADES distance (incl. the airport-to-fix legs), not just the
@@ -158,49 +158,55 @@ export function kBestY8Routes(
     ? ({ ident: B, ...AIRPORT_LL[B] } as Y8Fix)
     : fixes[n - 1];
 
+  // Entry/exit are the airway fixes nearest ADEP/ADES — the route always
+  // joins Y8 near the departure field and leaves it near the arrival
+  // field (no chopping the airway with long airport DCTs). For VTBS↔VTSP
+  // that is BKK…PUT, so the full airway renders "BKK Y8 PUT".
+  const nearest = (p: Y8Fix) => {
+    let bi = 0;
+    let bd = Infinity;
+    for (let i = 0; i < n; i++) {
+      const d = haversineNm(p, fixes[i]);
+      if (d < bd) {
+        bd = d;
+        bi = i;
+      }
+    }
+    return bi;
+  };
+  const lo = Math.min(nearest(adepLL), nearest(adesLL));
+  const hi = Math.max(nearest(adepLL), nearest(adesLL));
+  if (hi - lo < 1) return [];
+
+  const legIn = haversineNm(adepLL, fixes[lo]);
+  const legOut = haversineNm(fixes[hi], adesLL);
+
   type Cand = { cost: number; distanceNm: number; path: number[] };
   const found: Cand[] = [];
 
-  // Every (entry, exit) pair on the airway is a candidate start/end; an
-  // entry/exit that isn't the airway end becomes a DCT join in toItem15.
-  for (let s = 0; s < n - 1; s++) {
-    for (let e = s + 1; e < n; e++) {
-      // Temporarily treat s..e as the sub-airway.
-      const sub = fixes.slice(s, e + 1);
-      const subFound: Cand[] = [];
-      const dfsSub = (path: number[], d: number, c: number) => {
-        const last = path[path.length - 1];
-        if (last === sub.length - 1) {
-          subFound.push({ cost: c, distanceNm: d, path: [...path] });
-          return;
-        }
-        if (path.length - 1 >= maxHops) return;
-        for (
-          let j = last + 1;
-          j <= Math.min(sub.length - 1, last + 1 + maxSkip);
-          j++
-        ) {
-          const skipped = j - last - 1;
-          const leg = haversineNm(sub[last], sub[j]);
-          path.push(j);
-          dfsSub(path, d + leg, c + leg + skipped * SKIP_PENALTY_NM);
-          path.pop();
-        }
-      };
-      dfsSub([0], 0, 0);
-      // Airport-to-fix legs make the score the true ADEP→ADES distance.
-      const legIn = haversineNm(adepLL, fixes[s]);
-      const legOut = haversineNm(fixes[e], adesLL);
-      for (const f of subFound) {
-        const abs = f.path.map((p) => p + s);
-        found.push({
-          cost: legIn + f.cost + legOut,
-          distanceNm: legIn + f.distanceNm + legOut,
-          path: abs,
-        });
-      }
+  // Constrained DFS lo→hi: single direction, ≤maxSkip DCT skips per leg,
+  // acyclic by construction, ≤maxHops legs. Cost = true ADEP→ADES NM +
+  // a per-skip compliance penalty so the full airway ranks first.
+  const dfs = (path: number[], d: number, c: number) => {
+    const last = path[path.length - 1];
+    if (last === hi) {
+      found.push({
+        cost: legIn + c + legOut,
+        distanceNm: legIn + d + legOut,
+        path: [...path],
+      });
+      return;
     }
-  }
+    if (path.length - 1 >= maxHops) return;
+    for (let j = last + 1; j <= Math.min(hi, last + 1 + maxSkip); j++) {
+      const skipped = j - last - 1;
+      const leg = haversineNm(fixes[last], fixes[j]);
+      path.push(j);
+      dfs(path, d + leg, c + leg + skipped * SKIP_PENALTY_NM);
+      path.pop();
+    }
+  };
+  dfs([lo], 0, 0);
 
   // Rank, dedupe by rendered string, take K.
   found.sort((a, b) => a.cost - b.cost);
