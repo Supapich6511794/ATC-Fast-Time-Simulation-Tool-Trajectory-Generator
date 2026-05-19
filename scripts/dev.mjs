@@ -22,7 +22,11 @@ const repo = dirname(scriptsDir);
 const web = join(repo, "web");
 
 function run(cmd, args, cwd) {
-  const r = spawnSync(cmd, args, { cwd, stdio: "inherit", shell: true });
+  // shell:true is needed so Windows resolves `npm`/`powershell`, but the
+  // shell then splits args on spaces — so any arg with a space (e.g. the
+  // repo path "Flight Trajectory Generator") must be quoted ourselves.
+  const quoted = args.map((a) => (/\s/.test(a) ? `"${a}"` : a));
+  const r = spawnSync(cmd, quoted, { cwd, stdio: "inherit", shell: true });
   if (r.status !== 0) {
     console.error(`\n[dev] step failed: ${cmd} ${args.join(" ")}`);
     process.exit(r.status ?? 1);

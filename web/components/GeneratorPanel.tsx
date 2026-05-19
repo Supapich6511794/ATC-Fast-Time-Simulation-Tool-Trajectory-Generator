@@ -30,7 +30,7 @@ interface Props {
 export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
   const [source, setSource] = useState<RouteSource>("csv");
   const [vtspToVtbs, setVtspToVtbs] = useState(true);
-  const [routeStr, setRouteStr] = useState("DCT MOTNA DCT SABIS DCT VANKO ");
+  const [routeStr, setRouteStr] = useState("");
   const [builtWpts, setBuiltWpts] = useState<string[]>([]);
   const [callsign, setCallsign] = useState("THA205");
   const [eobt, setEobt] = useState("2026-01-03T08:15");
