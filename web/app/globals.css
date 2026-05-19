@@ -2,7 +2,7 @@
 @import "leaflet/dist/leaflet.css";
 
 :root {
-  --sidebar-w: 300px;
+  --sidebar-w: 330px;
   --bg: #0f172a;
   --panel: #1e293b;
   --text: #e2e8f0;
@@ -957,12 +957,16 @@ body {
   width: 100%;
 }
 
+/* Always two equal columns (never collapse to a single stacked column,
+   even in the fixed 300px desktop sidebar). min-width:0 lets the inputs
+   shrink instead of forcing a wrap. */
 .gen .field-row {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .gen .field-row .field {
-  flex: 1 1 120px;
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 /* Polished tabs + dropzone. */
