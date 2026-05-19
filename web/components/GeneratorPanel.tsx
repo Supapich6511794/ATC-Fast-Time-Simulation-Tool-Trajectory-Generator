@@ -52,6 +52,9 @@ const AIRPORTS: ComboOption[] = [
   { code: "VTUD", label: "Udon Thani" },
 ];
 
+/** Phase 1 scope: the only corridor with route data. */
+const SUPPORTED_PAIR = ["VTBS", "VTSP"];
+
 export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
   const [mode, setMode] = useState<InputMode>("manual");
   const [routeMode, setRouteMode] = useState<RouteMode>("fpl");
@@ -92,6 +95,17 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
     () => waypointIdents.join(" "),
     [waypointIdents],
   );
+
+  // Route/fix suggestions only make sense once a valid city pair is
+  // entered — they're specific to the VTBS<->VTSP corridor.
+  const dep = adep.trim().toUpperCase();
+  const des = ades.trim().toUpperCase();
+  const pairReady =
+    !!dep &&
+    !!des &&
+    dep !== des &&
+    SUPPORTED_PAIR.includes(dep) &&
+    SUPPORTED_PAIR.includes(des);
 
   // What the FPL route portion resolves to (for the live preview).
   const previewRoute =
@@ -161,7 +175,7 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
       const bad = [dep, des].filter((a) => !SUPPORTED.includes(a));
       if (bad.length) {
         throw new Error(
-          `Phase 1 supports only VTBS ↔ VTSP. Unsupported: ${bad.join(", ")}.`,
+          `Now supports only VTBS ↔ VTSP. Unsupported: ${bad.join(", ")}.`,
         );
       }
 
@@ -381,29 +395,25 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
                   placeholder="BKK Y8 PUT   or   DCT VANKO DCT PUT"
                 />
 
-                {waypointIdents.length > 0 && (
+                {!pairReady && (
+                  <p className="rt-hint">
+                    Enter ADEP and ADES (VTBS / VTSP) above to see the
+                    possible route and the allowed fixes for that pair.
+                  </p>
+                )}
+
+                {pairReady && waypointIdents.length > 0 && (
                   <>
                     <div className="rt-routes">
-                      <span>Possible routes (VTBS ↔ VTSP):</span>
+                      <span>
+                        Possible route ({dep} → {des}):
+                      </span>
                       <button
                         type="button"
-                        onClick={() => {
-                          setAdep("VTBS");
-                          setAdes("VTSP");
-                          setRouteStr(possibleRoute);
-                        }}
+                        onClick={() => setRouteStr(possibleRoute)}
+                        title={possibleRoute}
                       >
-                        VTBS → VTSP
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAdep("VTSP");
-                          setAdes("VTBS");
-                          setRouteStr(possibleRoute);
-                        }}
-                      >
-                        VTSP → VTBS
+                        Apply {dep} → {des} route
                       </button>
                     </div>
 

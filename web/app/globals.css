@@ -900,6 +900,13 @@ body {
   color: var(--accent);
 }
 
+.rt-hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 .rt-routes,
 .rt-fixes {
   display: flex;
