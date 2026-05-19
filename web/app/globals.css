@@ -1036,3 +1036,91 @@ body {
 .rb-suggest button.active .combo-label {
   color: #06283d;
 }
+
+/* ---- Solid "block" fields (match the input mockup) ----
+   Each field is an opaque card: small uppercase label on top, a large
+   borderless value, a muted hint below. Inputs/selects/combobox inside
+   are chromeless so the whole card reads as one control. */
+.gen .field {
+  background: #182236;
+  border: 1px solid #2a3650;
+  border-radius: 10px;
+  padding: 10px 12px;
+  gap: 3px;
+  margin-bottom: 10px;
+}
+
+.gen .field:focus-within {
+  border-color: var(--accent);
+}
+
+.gen .field > span {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+
+.gen .field input,
+.gen .field select,
+.gen .field .rb-search input {
+  background: transparent;
+  border: none;
+  padding: 2px 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+  color-scheme: dark;
+}
+
+.app.theme-light .gen .field input,
+.app.theme-light .gen .field select {
+  color-scheme: light;
+}
+
+.gen .field input:focus,
+.gen .field select:focus,
+.gen .field .rb-search input:focus {
+  outline: none;
+}
+
+/* The suggestion dropdown is a real floating panel, not chromeless. */
+.gen .field .rb-suggest {
+  background: var(--panel);
+  border: 1px solid #2a3650;
+}
+
+.gen .field .rb-suggest button {
+  font-size: 13px;
+}
+
+.gen .field .hint {
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0.85;
+}
+
+/* Route card holds the sub-toggle/builder — keep those controls boxed. */
+.gen .field .rt-modes button,
+.gen .field .chip {
+  background: #0f172a;
+}
+
+/* Light theme: solid light card with dark value text. */
+.app.theme-light .gen .field {
+  background: #ffffff;
+  border-color: #dbe3ee;
+}
+
+.app.theme-light .gen .field input,
+.app.theme-light .gen .field select,
+.app.theme-light .gen .field .rb-search input {
+  background: transparent;
+  color: #0f172a;
+}
+
+.app.theme-light .gen .field .rt-modes button,
+.app.theme-light .gen .field .chip {
+  background: #f1f5f9;
+}
