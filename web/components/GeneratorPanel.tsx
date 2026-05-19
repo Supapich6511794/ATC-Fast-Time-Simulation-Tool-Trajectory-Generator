@@ -397,9 +397,11 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
 
                 {!pairReady && (
                   <p className="rt-hint">
-                    {dep && des
-                      ? `No information for ${dep} to ${des} — Phase 1 has route data for VTBS ↔ VTSP only.`
-                      : "Enter ADEP and ADES above to see the possible route and the allowed fixes for that pair."}
+                    {!dep || !des
+                      ? "Enter ADEP and ADES above to see the possible route and the allowed fixes for that pair."
+                      : dep === des
+                        ? "ADEP and ADES cannot be the same."
+                        : `No information for ${dep} to ${des} — Route data for VTBS ↔ VTSP only.`}
                   </p>
                 )}
 
