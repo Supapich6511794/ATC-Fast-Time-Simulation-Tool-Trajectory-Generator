@@ -84,6 +84,7 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
     {
       callsign: string;
       flightKey: string;
+      route: string;
       gpkg: string;
       csv: string;
       geojson: string;
@@ -263,9 +264,13 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
 
       setResult(settled[0].result);
       setDlList(
-        settled.map((s) => ({
+        settled.map((s, i) => ({
           callsign: s.result.meta.callsign,
           flightKey: s.result.meta.flightKey,
+          route:
+            apiSource === "csv"
+              ? `Airway CSV · ${dep}→${des}`
+              : list[i] || "(route)",
           gpkg: s.downloads.gpkg,
           csv: s.downloads.csv,
           geojson: s.downloads.geojson,
@@ -652,6 +657,9 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
           {dlList.map((d) => (
             <div className="gen-dl-route" key={d.flightKey}>
               <p className="gen-key">{d.flightKey}</p>
+              <p className="gen-dl-rt" title={d.route}>
+                ↳ {d.route}
+              </p>
               <div className="gen-downloads">
                 <a className="dl-btn" href={d.gpkg}>
                   ⬇ GeoPackage

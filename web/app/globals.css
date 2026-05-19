@@ -200,6 +200,14 @@ body {
   word-break: break-all;
 }
 
+.gen-dl-rt {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--text);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  word-break: break-word;
+}
+
 .gen-dl-route + .gen-dl-route {
   margin-top: 10px;
   border-top: 1px dashed #334155;
