@@ -78,11 +78,17 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [result, setResult] = useState<TrajectoryResult | null>(null);
-  const [downloads, setDownloads] = useState<{
-    gpkg: string;
-    csv: string;
-    geojson: string;
-  } | null>(null);
+  // One download bundle per generated route (multi-route exports each
+  // flight as its own gpkg/csv/geojson — keyed by callsign).
+  const [dlList, setDlList] = useState<
+    {
+      callsign: string;
+      flightKey: string;
+      gpkg: string;
+      csv: string;
+      geojson: string;
+    }[]
+  >([]);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -256,13 +262,21 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
       );
 
       setResult(settled[0].result);
-      setDownloads(settled[0].downloads);
+      setDlList(
+        settled.map((s) => ({
+          callsign: s.result.meta.callsign,
+          flightKey: s.result.meta.flightKey,
+          gpkg: s.downloads.gpkg,
+          csv: s.downloads.csv,
+          geojson: s.downloads.geojson,
+        })),
+      );
       setWarnings(settled.flatMap((s) => s.warnings));
       onResult(settled.map((s) => s.result));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Generation failed.");
       setResult(null);
-      setDownloads(null);
+      setDlList([]);
       onResult(null);
     } finally {
       setBusy(false);
@@ -533,11 +547,11 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
             {routeMode === "csv" && (
               <p className="rt-csv-note">
                 Uses the pre-resolved route from{" "}
-                <code>VTPStoVTBS.csv</code> in the direction{" "}
+                <code>csv Y8 </code> in the direction{" "}
                 <strong>
                   {adep || "?"} → {ades || "?"}
                 </strong>{" "}
-                (swap via the ADEP/ADES fields).
+                 .
               </p>
             )}
 
@@ -609,12 +623,16 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
         </ul>
       )}
 
-      {result && downloads && (
+      {result && dlList.length > 0 && (
         <div className="gen-result">
           <dl>
             <div>
-              <dt>Waypoints</dt>
-              <dd>{result.stats.waypointCount}</dd>
+              <dt>{dlList.length > 1 ? "Routes" : "Waypoints"}</dt>
+              <dd>
+                {dlList.length > 1
+                  ? dlList.length
+                  : result.stats.waypointCount}
+              </dd>
             </div>
             <div>
               <dt>Points</dt>
@@ -629,19 +647,24 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
               <dd>{result.stats.timeMinutes} min</dd>
             </div>
           </dl>
-          <p className="gen-key">{result.meta.flightKey}</p>
 
-          <div className="gen-downloads">
-            <a className="dl-btn" href={downloads.gpkg}>
-              ⬇ GeoPackage
-            </a>
-            <a className="dl-btn" href={downloads.csv}>
-              ⬇ CSV
-            </a>
-            <a className="dl-btn" href={downloads.geojson}>
-              ⬇ GeoJSON
-            </a>
-          </div>
+          {/* One export set per generated flight. */}
+          {dlList.map((d) => (
+            <div className="gen-dl-route" key={d.flightKey}>
+              <p className="gen-key">{d.flightKey}</p>
+              <div className="gen-downloads">
+                <a className="dl-btn" href={d.gpkg}>
+                  ⬇ GeoPackage
+                </a>
+                <a className="dl-btn" href={d.csv}>
+                  ⬇ CSV
+                </a>
+                <a className="dl-btn" href={d.geojson}>
+                  ⬇ GeoJSON
+                </a>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </section>
