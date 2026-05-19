@@ -1047,3 +1047,30 @@ body {
   input[type="datetime-local"]::-webkit-calendar-picker-indicator {
   filter: none;
 }
+
+/* Compact the generator form so it isn't excessively tall (esp. once
+   the RouteBuilder is open under "Pick waypoints"). */
+.gen .field {
+  margin-bottom: 8px;
+  gap: 3px;
+}
+
+.gen .field .hint {
+  margin-top: 0;
+  line-height: 1.2;
+}
+
+.gen .field-row {
+  gap: 8px;
+}
+
+.gen h2 {
+  margin: 2px 0 10px;
+}
+
+/* Selected waypoints scroll inside their own box instead of stretching
+   the whole sidebar when the route has many fixes. */
+.rb-list {
+  max-height: 168px;
+  overflow-y: auto;
+}
