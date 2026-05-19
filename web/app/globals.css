@@ -1026,3 +1026,13 @@ body {
 .field > span {
   letter-spacing: 0.04em;
 }
+
+/* Airport name shown next to the ICAO code in the ADEP/ADES dropdown. */
+.combo-label {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.rb-suggest button.active .combo-label {
+  color: #06283d;
+}

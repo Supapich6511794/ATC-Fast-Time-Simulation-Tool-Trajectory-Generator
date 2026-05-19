@@ -18,6 +18,7 @@
 
 import { useMemo, useRef, useState } from "react";
 
+import IdentCombobox, { type ComboOption } from "@/components/IdentCombobox";
 import RouteBuilder from "@/components/RouteBuilder";
 import { generateTrajectory } from "@/lib/api";
 import { parseFlightFile, type FlightRecord } from "@/lib/flightFile";
@@ -42,6 +43,16 @@ const AIRCRAFT = [
 ] as const;
 
 const QUICK_ROUTES = ["BKK Y8 PUT", "DCT VANKO PUT", "MOTNA Y8 SAVSA"];
+
+/** Suggested ICAO airports (free typing of any code is still allowed). */
+const AIRPORTS: ComboOption[] = [
+  { code: "VTBS", label: "Suvarnabhumi · Bangkok" },
+  { code: "VTSP", label: "Phuket" },
+  { code: "VTBD", label: "Don Mueang · Bangkok" },
+  { code: "VTCC", label: "Chiang Mai" },
+  { code: "VTSS", label: "Hat Yai" },
+  { code: "VTUD", label: "Udon Thani" },
+];
 
 export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
   const [mode, setMode] = useState<InputMode>("manual");
@@ -257,19 +268,21 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
           <div className="field-row">
             <label className="field">
               <span>ADEP</span>
-              <input
-                type="text"
+              <IdentCombobox
                 value={adep}
-                onChange={(e) => setAdep(e.target.value.toUpperCase())}
+                onChange={setAdep}
+                options={AIRPORTS}
+                placeholder="VTBS"
               />
               <em className="hint">departure ICAO</em>
             </label>
             <label className="field">
               <span>ADES</span>
-              <input
-                type="text"
+              <IdentCombobox
                 value={ades}
-                onChange={(e) => setAdes(e.target.value.toUpperCase())}
+                onChange={setAdes}
+                options={AIRPORTS}
+                placeholder="VTSP"
               />
               <em className="hint">destination ICAO</em>
             </label>
