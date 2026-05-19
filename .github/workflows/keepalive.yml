@@ -1,0 +1,28 @@
+# Keep the Render free-tier API awake.
+#
+# Render spins a free service down after ~15 min with no traffic; the next
+# request then pays a ~30-60 s cold start. This workflow pings the health
+# endpoint every ~10 min so the service never reaches the idle threshold.
+#
+# Note: GitHub disables scheduled workflows if the repo has had no activity
+# for 60 days — fine for an actively developed project. Adjust API_URL if
+# the Render service URL changes.
+
+name: keepalive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *" # every 10 minutes (UTC)
+  workflow_dispatch: {} # allow manual run from the Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping API health
+        env:
+          API_URL: https://trajectory-api-zf51.onrender.com/api/health
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 "$API_URL")
+          echo "health -> HTTP $code"
+          test "$code" = "200"
