@@ -40,11 +40,38 @@ body {
   border-right: 1px solid #334155;
 }
 
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .sidebar h1 {
   font-size: 18px;
   margin: 0 0 4px;
   color: var(--text);
   font-weight: 800;
+}
+
+/* ✕ in the sidebar header — desktop hides it; mobile shows it so the
+   user can collapse the drawer to see the map underneath. */
+.sidebar-close {
+  display: none;
+  background: var(--bg);
+  border: 1px solid #334155;
+  color: var(--text);
+  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  font-size: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.sidebar-close:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* Stronger contrast for the title in light mode. */
@@ -192,12 +219,38 @@ body {
   color: var(--text);
 }
 
+.gen-dl-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 4px;
+}
+
 .gen-key {
   font-family: ui-monospace, "SFMono-Regular", monospace;
   font-size: 11px;
   color: var(--accent);
-  margin: 0 0 12px;
+  margin: 0;
+  flex: 1;
   word-break: break-all;
+}
+
+.gen-dl-close {
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid transparent;
+  color: #f87171;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 6px;
+  border-radius: 4px;
+  line-height: 1.4;
+}
+
+.gen-dl-close:hover {
+  border-color: #f87171;
+  background: rgba(248, 113, 113, 0.08);
 }
 
 .gen-dl-rt {
@@ -312,6 +365,30 @@ body {
 
 .leaflet-tooltip.wpt-tooltip::before {
   display: none; /* hide the little pointer arrow */
+}
+
+/* Live route preview — faint, accent-coloured ident labels shown while
+   the user is still typing/picking, not on the generated trajectory. */
+.leaflet-tooltip.preview-label {
+  background: rgba(15, 23, 42, 0.65);
+  color: var(--accent);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  box-shadow: none;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 1px 5px;
+  letter-spacing: 0.02em;
+}
+
+.leaflet-tooltip.preview-label::before {
+  display: none;
+}
+
+.app.theme-light .leaflet-tooltip.preview-label {
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--accent);
+  border-color: rgba(2, 132, 199, 0.45);
 }
 
 /* ============================================================= *
@@ -821,6 +898,12 @@ body {
 
   .ov-hamburger {
     display: block;
+  }
+
+  .sidebar-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .sim {

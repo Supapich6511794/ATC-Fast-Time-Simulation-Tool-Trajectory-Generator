@@ -92,14 +92,6 @@ function haversineNm(a: Y8Fix, b: Y8Fix): number {
  *  airway-compliant routes over aggressive DCT shortcuts. */
 const SKIP_PENALTY_NM = 15;
 
-/** Approx airport reference coords, so "best" = shortest *total*
- *  ADEP→…→ADES distance (incl. the airport-to-fix legs), not just the
- *  shortest fix-to-fix stretch along the airway. */
-const AIRPORT_LL: Record<string, { lat: number; lon: number }> = {
-  VTBS: { lat: 13.6811, lon: 100.7475 },
-  VTSP: { lat: 8.1132, lon: 98.3169 },
-};
-
 interface Opts {
   /** Max fixes that may be skipped in one DCT leg. */
   maxSkip?: number;
@@ -137,26 +129,26 @@ function toItem15(path: number[], fixes: Y8Fix[], n: number): string {
 export function kBestY8Routes(
   fixesInOrder: Y8Fix[],
   adep: string,
-  ades: string,
+  // ades kept in the signature for symmetry / future use (e.g. routing
+  // across multiple airways) but the direction is fully determined by
+  // ADEP for the single-airway VTBS↔VTSP corridor.
+  _ades: string,
   opts: Opts = {},
 ): RouteOption[] {
   const { maxSkip = 2, maxHops = 12, k = 8 } = opts;
   if (fixesInOrder.length < 2) return [];
 
   const A = adep.trim().toUpperCase();
-  const B = ades.trim().toUpperCase();
   // Orient the airway so index 0 is the ADEP-side fix.
   const fixes = A === "VTSP" ? [...fixesInOrder].reverse() : fixesInOrder;
   const n = fixes.length;
 
-  // Airport endpoints — the route's true start/end. Fall back to the
-  // airway termini if an airport's coords are unknown.
-  const adepLL = AIRPORT_LL[A]
-    ? ({ ident: A, ...AIRPORT_LL[A] } as Y8Fix)
-    : fixes[0];
-  const adesLL = AIRPORT_LL[B]
-    ? ({ ident: B, ...AIRPORT_LL[B] } as Y8Fix)
-    : fixes[n - 1];
+  // Airport endpoints follow Y8: ADEP is taken to be at the ADEP-side
+  // airway terminus (BKK for VTBS, PUT for VTSP) and ADES at the other,
+  // so the route is measured along Y8 only and the airport reads as
+  // identical to its airway entry/exit fix.
+  const adepLL = fixes[0];
+  const adesLL = fixes[n - 1];
 
   // Entry/exit are the airway fixes nearest ADEP/ADES — the route always
   // joins Y8 near the departure field and leaves it near the arrival

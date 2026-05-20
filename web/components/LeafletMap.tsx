@@ -30,6 +30,7 @@ import {
 } from "react-leaflet";
 
 import { BASEMAPS, type Basemap } from "@/lib/mapPrefs";
+import type { PreviewPoint } from "@/lib/routePreview";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
 import { aircraftAt, toSamples } from "@/lib/useSimPlayback";
 import type {
@@ -46,6 +47,12 @@ interface Props {
   fir: FirCollection | null;
   /** One or more generated routes, all shown/animated together. */
   trajectories: TrajectoryResult[];
+  /** Live (pre-Generate) route previews from the GeneratorPanel — one
+   *  entry per route the user has typed/picked/queued. Each is drawn as
+   *  a faint dashed line in a distinct colour, with permanent ident
+   *  labels so the user can see what they're about to fly while still
+   *  editing. */
+  previewRoutes?: PreviewPoint[][];
   /** Shared sim clock (seconds); each aircraft is interpolated at it. */
   simT: number;
 }
@@ -53,6 +60,18 @@ interface Props {
 /** Per-route colours (cycled if there are more routes than entries). */
 const ROUTE_COLORS = [
   "#22d3ee",
+  "#f472b6",
+  "#a3e635",
+  "#fbbf24",
+  "#c084fc",
+  "#fb7185",
+];
+
+/** Preview palette — same hue family as ROUTE_COLORS so a previewed
+ *  route reads as the "draft" of the same route once generated. Used
+ *  cyclically for the live route preview. */
+const PREVIEW_COLORS = [
+  "#38bdf8",
   "#f472b6",
   "#a3e635",
   "#fbbf24",
@@ -191,6 +210,7 @@ export default function LeafletMap({
   waypoints,
   fir,
   trajectories,
+  previewRoutes,
   simT,
 }: Props) {
   const tiles = BASEMAPS[basemap];
@@ -256,6 +276,74 @@ export default function LeafletMap({
       )),
     [waypoints],
   );
+
+  // Live preview of the routes the user is composing (typed Item-15,
+  // RouteBuilder picks, plus any queued routes). One distinctly-coloured
+  // dashed polyline per route; markers/labels are deduped across routes
+  // so shared fixes (Y8 is heavily shared) get a single label, coloured
+  // by the first route that contains them.
+  const previewLayer = useMemo(() => {
+    if (!previewRoutes || previewRoutes.length === 0) return null;
+
+    const polylines = previewRoutes.map((route, idx) => {
+      if (route.length < 2) return null;
+      const color = PREVIEW_COLORS[idx % PREVIEW_COLORS.length];
+      const line: L.LatLngExpression[] = route.map((p) => [p.lat, p.lon]);
+      return (
+        <Polyline
+          key={`prev-line-${idx}`}
+          positions={line}
+          interactive={false}
+          pathOptions={{
+            color,
+            weight: 2,
+            opacity: 0.65,
+            dashArray: "6 6",
+          }}
+        />
+      );
+    });
+
+    // Dedupe markers by ident (Y8 routes share most fixes); first
+    // occurrence wins and the marker takes that route's colour.
+    const seen = new Map<string, { p: PreviewPoint; color: string }>();
+    previewRoutes.forEach((route, idx) => {
+      const color = PREVIEW_COLORS[idx % PREVIEW_COLORS.length];
+      for (const p of route) {
+        if (!seen.has(p.ident)) seen.set(p.ident, { p, color });
+      }
+    });
+    const markers = Array.from(seen.values()).map(({ p, color }) => (
+      <CircleMarker
+        key={`prev-mk-${p.ident}`}
+        center={[p.lat, p.lon]}
+        radius={p.fromUser ? 5 : 3.5}
+        pathOptions={{
+          color,
+          weight: p.fromUser ? 2 : 1,
+          fillColor: color,
+          fillOpacity: p.fromUser ? 0.45 : 0.25,
+          interactive: false,
+        }}
+      >
+        <Tooltip
+          permanent
+          direction="right"
+          offset={[8, 0]}
+          className="preview-label"
+        >
+          {p.ident}
+        </Tooltip>
+      </CircleMarker>
+    ));
+
+    return (
+      <Fragment key="route-preview">
+        {polylines}
+        {markers}
+      </Fragment>
+    );
+  }, [previewRoutes]);
 
   const trajectoryLayer = useMemo(
     () =>
@@ -335,6 +423,7 @@ export default function LeafletMap({
       {firLayer}
       {airwayLayer}
       {waypointLayer}
+      {previewLayer}
       {trajectoryLayer}
 
       {trajectories.map((t, ti) => {

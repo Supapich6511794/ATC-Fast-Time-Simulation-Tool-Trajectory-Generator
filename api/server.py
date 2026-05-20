@@ -17,10 +17,12 @@ by `trajectory_sim.output.write_geopackage`.
 from __future__ import annotations
 
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -89,6 +91,11 @@ class GenerateRequest(BaseModel):
     # Requested Flight Level in hundreds of feet (FL330 -> 330). Drives
     # the Phase 2 vertical profile (altitude + climb/cruise/descent).
     rfl: int = 330
+    # 0-based index when several routes are flown under the same
+    # (callsign, EOBT). Used to suffix the flight_key (e.g. "_R2") so
+    # each file/PK is unique; the Callsign column itself stays the
+    # user-typed value. Omit for a single-route request.
+    flight_index: int | None = None
 
 
 @lru_cache(maxsize=1)
@@ -105,6 +112,69 @@ def _airway_waypoint_index() -> dict[str, tuple[float, float]]:
             if ident and ident not in index:
                 index[ident] = (float(r[la_col]), float(r[lo_col]))
     return index
+
+
+@lru_cache(maxsize=1)
+def _y8_sequence() -> list[str]:
+    """Ordered Y8 fix sequence (BKK -> PUT) from the airway CSV.
+
+    Used to expand `<fix> Y8 <fix>` spans in an Item-15 route string into
+    the full set of intermediate Y8 fixes, so the generated trajectory
+    actually follows the airway instead of cutting a direct great-circle
+    between the two named endpoints.
+    """
+    df = pd.read_csv(_CSV_PATH).sort_values("seqno").reset_index(drop=True)
+    seq: list[str] = []
+    seen: set[str] = set()
+    for row in df.itertuples(index=False):
+        for ident in (row.waypoint_identifier, row.waypoint_identifier_2):
+            ident = str(ident)
+            if ident and ident not in seen:
+                seen.add(ident)
+                seq.append(ident)
+    return seq
+
+
+# Airway → ordered fix sequence. Only Y8 is supported in Phase 1 (the
+# single VTBS↔VTSP corridor); add more entries here when the project
+# grows to other airways.
+_AIRWAY_SEQUENCES: dict[str, "callable[[], list[str]]"] = {"Y8": _y8_sequence}
+
+_FIX_TOKEN_RE = re.compile(r"^[A-Z]{2,5}$")
+
+
+def _expand_airways(route_str: str) -> str:
+    """Inject intermediate airway fixes into an Item-15 route string.
+
+    Walks the tokens left-to-right and, whenever it sees a
+    `<fix> <airway> <fix>` triple where the airway is known and both
+    endpoints sit on it, splices the intervening fixes in between. The
+    airway designator itself is left in place — `parse_route` will drop
+    it as before, so existing parsing is unchanged for non-airway
+    routes.
+    """
+    tokens = route_str.split()
+    out: list[str] = []
+    i = 0
+    while i < len(tokens):
+        out.append(tokens[i])
+        # Pattern: <fix> <airway> <fix>
+        if (
+            i + 2 < len(tokens)
+            and _FIX_TOKEN_RE.match(tokens[i])
+            and tokens[i + 1] in _AIRWAY_SEQUENCES
+            and _FIX_TOKEN_RE.match(tokens[i + 2])
+        ):
+            seq = _AIRWAY_SEQUENCES[tokens[i + 1]]()
+            a_ident, b_ident = tokens[i], tokens[i + 2]
+            if a_ident in seq and b_ident in seq:
+                a = seq.index(a_ident)
+                b = seq.index(b_ident)
+                step = 1 if a < b else -1
+                for k in range(a + step, b, step):
+                    out.append(seq[k])
+        i += 1
+    return " ".join(out)
 
 
 @app.get("/api/health")
@@ -144,7 +214,10 @@ def generate(req: GenerateRequest) -> dict[str, object]:
         route = load_route_csv(_CSV_PATH, reverse=vtsp_to_vtbs)
         route_pts = [(w.ident, w.lat, w.lon) for w in route]
     elif req.source == "fpl":
-        idents = parse_route(req.route)
+        # Expand `<fix> Y8 <fix>` spans before parsing so the trajectory
+        # actually flies along the airway (matches the live preview and
+        # the distance shown in the Best Routes ranker).
+        idents = parse_route(_expand_airways(req.route))
         if not idents:
             raise HTTPException(400, "No waypoints parsed from route string.")
         index = _airway_waypoint_index()
@@ -180,6 +253,12 @@ def generate(req: GenerateRequest) -> dict[str, object]:
         raise HTTPException(400, f"Invalid EOBT: {e}") from None
 
     waypoint_sequence = [(lat, lon) for _, lat, lon in route_pts]
+    # Multi-route requests share (callsign, EOBT) — disambiguate the
+    # flight_key/filename with an R-prefixed suffix instead of mangling
+    # the callsign so the CSV's Callsign column stays the user's value.
+    flight_key_suffix = (
+        f"R{req.flight_index + 1}" if req.flight_index is not None else ""
+    )
     try:
         gdf = build_trajectory_gdf(
             waypoint_sequence=waypoint_sequence,
@@ -190,6 +269,7 @@ def generate(req: GenerateRequest) -> dict[str, object]:
             ades=ades,
             ground_speed_kt=req.gs_kt,
             rfl=req.rfl,
+            flight_key_suffix=flight_key_suffix,
         )
     except ValueError as e:
         raise HTTPException(400, str(e)) from None
@@ -229,7 +309,17 @@ def generate(req: GenerateRequest) -> dict[str, object]:
     if gpkg_path.exists():
         gpkg_path.unlink()  # GPKG driver appends; ensure a clean layer
     write_geopackage(gdf, gpkg_path)
-    write_csv(gdf, csv_path)
+    # ROUTE header carries the raw Item-15 string for fpl/build mode; in
+    # CSV mode the route is the full Y8, so render it as "BKK Y8 PUT"
+    # (or its reverse) for consistency with the live preview.
+    if req.source == "csv":
+        seq = _y8_sequence()
+        route_for_header = (
+            f"{seq[-1]} Y8 {seq[0]}" if vtsp_to_vtbs else f"{seq[0]} Y8 {seq[-1]}"
+        )
+    else:
+        route_for_header = req.route
+    write_csv(gdf, csv_path, route_str=route_for_header, rfl=req.rfl)
     # gdf is no longer read after this — mutate in place instead of copying.
     gdf["epoch_ts"] = gdf["epoch_ts"].astype(str)
     gdf.to_file(geojson_path, driver="GeoJSON")

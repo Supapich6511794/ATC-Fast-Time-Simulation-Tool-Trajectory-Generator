@@ -7,10 +7,12 @@ writes to disk.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
 from shapely.geometry import Point
 
 from trajectory_sim.geodesy import compute_bearing, interpolate_great_circle
@@ -26,6 +28,7 @@ def build_trajectory_gdf(
     ades: str,
     ground_speed_kt: float = 450.0,
     rfl: int | None = None,
+    flight_key_suffix: str = "",
 ) -> gpd.GeoDataFrame:
     """Build a trajectory GeoDataFrame from a sequence of waypoints.
 
@@ -46,6 +49,11 @@ def build_trajectory_gdf(
             altitude_ft is populated, phase is climb/cruise/descent, and
             the geometry becomes POINT Z. When None, Phase 1 behaviour is
             kept (altitude_ft None, phase "cruise", 2-D POINT).
+        flight_key_suffix: Optional suffix appended to the generated
+            flight_key (e.g. ``"R1"`` for "route 1 of N"). Lets the
+            caller fly the same (callsign, EOBT) along several distinct
+            routes without filename or PK collision, while keeping the
+            ``callsign`` column itself unchanged.
 
     Returns:
         GeoDataFrame, EPSG:4326, with columns: flight_key, callsign,
@@ -62,6 +70,8 @@ def build_trajectory_gdf(
         raise ValueError("waypoint_sequence must contain at least 2 points")
 
     flight_key = f"{callsign}_{eobt.strftime('%Y%m%dT%H%MZ')}"
+    if flight_key_suffix:
+        flight_key = f"{flight_key}_{flight_key_suffix}"
 
     raw: list[dict[str, object]] = []
     cumulative_t_s = 0.0
@@ -135,27 +145,132 @@ def write_geopackage(
 ) -> None:
     """Write a trajectory GeoDataFrame to a GeoPackage layer.
 
-    Overwrites the layer if it already exists.
+    Overwrites the layer if it already exists. After writing, two
+    indices are added on the trajectory layer to match the brief's
+    output schema (§6.2):
+
+      * UNIQUE INDEX on (flight_key, epoch_ts) — the brief specifies
+        ``PRIMARY KEY (flight_key, epoch_ts)`` but SQLite cannot add a
+        PRIMARY KEY to an existing table after ``geopandas.to_file``
+        has created it; a UNIQUE index enforces the same constraint.
+      * Plain INDEX on epoch_ts — for time-range scans (the brief's
+        ``trajectory_ts_idx``).
+
+    The R-tree spatial index on the geometry column is already created
+    automatically by the GPKG driver.
 
     Args:
         gdf: GeoDataFrame as built by build_trajectory_gdf.
         path: Output .gpkg filesystem path.
         layer: Layer name within the GeoPackage (default "trajectory").
     """
-    gdf.to_file(Path(path), layer=layer, driver="GPKG")
+    gpkg_path = Path(path)
+    gdf.to_file(gpkg_path, layer=layer, driver="GPKG")
+
+    # GeoPackage is a SQLite file — open it and add the brief-required
+    # indices on the just-written layer. `IF NOT EXISTS` keeps repeat
+    # writes (overwrite-same-layer) idempotent. The `with` block on a
+    # sqlite3 connection only commits/rollbacks on exit; on Windows the
+    # OS file lock survives a non-closed handle and blocks the next
+    # request's `unlink()` — so close explicitly in a finally.
+    conn = sqlite3.connect(gpkg_path)
+    try:
+        conn.execute(
+            f'CREATE UNIQUE INDEX IF NOT EXISTS "{layer}_pk_idx" '
+            f'ON "{layer}" (flight_key, epoch_ts)'
+        )
+        conn.execute(
+            f'CREATE INDEX IF NOT EXISTS "{layer}_ts_idx" '
+            f'ON "{layer}" (epoch_ts)'
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
-def write_csv(gdf: gpd.GeoDataFrame, path: str | Path) -> None:
-    """Write a trajectory GeoDataFrame to CSV.
+def write_csv(
+    gdf: gpd.GeoDataFrame,
+    path: str | Path,
+    *,
+    route_str: str = "",
+    rfl: int | None = None,
+) -> None:
+    """Write a trajectory GeoDataFrame to the ATC-style trajectory CSV.
 
-    The geometry column is dropped and replaced with separate `lat`
-    (degrees) and `lon` (degrees) columns.
+    Layout::
+
+        ROUTE: <route_str>
+        DEST: <ades>
+        ACTYPE: <aircraft_type>
+        FL: F<rfl>
+        ATD: YYYY-MM-DD HH:MM:SS
+
+        ---
+
+        Timestamp,UTC,Callsign,Lat,Lon,Altitude,Speed,Direction
+        <epoch_s>,<iso_utc_Z>,<callsign>,<lat>,<lon>,<alt_ft>,<gs_kt>,<track_deg>
+        ...
+
+    The column header has 8 names that line up 1-to-1 with the 8 fields
+    of each data row, so Excel/pandas open the CSV with every value
+    under the right header.
 
     Args:
         gdf: GeoDataFrame as built by build_trajectory_gdf.
         path: Output .csv filesystem path.
+        route_str: Raw Item-15 route string written into the ROUTE
+            header (e.g. ``"BKK Y8 PUT"``). Optional; empty by default.
+        rfl: Requested Flight Level (hundreds of feet) written into the
+            FL header as ``"F<rfl>"``. Optional; the FL line is omitted
+            when None.
     """
-    df = gdf.drop(columns="geometry").copy()
-    df["lat"] = gdf.geometry.y.to_numpy()
-    df["lon"] = gdf.geometry.x.to_numpy()
-    df.to_csv(Path(path), index=False)
+    out_path = Path(path)
+
+    # Metadata pulled from the gdf's constant columns. These are the
+    # same for every row (the gdf is one flight).
+    ades = str(gdf["ades"].iloc[0])
+    actype = str(gdf["aircraft_type"].iloc[0])
+    callsign = str(gdf["callsign"].iloc[0])
+    eobt_raw = gdf["epoch_ts"].iloc[0]
+    eobt = (
+        eobt_raw.to_pydatetime()
+        if hasattr(eobt_raw, "to_pydatetime")
+        else eobt_raw
+    )
+    if eobt.tzinfo is None:
+        eobt = eobt.replace(tzinfo=timezone.utc)
+
+    with out_path.open("w", encoding="utf-8", newline="") as f:
+        f.write(f"ROUTE: {route_str}\n")
+        f.write(f"DEST: {ades}\n")
+        f.write(f"ACTYPE: {actype}\n")
+        if rfl is not None:
+            f.write(f"FL: F{rfl}\n")
+        f.write(f"ATD: {eobt.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        # Plain-ASCII separator — em-dashes mojibake in Excel/Notepad
+        # when the file is opened under cp1252/cp874 (Thai Windows
+        # default), making "———" render as 'â€"â€"â€"'.
+        f.write("\n---\n\n")
+        f.write("Timestamp,UTC,Callsign,Lat,Lon,Altitude,Speed,Direction\n")
+
+        for geom, ts, alt, gs, trk in zip(
+            gdf.geometry,
+            gdf["epoch_ts"],
+            gdf["altitude_ft"],
+            gdf["gs_kt"],
+            gdf["track_deg"],
+            strict=True,
+        ):
+            ts_dt = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+            if ts_dt.tzinfo is None:
+                ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+            epoch = int(ts_dt.timestamp())
+            utc_iso = ts_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            alt_val = 0 if alt is None or pd.isna(alt) else int(round(float(alt)))
+            gs_val = 0 if gs is None or pd.isna(gs) else int(round(float(gs)))
+            trk_val = int(round(float(trk))) % 360
+            f.write(
+                f"{epoch},{utc_iso},{callsign},"
+                f"{geom.y:.6f},{geom.x:.6f},"
+                f"{alt_val},{gs_val},{trk_val}\n"
+            )

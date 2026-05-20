@@ -18,6 +18,7 @@ import SimControls from "@/components/SimControls";
 import { deriveWaypoints, fetchAirways, fetchFir } from "@/lib/geojson";
 import { fetchCsvRouteIdents } from "@/lib/routeCsv";
 import type { Basemap, Theme } from "@/lib/mapPrefs";
+import type { PreviewPoint } from "@/lib/routePreview";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
 import type { AirwayCollection, FirCollection, Waypoint } from "@/lib/types";
 import { useSimPlayback } from "@/lib/useSimPlayback";
@@ -31,6 +32,9 @@ export default function MapApp() {
   const [airways, setAirways] = useState<AirwayCollection | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [trajectories, setTrajectories] = useState<TrajectoryResult[]>([]);
+  /** Live (pre-Generate) route previews — one entry per route the user
+   *  has typed/picked/queued, each drawn in a distinct colour. */
+  const [previewRoutes, setPreviewRoutes] = useState<PreviewPoint[][]>([]);
 
   // UI prefs.
   const [theme, setTheme] = useState<Theme>("dark");
@@ -112,9 +116,23 @@ export default function MapApp() {
   return (
     <div className={`app theme-${theme}`} data-theme={theme}>
       <aside className={`sidebar${sidebarOpen ? " open" : ""}`}>
-        <h1>Flight Trajectory Generator</h1>
+        <div className="sidebar-header">
+          <h1>Flight Trajectory Generator</h1>
+          {/* Mobile-only ✕ — lets the user collapse the panel and see
+              the map underneath; on desktop the sidebar is fixed and
+              this button is hidden via CSS. */}
+          <button
+            type="button"
+            className="sidebar-close"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="Close menu"
+          >
+            ✕
+          </button>
+        </div>
         <GeneratorPanel
           onResult={(rs) => setTrajectories(rs ?? [])}
+          onPreviewChange={setPreviewRoutes}
           waypointIdents={routeIdents}
         />
       </aside>
@@ -152,6 +170,7 @@ export default function MapApp() {
               waypoints={showWaypoints ? waypoints : null}
               fir={firOn ? fir : null}
               trajectories={trajectories}
+              previewRoutes={previewRoutes}
               simT={sim.simT}
             />
             <SimControls sim={sim} />

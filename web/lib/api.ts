@@ -31,6 +31,10 @@ export interface GenerateInput {
   gs_kt: number;
   /** Requested Flight Level in hundreds of feet (FL330 → 330). */
   rfl: number;
+  /** 0-based index when several routes share (callsign, EOBT). Server
+   *  suffixes the flight_key/filename with `_R{n+1}` to keep files
+   *  distinct without mangling the user's callsign. */
+  flight_index?: number;
 }
 
 export interface GenerateResponse {

@@ -117,7 +117,18 @@ def interpolate_great_circle(
             points.append({"lat": lat, "lon": lon, "elapsed_s": t})
         step_idx += 1
 
-    if not points or points[-1]["elapsed_s"] < total_time_s:
+    # Always end on the exact endpoint so the trajectory passes through
+    # the named waypoint. If the endpoint is within 1 ms of the previous
+    # grid point, *replace* that point instead of appending — GeoPackage
+    # stores timestamps at millisecond precision, so two emissions inside
+    # the same 1-ms slot would collide in the (flight_key, epoch_ts) PK
+    # downstream.
+    _DT_PRECISION_S = 1e-3
+    if not points:
         points.append({"lat": lat2, "lon": lon2, "elapsed_s": total_time_s})
+    elif points[-1]["elapsed_s"] < total_time_s - _DT_PRECISION_S:
+        points.append({"lat": lat2, "lon": lon2, "elapsed_s": total_time_s})
+    elif points[-1]["elapsed_s"] < total_time_s:
+        points[-1] = {"lat": lat2, "lon": lon2, "elapsed_s": total_time_s}
 
     return points

@@ -22,6 +22,12 @@ import IdentCombobox, { type ComboOption } from "@/components/IdentCombobox";
 import RouteBuilder from "@/components/RouteBuilder";
 import { generateTrajectory } from "@/lib/api";
 import { parseFlightFile, type FlightRecord } from "@/lib/flightFile";
+import {
+  resolvePreviewFromIdents,
+  resolvePreviewFullY8,
+  resolveRoutePreview,
+  type PreviewPoint,
+} from "@/lib/routePreview";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
 import { fetchY8Fixes, kBestY8Routes, type Y8Fix } from "@/lib/y8Routes";
 
@@ -33,6 +39,10 @@ interface Props {
   /** Emits the generated trajectories (or null to clear) to the parent.
    *  An array so several routes can be flown/shown at once. */
   onResult: (results: TrajectoryResult[] | null) => void;
+  /** Live preview of all routes the user has in flight (the queued
+   *  routes plus the one currently being typed/built), so the map can
+   *  show each as a faint distinctly-coloured polyline in real time. */
+  onPreviewChange?: (routes: PreviewPoint[][]) => void;
   /** Selectable waypoint idents (from the airway file) for RouteBuilder. */
   waypointIdents: string[];
 }
@@ -57,7 +67,11 @@ const AIRPORTS: ComboOption[] = [
 /** Phase 1 scope: the only corridor with route data. */
 const SUPPORTED_PAIR = ["VTBS", "VTSP"];
 
-export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
+export default function GeneratorPanel({
+  onResult,
+  onPreviewChange,
+  waypointIdents,
+}: Props) {
   const [mode, setMode] = useState<InputMode>("manual");
   const [routeMode, setRouteMode] = useState<RouteMode>("fpl");
 
@@ -77,9 +91,11 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const [result, setResult] = useState<TrajectoryResult | null>(null);
-  // One download bundle per generated route (multi-route exports each
-  // flight as its own gpkg/csv/geojson — keyed by callsign).
+  // Generated trajectories + their download bundles kept in lock-step
+  // (same index). Multi-route generates several at once; an ✕ button
+  // on each download card removes that one entry from both arrays and
+  // from the map (via onResult).
+  const [results, setResults] = useState<TrajectoryResult[]>([]);
   const [dlList, setDlList] = useState<
     {
       callsign: string;
@@ -90,6 +106,7 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
       geojson: string;
     }[]
   >([]);
+  const firstResult = results[0] ?? null;
   const [warnings, setWarnings] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -143,6 +160,11 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
     const r = effectiveRoute.trim();
     if (!r || routes.includes(r) || routes.length >= routeCap) return;
     setRoutes((xs) => [...xs, r]);
+    // Reset the active input so the route is owned only by the queue
+    // entry — removing it via ✕ then takes its preview line off the
+    // map too, instead of leaving an orphan from the unchanged input.
+    if (routeMode === "build") setBuiltWpts([]);
+    else if (routeMode === "fpl") setRouteStr("");
   };
 
   // What the FPL route portion resolves to (for the live preview).
@@ -157,6 +179,57 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
     callsign && adep && ades && previewRoute
       ? `${callsign} ${actype} ${adep} ${ades} ${previewRoute}`.trim()
       : "";
+
+  // Live route preview — resolve every route the user has in flight to
+  // a list of (ident, lat, lon) so the map can highlight each one in a
+  // distinct colour the moment the first complete waypoint name is
+  // recognised. Includes every queued route plus the one currently
+  // being typed/built; emitted upward via onPreviewChange.
+  const previewRoutes = useMemo<PreviewPoint[][]>(() => {
+    if (y8Fixes.length === 0) return [];
+    const out: PreviewPoint[][] = [];
+
+    // Queued routes (always typed/built — never CSV, since the Add
+    // Route button is hidden in CSV mode).
+    for (const r of routes) {
+      const pts = resolveRoutePreview(r, y8Fixes);
+      if (pts.length > 0) out.push(pts);
+    }
+
+    // Whatever the user is editing right now (separate from the queue
+    // so it can be tweaked live without re-adding). Skip if the edit
+    // string is already in the queue to avoid drawing it twice.
+    let current: PreviewPoint[] = [];
+    if (routeMode === "build") {
+      const trimmed = builtRoute.trim();
+      if (trimmed && !routes.includes(trimmed)) {
+        current = resolvePreviewFromIdents(builtWpts, y8Fixes);
+      }
+    } else if (routeMode === "csv") {
+      current = pairReady ? resolvePreviewFullY8(y8Fixes, dep) : [];
+    } else {
+      const trimmed = routeStr.trim();
+      if (trimmed && !routes.includes(trimmed)) {
+        current = resolveRoutePreview(trimmed, y8Fixes);
+      }
+    }
+    if (current.length > 0) out.push(current);
+
+    return out;
+  }, [
+    routeMode,
+    routeStr,
+    builtRoute,
+    builtWpts,
+    routes,
+    y8Fixes,
+    dep,
+    pairReady,
+  ]);
+
+  useEffect(() => {
+    onPreviewChange?.(previewRoutes);
+  }, [previewRoutes, onPreviewChange]);
 
   /** Apply a parsed file record onto the editable fields. */
   function applyRecord(r: FlightRecord) {
@@ -228,7 +301,11 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
             ? ""
             : routeStr;
 
-      if (routeMode === "build" && builtWpts.length < 2) {
+      if (
+        routeMode === "build" &&
+        builtWpts.length < 2 &&
+        routes.length === 0
+      ) {
         throw new Error("Add at least 2 waypoints to build a route.");
       }
       if (routeMode === "fpl" && !routeStr.trim() && routes.length === 0) {
@@ -253,16 +330,21 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
             adep: dep,
             ades: des,
             route: r,
-            // Distinct callsign so each flight's files/keys don't collide.
-            callsign: multi ? `${callsign || "FLT"}${i + 1}` : callsign,
+            // Callsign stays exactly what the user typed (or "FLT" as
+            // the default for an unfilled field). Multi-route requests
+            // disambiguate via flight_index instead, so the Callsign
+            // column in the exported CSV isn't munged with a route number.
+            callsign: callsign || "FLT",
             eobt,
             gs_kt: gsKt,
             rfl,
+            ...(multi ? { flight_index: i } : {}),
           }),
         ),
       );
 
-      setResult(settled[0].result);
+      const trajectories = settled.map((s) => s.result);
+      setResults(trajectories);
       setDlList(
         settled.map((s, i) => ({
           callsign: s.result.meta.callsign,
@@ -277,15 +359,25 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
         })),
       );
       setWarnings(settled.flatMap((s) => s.warnings));
-      onResult(settled.map((s) => s.result));
+      onResult(trajectories);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Generation failed.");
-      setResult(null);
+      setResults([]);
       setDlList([]);
       onResult(null);
     } finally {
       setBusy(false);
     }
+  }
+
+  /** Drop one finished route by index — removes its download card and
+   *  its line from the map (via onResult), so the user can clean up
+   *  individual flights without re-running Generate. */
+  function removeResultAt(i: number) {
+    const nextResults = results.filter((_, k) => k !== i);
+    setResults(nextResults);
+    setDlList((xs) => xs.filter((_, k) => k !== i));
+    onResult(nextResults.length ? nextResults : null);
   }
 
   return (
@@ -628,7 +720,7 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
         </ul>
       )}
 
-      {result && dlList.length > 0 && (
+      {firstResult && dlList.length > 0 && (
         <div className="gen-result">
           <dl>
             <div>
@@ -636,27 +728,39 @@ export default function GeneratorPanel({ onResult, waypointIdents }: Props) {
               <dd>
                 {dlList.length > 1
                   ? dlList.length
-                  : result.stats.waypointCount}
+                  : firstResult.stats.waypointCount}
               </dd>
             </div>
             <div>
               <dt>Points</dt>
-              <dd>{result.stats.pointCount}</dd>
+              <dd>{firstResult.stats.pointCount}</dd>
             </div>
             <div>
               <dt>Distance</dt>
-              <dd>{result.stats.distanceNm} NM</dd>
+              <dd>{firstResult.stats.distanceNm} NM</dd>
             </div>
             <div>
               <dt>Flight time</dt>
-              <dd>{result.stats.timeMinutes} min</dd>
+              <dd>{firstResult.stats.timeMinutes} min</dd>
             </div>
           </dl>
 
-          {/* One export set per generated flight. */}
-          {dlList.map((d) => (
+          {/* One export set per generated flight. ✕ clears that flight
+              from both the download list and the map. */}
+          {dlList.map((d, i) => (
             <div className="gen-dl-route" key={d.flightKey}>
-              <p className="gen-key">{d.flightKey}</p>
+              <div className="gen-dl-head">
+                <p className="gen-key">{d.flightKey}</p>
+                <button
+                  type="button"
+                  className="gen-dl-close"
+                  onClick={() => removeResultAt(i)}
+                  title="Remove this flight from the map and downloads"
+                  aria-label={`Remove ${d.flightKey}`}
+                >
+                  ✕
+                </button>
+              </div>
               <p className="gen-dl-rt" title={d.route}>
                 ↳ {d.route}
               </p>

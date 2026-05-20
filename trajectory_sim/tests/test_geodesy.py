@@ -100,3 +100,32 @@ def test_interpolate_zero_distance_leg_returns_single_point() -> None:
     points = interpolate_great_circle(13.0, 100.0, 13.0, 100.0)
     assert len(points) == 1
     assert points[0]["elapsed_s"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_interpolate_endpoint_within_1ms_of_grid_replaces_not_appends() -> None:
+    """A leg whose duration sits just above a 4-s grid point must not
+    emit both the grid point and the endpoint — GeoPackage stores
+    timestamps at ms precision, so a ~µs-apart pair collides on the
+    (flight_key, epoch_ts) primary key. Engineer a leg whose duration
+    is 16.0 + 0.0001 s by picking the distance directly from ground
+    speed: at 450 kt → 1 step of 4 s ≈ 0.926 km."""
+    gs_ms = 450.0 * 1852.0 / 3600.0  # ~231.5 m/s
+    # Target leg duration: 16.0001 s → bias the grid-vs-endpoint case.
+    target_t = 16.0 + 1e-4
+    distance_m = gs_ms * target_t
+    # Walk that distance due east from (0, 0) using a flat
+    # approximation — exact distance doesn't need to match target_t to
+    # the µs, only land within the (4 s, 4 s + 1 ms) window.
+    lon2 = distance_m / 111_320.0
+    points = interpolate_great_circle(
+        0.0, 0.0, 0.0, lon2,
+        ground_speed_kt=450.0,
+        output_every_s=4.0,
+    )
+    # No two consecutive points should fall within the GPKG ms-precision
+    # window — otherwise the trajectory writer's unique index breaks.
+    for a, b in zip(points, points[1:]):
+        assert b["elapsed_s"] - a["elapsed_s"] >= 1e-3, (
+            f"near-duplicate emission at {a} / {b} (Δ = "
+            f"{b['elapsed_s'] - a['elapsed_s']:.6f}s)"
+        )
