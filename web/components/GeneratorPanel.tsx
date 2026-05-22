@@ -534,14 +534,14 @@ export default function GeneratorPanel({
               >
                 Pick waypoints
               </button>
-              <button
+              {/* <button
                 role="tab"
                 aria-selected={routeMode === "csv"}
                 className={routeMode === "csv" ? "active" : undefined}
                 onClick={() => setRouteMode("csv")}
               >
                 Airway CSV
-              </button>
+              </button> */}
             </div>
 
             {routeMode === "fpl" && (
@@ -702,7 +702,7 @@ export default function GeneratorPanel({
             disabled={busy}
           >
             {busy
-              ? "Running Python pipeline…"
+              ? "Generating…"
               : routes.length > 1
                 ? `▶ Generate ${routes.length} routes`
                 : "▶ Generate trajectory"}
