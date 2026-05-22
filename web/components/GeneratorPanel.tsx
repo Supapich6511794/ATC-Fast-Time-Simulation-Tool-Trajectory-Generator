@@ -442,7 +442,7 @@ export default function GeneratorPanel({
               <input
                 type="text"
                 value={callsign}
-                placeholder="THA204"
+                placeholder="Enter callsign"
                 onChange={(e) => setCallsign(e.target.value.toUpperCase())}
               />
             </label>
@@ -468,7 +468,7 @@ export default function GeneratorPanel({
                 value={adep}
                 onChange={setAdep}
                 options={AIRPORTS}
-                placeholder="VTBS"
+                placeholder="Departure"
               />
             </label>
             <label className="field">
@@ -477,7 +477,7 @@ export default function GeneratorPanel({
                 value={ades}
                 onChange={setAdes}
                 options={AIRPORTS}
-                placeholder="VTSP"
+                placeholder="Destination"
               />
             </label>
           </div>
@@ -550,7 +550,7 @@ export default function GeneratorPanel({
                   type="text"
                   value={routeStr}
                   onChange={(e) => setRouteStr(e.target.value)}
-                  placeholder="BKK Y8 PUT   or   DCT VANKO DCT PUT"
+                  placeholder="e.g. BKK Y8 PUT   or   DCT VANKO DCT PUT"
                 />
 
                 {!pairReady && (
