@@ -420,7 +420,7 @@ export default function GeneratorPanel({
             <div className="dz-icon">⬆</div>
             <p className="dz-main">Drag a file here, or click to choose</p>
             <p className="dz-sub">
-              .csv · .json · .geojson — multiple files supported
+              .csv · .json · .pdf · .geojson — multiple files supported
             </p>
             <input
               ref={fileRef}
