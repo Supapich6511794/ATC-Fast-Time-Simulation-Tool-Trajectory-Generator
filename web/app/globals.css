@@ -1350,3 +1350,193 @@ body {
 .rb-list li {
   padding: 3px 0;
 }
+
+/* ============================================================= *
+ *  Phase 2 — live altitude + phase chip in the simulation bar
+ * ============================================================= */
+.sim-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 6px;
+  border-right: 1px solid #33415544;
+  margin-right: 4px;
+}
+
+.sim-alt {
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  min-width: 56px;
+  text-align: right;
+}
+
+.sim-phase {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #06283d;
+  background: #cbd5e1;
+}
+
+.sim-phase.ph-climb {
+  background: #34d399;
+  color: #052e16;
+}
+
+.sim-phase.ph-cruise {
+  background: #38bdf8;
+  color: #06283d;
+}
+
+.sim-phase.ph-descent {
+  background: #fbbf24;
+  color: #422006;
+}
+
+/* Allow the sim bar to grow on mobile and keep the live readout legible. */
+@media (max-width: 860px) {
+  .sim-live {
+    order: 0;
+    border-right: none;
+    padding-right: 0;
+    margin-right: 0;
+    width: 100%;
+    justify-content: center;
+  }
+  .sim-alt {
+    text-align: center;
+  }
+}
+
+/* ============================================================= *
+ *  Phase 2 — altitude profile chart (small inline SVG)
+ * ============================================================= */
+.alt-fig {
+  margin: 14px 0 8px;
+  padding: 10px;
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 8px;
+}
+
+.alt-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 6px;
+}
+
+.alt-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.alt-sub {
+  font-size: 11px;
+  color: var(--accent);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-weight: 700;
+}
+
+.alt-svg {
+  display: block;
+  width: 100%;
+}
+
+.alt-empty {
+  margin: 12px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.alt-grid {
+  stroke: #1e293b;
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+
+.alt-axisline {
+  stroke: #334155;
+  stroke-width: 1;
+}
+
+.alt-axis {
+  fill: var(--muted);
+  font-size: 9px;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+}
+
+.alt-area {
+  fill: rgba(56, 189, 248, 0.18);
+}
+
+.alt-line {
+  stroke: var(--accent);
+  stroke-width: 1.7;
+  fill: none;
+}
+
+.alt-marker-line {
+  stroke: #fbbf24;
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.6;
+}
+
+.alt-marker {
+  fill: #fbbf24;
+  stroke: #1e293b;
+  stroke-width: 1;
+}
+
+.alt-marker-lbl {
+  fill: #fbbf24;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+}
+
+.app.theme-light .alt-fig {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+.app.theme-light .alt-grid {
+  stroke: #e2e8f0;
+}
+
+.app.theme-light .alt-axisline {
+  stroke: #cbd5e1;
+}
+
+/* ============================================================= *
+ *  Phase 2 — Top-of-Climb / Top-of-Descent map badges
+ * ============================================================= */
+.profile-badge {
+  background: transparent !important;
+  border: none !important;
+}
+
+.profile-badge-pill {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: 9px;
+  font-weight: 800;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  color: #06283d;
+  border: 1px solid rgba(15, 23, 42, 0.6);
+  border-radius: 999px;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}

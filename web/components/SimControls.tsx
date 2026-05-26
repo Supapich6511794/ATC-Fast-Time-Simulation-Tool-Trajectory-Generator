@@ -81,11 +81,39 @@ function SpeedMenu({
   );
 }
 
+/** Coloured chip showing the current vertical phase. */
+function PhaseChip({ phase }: { phase: "climb" | "cruise" | "descent" }) {
+  const label = phase[0].toUpperCase() + phase.slice(1);
+  return <span className={`sim-phase ph-${phase}`}>{label}</span>;
+}
+
+/** Live altitude readout (formatted as FL above the transition altitude). */
+function AltReadout({ ft }: { ft: number | null | undefined }) {
+  if (ft == null) {
+    return <span className="sim-alt">—</span>;
+  }
+  const ftInt = Math.round(ft);
+  // Show FLxxx above 10,000 ft (typical ATC transition); altitude in ft below.
+  const display =
+    ftInt >= 10000 ? `FL${Math.round(ftInt / 100)}` : `${ftInt.toLocaleString()} ft`;
+  return (
+    <span className="sim-alt" title={`${ftInt.toLocaleString()} ft AMSL`}>
+      {display}
+    </span>
+  );
+}
+
 export default function SimControls({ sim }: { sim: SimPlayback }) {
   if (!sim.ready) return null;
+  const ac = sim.aircraft;
 
   return (
     <div className="sim">
+      <div className="sim-live" aria-live="polite">
+        <AltReadout ft={ac?.altitudeFt ?? null} />
+        {ac && <PhaseChip phase={ac.phase} />}
+      </div>
+
       <button
         className="sim-btn primary"
         onClick={sim.toggle}

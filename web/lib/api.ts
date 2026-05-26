@@ -60,6 +60,22 @@ interface ApiPayload {
     point_count: number;
     distance_nm: number;
     time_minutes: number;
+    cruise_alt_ft: number | null;
+    rfl_ft: number;
+  };
+  profile: {
+    toc: {
+      lat: number;
+      lon: number;
+      altitude_ft: number;
+      epoch_ts: string;
+    } | null;
+    tod: {
+      lat: number;
+      lon: number;
+      altitude_ft: number;
+      epoch_ts: string;
+    } | null;
   };
   route: RouteWaypoint[];
   points: {
@@ -115,6 +131,26 @@ export async function generateTrajectory(
       pointCount: p.stats.point_count,
       distanceNm: p.stats.distance_nm,
       timeMinutes: p.stats.time_minutes,
+      cruiseAltFt: p.stats.cruise_alt_ft,
+      rflFt: p.stats.rfl_ft,
+    },
+    profile: {
+      toc: p.profile.toc
+        ? {
+            lat: p.profile.toc.lat,
+            lon: p.profile.toc.lon,
+            altitudeFt: p.profile.toc.altitude_ft,
+            epochTs: p.profile.toc.epoch_ts,
+          }
+        : null,
+      tod: p.profile.tod
+        ? {
+            lat: p.profile.tod.lat,
+            lon: p.profile.tod.lon,
+            altitudeFt: p.profile.tod.altitude_ft,
+            epochTs: p.profile.tod.epoch_ts,
+          }
+        : null,
     },
     meta: {
       flightKey: p.flight_key,

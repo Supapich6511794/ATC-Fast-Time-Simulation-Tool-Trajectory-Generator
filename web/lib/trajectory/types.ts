@@ -29,6 +29,26 @@ export interface TrajectoryStats {
   pointCount: number;
   distanceNm: number;
   timeMinutes: number;
+  /** Cruise altitude actually reached (feet). May be less than the
+   *  requested FL when the leg is too short to climb that high. */
+  cruiseAltFt: number | null;
+  /** Requested Flight Level expressed in feet (FL330 → 33000). */
+  rflFt: number;
+}
+
+/** Top-of-Climb or Top-of-Descent marker — null when the flight never
+ *  reaches cruise altitude (too-short leg). */
+export interface ProfilePoint {
+  lat: number;
+  lon: number;
+  altitudeFt: number;
+  epochTs: string;
+}
+
+/** Vertical-profile waypoints surfaced for map markers + chart. */
+export interface VerticalProfileMeta {
+  toc: ProfilePoint | null;
+  tod: ProfilePoint | null;
 }
 
 /** Full result of a generation run. */
@@ -38,6 +58,8 @@ export interface TrajectoryResult {
   /** Interpolated samples. */
   points: TrajectoryPoint[];
   stats: TrajectoryStats;
+  /** Vertical-profile waypoints (TOC/TOD), null until a profile is built. */
+  profile: VerticalProfileMeta;
   /** Metadata echoed into exports. */
   meta: {
     flightKey: string;

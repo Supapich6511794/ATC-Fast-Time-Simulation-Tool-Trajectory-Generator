@@ -79,3 +79,58 @@ def test_build_with_rfl_populates_altitude_and_phases() -> None:
     assert phases == {"climb", "cruise", "descent"}
     # POINT Z geometry when a vertical profile is applied.
     assert gdf.geometry.iloc[0].has_z
+
+
+def test_bada_climb_slower_at_altitude() -> None:
+    # BADA-style schedule: ROC at FL350 must be lower than ROC at 5000 ft.
+    p = VerticalProfile.build(
+        total_time_s=4 * 3600.0,  # plenty of cruise so the slope is real
+        rfl_ft=35000.0,
+        aircraft_type="B738",
+        dep_elev_ft=0.0,
+        des_elev_ft=0.0,
+    )
+    # Compare 60-second altitude gains in two climb bands.
+    early_lo, _ = p.at(60.0)
+    early_hi, _ = p.at(120.0)
+    early_roc = (early_hi - early_lo) * 60.0 / 60.0  # ft/min
+
+    # Time at which the climb has just crossed FL300 (last weak band).
+    # Build a long-cruise profile so the TOC is well-defined.
+    near_top_t = p.toc_time_s - 30.0
+    if near_top_t > 60:
+        late_lo, _ = p.at(near_top_t)
+        late_hi, _ = p.at(near_top_t + 60.0)
+        late_roc = (late_hi - late_lo) * 60.0 / 60.0
+        assert late_roc < early_roc, (
+            f"expected climb to slow with altitude; "
+            f"early={early_roc} fpm late={late_roc} fpm"
+        )
+
+
+def test_bada_known_aircraft_types_supported() -> None:
+    # The performance table covers all forward-compat slots in the UI.
+    for ac in ("B738", "A320", "B77W"):
+        roc, rod = aircraft_roc_rod(ac)
+        assert 1500.0 <= roc <= 2500.0
+        assert 1500.0 <= rod <= 2500.0
+
+
+def test_unknown_aircraft_falls_back_to_b738() -> None:
+    # An unknown ICAO type still produces a sane profile (B738 table).
+    p_unknown = VerticalProfile.build(
+        total_time_s=3600.0,
+        rfl_ft=33000.0,
+        aircraft_type="XXXX",
+        dep_elev_ft=0.0,
+        des_elev_ft=0.0,
+    )
+    p_b738 = VerticalProfile.build(
+        total_time_s=3600.0,
+        rfl_ft=33000.0,
+        aircraft_type="B738",
+        dep_elev_ft=0.0,
+        des_elev_ft=0.0,
+    )
+    assert abs(p_unknown.toc_time_s - p_b738.toc_time_s) < 1e-6
+    assert abs(p_unknown.tod_time_s - p_b738.tod_time_s) < 1e-6

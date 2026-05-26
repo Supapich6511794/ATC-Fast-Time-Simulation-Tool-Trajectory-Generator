@@ -303,6 +303,34 @@ def generate(req: GenerateRequest) -> dict[str, object]:
         gdf["epoch_ts"].iloc[-1] - gdf["epoch_ts"].iloc[0]
     ).total_seconds() / 60.0
 
+    # Top of Climb / Top of Descent — first cruise sample and the sample
+    # *after* the last cruise sample respectively. The web uses these for
+    # map markers and the altitude profile annotations; they're omitted
+    # when a flight is too short to reach cruise (no "cruise" rows).
+    phases = gdf["phase"].tolist()
+    cruise_idx = [i for i, ph in enumerate(phases) if ph == "cruise"]
+    toc = tod = None
+    if cruise_idx:
+        toc_i = cruise_idx[0]
+        tod_i = cruise_idx[-1]
+        toc = {
+            "lat": float(gdf.geometry.iloc[toc_i].y),
+            "lon": float(gdf.geometry.iloc[toc_i].x),
+            "altitude_ft": float(gdf["altitude_ft"].iloc[toc_i]),
+            "epoch_ts": gdf["epoch_ts"].iloc[toc_i].isoformat(),
+        }
+        tod = {
+            "lat": float(gdf.geometry.iloc[tod_i].y),
+            "lon": float(gdf.geometry.iloc[tod_i].x),
+            "altitude_ft": float(gdf["altitude_ft"].iloc[tod_i]),
+            "epoch_ts": gdf["epoch_ts"].iloc[tod_i].isoformat(),
+        }
+    cruise_alt_ft = (
+        float(max(gdf["altitude_ft"].dropna()))
+        if gdf["altitude_ft"].notna().any()
+        else None
+    )
+
     gpkg_path = _OUT_DIR / f"{flight_key}.gpkg"
     csv_path = _OUT_DIR / f"{flight_key}.csv"
     geojson_path = _OUT_DIR / f"{flight_key}.geojson"
@@ -339,6 +367,12 @@ def generate(req: GenerateRequest) -> dict[str, object]:
             "point_count": len(points),
             "distance_nm": round(distance_nm, 1),
             "time_minutes": round(elapsed_min, 1),
+            "cruise_alt_ft": cruise_alt_ft,
+            "rfl_ft": float(req.rfl) * 100.0,
+        },
+        "profile": {
+            "toc": toc,
+            "tod": tod,
         },
         "route": [
             {"ident": i, "lat": la, "lon": lo} for i, la, lo in route_pts

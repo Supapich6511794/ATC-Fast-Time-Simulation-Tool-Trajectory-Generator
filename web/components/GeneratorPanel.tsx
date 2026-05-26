@@ -18,6 +18,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import AltitudeProfile from "@/components/AltitudeProfile";
 import IdentCombobox, { type ComboOption } from "@/components/IdentCombobox";
 import RouteBuilder from "@/components/RouteBuilder";
 import { generateTrajectory } from "@/lib/api";
@@ -744,6 +745,8 @@ export default function GeneratorPanel({
               <dd>{firstResult.stats.timeMinutes} min</dd>
             </div>
           </dl>
+
+          <AltitudeProfile trajectory={firstResult} />
 
           {/* One export set per generated flight. ✕ clears that flight
               from both the download list and the map. */}

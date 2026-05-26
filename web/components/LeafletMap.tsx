@@ -123,6 +123,16 @@ function planeIcon(track: number): L.DivIcon {
   });
 }
 
+/** Small pill badge for the Top-of-Climb / Top-of-Descent map markers. */
+function profileBadge(text: string, color: string): L.DivIcon {
+  return L.divIcon({
+    className: "profile-badge",
+    iconSize: [40, 18],
+    iconAnchor: [20, 9],
+    html: `<span class="profile-badge-pill" style="background:${color}">${text}</span>`,
+  });
+}
+
 /**
  * A dot with a much larger *invisible* hit circle on top, so hovering a
  * waypoint is easy without enlarging the visible marker. The visible
@@ -404,6 +414,32 @@ export default function LeafletMap({
               airport={meta.ades}
               detail={`${meta.callsign} · ${pts[pts.length - 1].epoch_ts}`}
             />
+
+            {/* Phase 2 vertical-profile pins: small triangles where the
+                aircraft reaches cruise (TOC) and starts descent (TOD).
+                Omitted on too-short legs where no cruise sample exists. */}
+            {trajectory.profile?.toc && (
+              <Marker
+                position={[trajectory.profile.toc.lat, trajectory.profile.toc.lon]}
+                icon={profileBadge("TOC", "#22d3ee")}
+              >
+                <Tooltip direction="top" offset={[0, -10]}>
+                  TOC · FL
+                  {Math.round(trajectory.profile.toc.altitudeFt / 100)}
+                </Tooltip>
+              </Marker>
+            )}
+            {trajectory.profile?.tod && (
+              <Marker
+                position={[trajectory.profile.tod.lat, trajectory.profile.tod.lon]}
+                icon={profileBadge("TOD", "#fbbf24")}
+              >
+                <Tooltip direction="top" offset={[0, -10]}>
+                  TOD · FL
+                  {Math.round(trajectory.profile.tod.altitudeFt / 100)}
+                </Tooltip>
+              </Marker>
+            )}
           </Fragment>
         );
       }),

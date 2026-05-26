@@ -13,7 +13,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { TrajectoryPoint } from "@/lib/trajectory/types";
+import type { Phase, TrajectoryPoint } from "@/lib/trajectory/types";
 
 export type SimSpeed = 1 | 2 | 5 | 20 | 50 | 100;
 export const SIM_SPEEDS: SimSpeed[] = [1, 2, 5, 20, 50, 100];
@@ -27,6 +27,8 @@ export interface AircraftState {
   altitudeFt: number | null;
   /** Ground speed (kt). */
   gsKt: number;
+  /** Current flight phase (climb/cruise/descent). */
+  phase: Phase;
 }
 
 interface Sample extends AircraftState {
@@ -63,6 +65,7 @@ export function toSamples(points: TrajectoryPoint[] | undefined): Sample[] {
     track: p.track_deg,
     altitudeFt: p.altitude_ft,
     gsKt: p.gs_kt,
+    phase: p.phase,
     t: (new Date(p.epoch_ts).getTime() - t0) / 1000,
   }));
 }
@@ -98,6 +101,8 @@ export function aircraftAt(
         ? a.altitudeFt + (b.altitudeFt - a.altitudeFt) * f
         : a.altitudeFt,
     gsKt: a.gsKt,
+    // Phase is discrete — pick the active band (lower bracket).
+    phase: a.phase,
   };
 }
 
