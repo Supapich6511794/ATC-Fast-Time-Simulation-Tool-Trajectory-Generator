@@ -15,8 +15,16 @@ import type {
   TrajectoryResult,
 } from "@/lib/trajectory/types";
 
+// Default Render-hosted FastAPI URL. Hardcoded so the Vercel deploy doesn't
+// need NEXT_PUBLIC_API_BASE set (NEXT_PUBLIC_* is inlined at build time, so
+// changing it always forces a redeploy). The env var is still honoured for
+// preview deploys against a staging API.
+const PROD_API_BASE = "https://trajectory-api-zf51.onrender.com";
+const DEV_API_BASE = "http://localhost:8000";
+
 export const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+  process.env.NEXT_PUBLIC_API_BASE ??
+  (process.env.NODE_ENV === "production" ? PROD_API_BASE : DEV_API_BASE);
 
 export interface GenerateInput {
   source: "csv" | "fpl";
