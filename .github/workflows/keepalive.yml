@@ -22,7 +22,21 @@ jobs:
       - name: Ping API health
         env:
           API_URL: https://trajectory-api-zf51.onrender.com/api/health
+        # Render free-tier cold starts routinely overshoot 60 s, so a
+        # single short curl exits 28 (timeout) whenever the cron missed a
+        # window and the service slept. We try up to 3 times with 180 s
+        # per attempt; any 200 wins, since the goal is to *wake* the
+        # service, not to assert availability on the very first probe.
         run: |
-          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 "$API_URL")
-          echo "health -> HTTP $code"
-          test "$code" = "200"
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" \
+                        --max-time 180 --connect-timeout 15 \
+                        "$API_URL" || echo "000")
+            echo "attempt $i -> HTTP $code"
+            if [ "$code" = "200" ]; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::warning::API never returned 200 after 3 attempts; last status $code"
+          exit 1
