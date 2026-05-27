@@ -27,6 +27,8 @@ export interface AircraftState {
   altitudeFt: number | null;
   /** Ground speed (kt). */
   gsKt: number;
+  /** True airspeed (kt) — Phase-3 variable speed; null on legacy data. */
+  tasKt: number | null;
   /** Current flight phase (climb/cruise/descent). */
   phase: Phase;
 }
@@ -65,6 +67,7 @@ export function toSamples(points: TrajectoryPoint[] | undefined): Sample[] {
     track: p.track_deg,
     altitudeFt: p.altitude_ft,
     gsKt: p.gs_kt,
+    tasKt: p.tas_kt ?? null,
     phase: p.phase,
     t: (new Date(p.epoch_ts).getTime() - t0) / 1000,
   }));
@@ -92,6 +95,9 @@ export function aircraftAt(
   const b = samples[hi];
   const span = b.t - a.t || 1;
   const f = (t - a.t) / span;
+  // Interpolate GS / TAS between samples so the cockpit readouts ramp
+  // smoothly through the speed transitions (e.g. 250 → 290 → Mach 0.78).
+  const lerp = (x: number, y: number) => x + (y - x) * f;
   return {
     lat: a.lat + (b.lat - a.lat) * f,
     lon: a.lon + (b.lon - a.lon) * f,
@@ -100,7 +106,11 @@ export function aircraftAt(
       a.altitudeFt != null && b.altitudeFt != null
         ? a.altitudeFt + (b.altitudeFt - a.altitudeFt) * f
         : a.altitudeFt,
-    gsKt: a.gsKt,
+    gsKt: lerp(a.gsKt, b.gsKt),
+    tasKt:
+      a.tasKt != null && b.tasKt != null
+        ? lerp(a.tasKt, b.tasKt)
+        : a.tasKt ?? b.tasKt ?? null,
     // Phase is discrete — pick the active band (lower bracket).
     phase: a.phase,
   };

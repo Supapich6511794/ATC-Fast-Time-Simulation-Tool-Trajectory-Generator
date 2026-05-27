@@ -1879,6 +1879,146 @@ body {
   border-top: 1px dashed #33415588;
 }
 
+/* ============================================================= *
+ *  Phase 3 — planned speed schedule + per-phase aggregates
+ * ============================================================= */
+.rt-speed {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  background: #0f172a;
+  border: 1px solid #33415588;
+  border-radius: 8px;
+}
+
+.rt-speed-head {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.rt-speed-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.rt-speed-chip {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.rt-speed-chip.ph-climb {
+  background: #34d399;
+  color: #052e16;
+}
+
+.rt-speed-chip.ph-cruise {
+  background: #38bdf8;
+  color: #06283d;
+}
+
+.rt-speed-chip.ph-descent {
+  background: #fbbf24;
+  color: #422006;
+}
+
+.rt-speed-foot {
+  margin: 8px 0 0;
+  font-size: 10px;
+  color: var(--muted);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  line-height: 1.5;
+}
+
+.rt-phase-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 12px 0 0;
+}
+
+.rt-phase-grid .ph-row {
+  background: #0f172a;
+  border-radius: 6px;
+  padding: 7px 8px;
+  border-left: 3px solid transparent;
+}
+
+.rt-phase-grid .ph-row.ph-climb {
+  border-left-color: #34d399;
+}
+
+.rt-phase-grid .ph-row.ph-cruise {
+  border-left-color: #38bdf8;
+}
+
+.rt-phase-grid .ph-row.ph-descent {
+  border-left-color: #fbbf24;
+}
+
+.rt-phase-grid dt {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.rt-phase-grid dd {
+  margin: 2px 0 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+}
+
+.rt-phase-gs {
+  display: block;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+  margin-top: 1px;
+}
+
+.app.theme-light .rt-speed,
+.app.theme-light .rt-phase-grid .ph-row {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+/* Live GS pill in the playback bar (alongside altitude + phase chip). */
+.sim-speed {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text);
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 999px;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+}
+
+.sim-speed strong {
+  font-weight: 800;
+  font-size: 12px;
+  color: var(--accent);
+}
+
 /* "Show more / Show only R1" buttons under the stacked list. */
 .gen-show-more,
 .gen-show-less {
@@ -2607,6 +2747,128 @@ body {
 /* Speed picker — a drop-up menu (bar is pinned to the screen bottom). */
 .sim-speed-menu {
   position: relative;
+}
+
+/* ---- Playback source picker (which generated route the clock plays) ---- */
+.sim-route-picker {
+  position: relative;
+  margin-right: 4px;
+}
+
+.sim-route-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 9px;
+  background: rgba(56, 189, 248, 0.14);
+  color: var(--accent);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.sim-route-trigger:hover {
+  background: rgba(56, 189, 248, 0.22);
+  border-color: var(--accent);
+}
+
+.sim-route-trigger .caret {
+  font-size: 9px;
+  color: var(--muted);
+}
+
+.sim-route-label {
+  white-space: nowrap;
+}
+
+.sim-route-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 220px;
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid #33415588;
+  border-radius: 10px;
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.5);
+  z-index: 1500;
+  max-height: 240px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.sim-route-menu li {
+  list-style: none;
+}
+
+.sim-route-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.sim-route-menu button:hover,
+.sim-route-menu button.active {
+  background: rgba(56, 189, 248, 0.14);
+  color: var(--accent);
+}
+
+.sim-route-tag {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  background: var(--accent);
+  color: #06283d;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  letter-spacing: 0.04em;
+}
+
+.sim-route-tag.all {
+  background: #fbbf24;
+  color: #422006;
+}
+
+.sim-route-key {
+  flex: 1;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sim-route-meta {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 10px;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+}
+
+.app.theme-light .sim-route-menu {
+  background: #ffffff;
+  border-color: #cbd5e1;
 }
 
 .sim-speed-trigger {

@@ -17,11 +17,127 @@ Units: altitude in feet, rates in ft/min, time in seconds.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Literal
 
 #: Flight phase along the vertical profile.
 Phase = Literal["climb", "cruise", "descent"]
+
+
+# ---------------------------------------------------------------------------
+# ISA atmosphere — used for Phase 3 CAS ↔ Mach ↔ TAS conversions.
+#
+# Two layers per the International Standard Atmosphere (ICAO Doc 7488 /
+# ISO 2533):
+#
+#   * Troposphere (0 – 11 000 m): linear lapse rate of 6.5 K/km from 15 °C.
+#   * Stratosphere (11 000 – 20 000 m): isothermal at −56.5 °C.
+#
+# Wind model: zero-wind throughout Phase 3 (GS = TAS). The simulator
+# interface accepts a wind vector but the default is None and all
+# conversion helpers below return airspeeds, not ground speeds.
+# ---------------------------------------------------------------------------
+
+_T0_K = 288.15            # ISA sea-level temperature (K)
+_P0_PA = 101_325.0        # ISA sea-level pressure (Pa)
+_A0_M_S = 340.294         # ISA sea-level speed of sound (m/s)
+_LAPSE_K_PER_M = 0.0065   # Tropospheric lapse rate (K/m)
+_TROPOPAUSE_M = 11_000.0  # Tropopause altitude (m, geopotential)
+_TROPOPAUSE_T_K = _T0_K - _LAPSE_K_PER_M * _TROPOPAUSE_M  # 216.65 K
+_GAMMA = 1.4              # Ratio of specific heats for dry air
+_R_AIR = 287.05287        # Specific gas constant for dry air (J/(kg·K))
+_G0 = 9.80665             # Standard gravity (m/s²)
+
+_FT_TO_M = 0.3048
+_MS_TO_KT = 3600.0 / 1852.0  # 1 m/s in knots
+
+
+def isa_temperature_k(altitude_ft: float) -> float:
+    """ISA static air temperature at altitude.
+
+    Args:
+        altitude_ft: Geometric altitude in feet AMSL.
+
+    Returns:
+        Temperature in kelvin. Constant at 216.65 K above the tropopause.
+    """
+    h_m = altitude_ft * _FT_TO_M
+    if h_m <= _TROPOPAUSE_M:
+        return _T0_K - _LAPSE_K_PER_M * h_m
+    return _TROPOPAUSE_T_K
+
+
+def isa_pressure_pa(altitude_ft: float) -> float:
+    """ISA static pressure at altitude (Pa)."""
+    h_m = altitude_ft * _FT_TO_M
+    if h_m <= _TROPOPAUSE_M:
+        exp = _G0 / (_LAPSE_K_PER_M * _R_AIR)
+        return _P0_PA * (1.0 - _LAPSE_K_PER_M * h_m / _T0_K) ** exp
+    # Isothermal layer above the tropopause.
+    p_trop = _P0_PA * (
+        1.0 - _LAPSE_K_PER_M * _TROPOPAUSE_M / _T0_K
+    ) ** (_G0 / (_LAPSE_K_PER_M * _R_AIR))
+    return p_trop * math.exp(
+        -_G0 * (h_m - _TROPOPAUSE_M) / (_R_AIR * _TROPOPAUSE_T_K)
+    )
+
+
+def isa_density_kg_m3(altitude_ft: float) -> float:
+    """ISA air density at altitude (kg/m³)."""
+    return isa_pressure_pa(altitude_ft) / (
+        _R_AIR * isa_temperature_k(altitude_ft)
+    )
+
+
+def speed_of_sound_kt(altitude_ft: float) -> float:
+    """Speed of sound at altitude using ISA temperature, in knots."""
+    a_ms = math.sqrt(_GAMMA * _R_AIR * isa_temperature_k(altitude_ft))
+    return a_ms * _MS_TO_KT
+
+
+def mach_to_tas_kt(mach: float, altitude_ft: float) -> float:
+    """Convert Mach number to true airspeed (knots) at the given altitude."""
+    return mach * speed_of_sound_kt(altitude_ft)
+
+
+def tas_to_mach(tas_kt: float, altitude_ft: float) -> float:
+    """Convert true airspeed (knots) to Mach at the given altitude."""
+    a = speed_of_sound_kt(altitude_ft)
+    return tas_kt / a if a > 0 else 0.0
+
+
+def cas_to_tas_kt(cas_kt: float, altitude_ft: float) -> float:
+    """Convert calibrated airspeed to true airspeed in knots (CAS → TAS).
+
+    Uses the compressible-flow relation through the ISA atmosphere
+    (Anderson, *Introduction to Flight*, §3.6) — accurate to ≲ 1 kt
+    across the FL100 – FL400 envelope where this sim flies.
+
+    Args:
+        cas_kt: Calibrated airspeed in knots.
+        altitude_ft: Altitude in feet AMSL.
+
+    Returns:
+        True airspeed in knots.
+    """
+    cas_ms = cas_kt / _MS_TO_KT
+    # Impact pressure from CAS at sea-level reference conditions.
+    qc_pa = _P0_PA * ((1.0 + 0.2 * (cas_ms / _A0_M_S) ** 2) ** 3.5 - 1.0)
+    # Recover Mach from impact pressure at the actual altitude.
+    p_pa = isa_pressure_pa(altitude_ft)
+    mach = math.sqrt(5.0 * ((qc_pa / p_pa + 1.0) ** (1.0 / 3.5) - 1.0))
+    return mach_to_tas_kt(mach, altitude_ft)
+
+
+def tas_to_cas_kt(tas_kt: float, altitude_ft: float) -> float:
+    """Inverse of :func:`cas_to_tas_kt` — TAS → CAS, both in knots."""
+    mach = tas_to_mach(tas_kt, altitude_ft)
+    p_pa = isa_pressure_pa(altitude_ft)
+    qc_pa = p_pa * ((1.0 + 0.2 * mach * mach) ** 3.5 - 1.0)
+    cas_ratio_sq = ((qc_pa / _P0_PA + 1.0) ** (1.0 / 3.5) - 1.0) / 0.2
+    cas_ms = math.sqrt(max(0.0, cas_ratio_sq)) * _A0_M_S
+    return cas_ms * _MS_TO_KT
 
 
 @dataclass(frozen=True)
@@ -142,12 +258,132 @@ _SERVICE_CEILING_FT: dict[str, float] = {
     "B77W": 43100.0,
 }
 
+# CAS → Mach crossover altitude per airframe (BADA convention). Below
+# this altitude the climb / descent flies a constant CAS; above it,
+# constant Mach. Typical narrow-body crossover sits around FL280–300.
+_CROSSOVER_FT: dict[str, float] = {
+    "B738": 28000.0,
+    "A320": 28000.0,
+    "B77W": 30000.0,
+}
+
+# ATC speed restriction below FL100 (10 000 ft). 250 kt CAS is the
+# global default, applied to *both* climb and descent. The constant is
+# named so the value is searchable and easy to tweak per state.
+_BELOW_FL100_CAS_KT = 250.0
+_RESTRICTION_ALT_FT = 10000.0
+
+
+def crossover_altitude_ft(aircraft_type: str) -> float:
+    """CAS → Mach crossover altitude in feet for an aircraft type.
+
+    Falls back to the B738 value (FL280) when unknown.
+    """
+    return _CROSSOVER_FT.get(
+        aircraft_type.upper(), _CROSSOVER_FT["B738"]
+    )
+
+
+def target_tas_kt(
+    aircraft_type: str,
+    altitude_ft: float,
+    phase: Phase,
+) -> float:
+    """Target true airspeed (knots) at the given altitude for a phase.
+
+    Applies, in order:
+      1. The **250 kt CAS** ATC speed restriction below 10 000 ft.
+      2. The aircraft's climb / descent CAS between FL100 and the
+         CAS→Mach crossover altitude.
+      3. The aircraft's climb / descent Mach above the crossover.
+      4. The cruise Mach above the crossover for the cruise phase.
+
+    Args:
+        aircraft_type: ICAO type. Falls back to B738 when unknown.
+        altitude_ft: Current altitude in feet AMSL.
+        phase: ``"climb"``, ``"cruise"`` or ``"descent"``.
+
+    Returns:
+        Target TAS in knots — i.e. the speed the aircraft would be
+        flying at this point in the profile. Wind not applied (zero-wind
+        assumed; GS = TAS).
+    """
+    sched = aircraft_speeds(aircraft_type)
+    crossover_ft = crossover_altitude_ft(aircraft_type)
+
+    if phase == "cruise":
+        return mach_to_tas_kt(sched.cruise_mach, altitude_ft)
+
+    if phase == "climb":
+        cas, mach = sched.climb_cas_kt, sched.climb_mach
+    else:  # descent
+        cas, mach = sched.descent_cas_kt, sched.descent_mach
+
+    if altitude_ft < _RESTRICTION_ALT_FT:
+        # 250 kt ATC speed limit below FL100 (or the aircraft's own CAS
+        # if it's somehow slower).
+        return cas_to_tas_kt(min(cas, _BELOW_FL100_CAS_KT), altitude_ft)
+    if altitude_ft < crossover_ft:
+        return cas_to_tas_kt(cas, altitude_ft)
+    return mach_to_tas_kt(mach, altitude_ft)
+
+
+def average_phase_tas_kt(
+    aircraft_type: str,
+    from_alt_ft: float,
+    to_alt_ft: float,
+    phase: Phase,
+) -> float:
+    """Time-weighted average TAS while climbing or descending between two
+    altitudes.
+
+    Integrates :func:`target_tas_kt` over the segmented vertical schedule
+    so a climb that lingers in the 250 kt band gets correctly weighted
+    against the high-altitude Mach band.
+
+    Returns the cruise TAS directly when ``phase == "cruise"``.
+    """
+    if phase == "cruise":
+        return mach_to_tas_kt(
+            aircraft_speeds(aircraft_type).cruise_mach,
+            (from_alt_ft + to_alt_ft) / 2.0,
+        )
+
+    if to_alt_ft == from_alt_ft:
+        return target_tas_kt(aircraft_type, from_alt_ft, phase)
+
+    climb_segs, desc_segs = _segments_for(aircraft_type)
+    segs = climb_segs if phase == "climb" else desc_segs
+    lo_alt = min(from_alt_ft, to_alt_ft)
+    hi_alt = max(from_alt_ft, to_alt_ft)
+
+    total_time_s = 0.0
+    tas_x_time = 0.0
+    for s in segs:
+        lo = max(s.alt_lo_ft, lo_alt)
+        hi = min(s.alt_hi_ft, hi_alt)
+        if hi <= lo or s.rate_fpm <= 0:
+            continue
+        # Sub-sample the segment so the 250 kt / crossover boundaries
+        # inside it are captured. 1 000-ft slices are plenty since the
+        # BADA bands are 7 000–10 000 ft wide.
+        n = max(1, int((hi - lo) / 1000.0))
+        dt_s = ((hi - lo) / n) / s.rate_fpm * 60.0
+        for k in range(n):
+            mid_alt = lo + (hi - lo) * (k + 0.5) / n
+            tas_x_time += target_tas_kt(aircraft_type, mid_alt, phase) * dt_s
+            total_time_s += dt_s
+
+    if total_time_s <= 0:
+        return target_tas_kt(aircraft_type, (lo_alt + hi_alt) / 2.0, phase)
+    return tas_x_time / total_time_s
+
 # Field elevations (ft AMSL) for the airports in scope. Real navdata
 # (airports layer) isn't delivered yet, so these are the published AIP
 # elevations for the single city pair; default 0 elsewhere.
 _FIELD_ELEV_FT: dict[str, float] = {
-    "VTBS": 5.0,    # Bangkok Suvarnabhumi
-    "VTSP": 25.0,   # Phuket
+    "VTBS": 5.0,    
+    "VTSP": 25.0,   
     "VTBD": 9.0,    # Bangkok Don Mueang (in case of reroute)
 }
 

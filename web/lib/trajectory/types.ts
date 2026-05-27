@@ -19,6 +19,8 @@ export interface TrajectoryPoint {
   /** Altitude in feet (Phase 2). Null when no vertical profile applied. */
   altitude_ft: number | null;
   gs_kt: number;
+  /** Phase-3: true airspeed in kt. Null on the legacy constant-speed path. */
+  tas_kt?: number | null;
   track_deg: number;
   phase: Phase;
 }
@@ -45,10 +47,37 @@ export interface ProfilePoint {
   epochTs: string;
 }
 
+/** Phase-3 planned-speed schedule for the airframe. */
+export interface SpeedSchedule {
+  climbCasKt: number;
+  climbMach: number;
+  cruiseMach: number;
+  descentMach: number;
+  descentCasKt: number;
+  crossoverFt: number;
+  belowFl100RestrictionKt: number;
+}
+
+/** One row of the climb / cruise / descent summary table. */
+export interface PhaseBreakdownRow {
+  avgTasKt: number | null;
+  avgGsKt: number | null;
+  timeMin: number | null;
+}
+
+/** Phase-3 per-phase aggregate stats. */
+export interface PhaseBreakdown {
+  climb: PhaseBreakdownRow;
+  cruise: PhaseBreakdownRow;
+  descent: PhaseBreakdownRow;
+}
+
 /** Vertical-profile waypoints surfaced for map markers + chart. */
 export interface VerticalProfileMeta {
   toc: ProfilePoint | null;
   tod: ProfilePoint | null;
+  speedSchedule?: SpeedSchedule;
+  phaseBreakdown?: PhaseBreakdown;
 }
 
 /** Full result of a generation run. */

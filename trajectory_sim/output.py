@@ -29,6 +29,9 @@ def build_trajectory_gdf(
     ground_speed_kt: float = 450.0,
     rfl: int | None = None,
     flight_key_suffix: str = "",
+    *,
+    variable_speed: bool = True,
+    wind_kt: float | None = None,
 ) -> gpd.GeoDataFrame:
     """Build a trajectory GeoDataFrame from a sequence of waypoints.
 
@@ -73,6 +76,43 @@ def build_trajectory_gdf(
     if flight_key_suffix:
         flight_key = f"{flight_key}_{flight_key_suffix}"
 
+    # Phase 3 — variable speed timeline. Only kicks in when an RFL is
+    # supplied (otherwise we have no altitude profile, hence no phase
+    # boundaries and no per-phase ground speed).
+    if variable_speed and rfl is not None:
+        from trajectory_sim.trajectory import build_flight_timeline
+
+        timeline = build_flight_timeline(
+            waypoint_sequence=waypoint_sequence,
+            aircraft_type=aircraft_type,
+            adep=adep,
+            ades=ades,
+            rfl_ft=rfl * 100.0,
+            eobt=eobt,
+            wind_kt=wind_kt,
+        )
+        records = [
+            {
+                "flight_key": flight_key,
+                "callsign": callsign,
+                "aircraft_type": aircraft_type,
+                "adep": adep,
+                "ades": ades,
+                "epoch_ts": s.epoch_ts,
+                "altitude_ft": round(s.altitude_ft, 1),
+                "tas_kt": round(s.tas_kt, 1),
+                "gs_kt": round(s.gs_kt, 1),
+                "track_deg": s.track_deg,
+                "phase": s.phase,
+                "geometry": Point(s.lon, s.lat, s.altitude_ft * 0.3048),
+            }
+            for s in timeline.samples
+        ]
+        return gpd.GeoDataFrame(records, crs="EPSG:4326", geometry="geometry")
+
+    # Legacy constant-ground-speed path — kept for callers that opt out
+    # of the variable timeline by passing ``variable_speed=False`` or
+    # leaving ``rfl`` as None.
     raw: list[dict[str, object]] = []
     cumulative_t_s = 0.0
     for i in range(len(waypoint_sequence) - 1):

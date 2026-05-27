@@ -76,6 +76,20 @@ interface ApiPayload {
       altitude_ft: number;
       epoch_ts: string;
     } | null;
+    speed_schedule?: {
+      climb_cas_kt: number;
+      climb_mach: number;
+      cruise_mach: number;
+      descent_mach: number;
+      descent_cas_kt: number;
+      crossover_ft: number;
+      below_fl100_restriction_kt: number;
+    };
+    phase_breakdown?: {
+      climb: { avg_tas_kt: number | null; avg_gs_kt: number | null; time_min: number | null };
+      cruise: { avg_tas_kt: number | null; avg_gs_kt: number | null; time_min: number | null };
+      descent: { avg_tas_kt: number | null; avg_gs_kt: number | null; time_min: number | null };
+    };
   };
   route: RouteWaypoint[];
   points: {
@@ -84,6 +98,7 @@ interface ApiPayload {
     epoch_ts: string;
     altitude_ft: number | null;
     gs_kt: number;
+    tas_kt?: number | null;
     track_deg: number;
     phase: Phase;
   }[];
@@ -151,6 +166,37 @@ export async function generateTrajectory(
             epochTs: p.profile.tod.epoch_ts,
           }
         : null,
+      speedSchedule: p.profile.speed_schedule
+        ? {
+            climbCasKt: p.profile.speed_schedule.climb_cas_kt,
+            climbMach: p.profile.speed_schedule.climb_mach,
+            cruiseMach: p.profile.speed_schedule.cruise_mach,
+            descentMach: p.profile.speed_schedule.descent_mach,
+            descentCasKt: p.profile.speed_schedule.descent_cas_kt,
+            crossoverFt: p.profile.speed_schedule.crossover_ft,
+            belowFl100RestrictionKt:
+              p.profile.speed_schedule.below_fl100_restriction_kt,
+          }
+        : undefined,
+      phaseBreakdown: p.profile.phase_breakdown
+        ? {
+            climb: {
+              avgTasKt: p.profile.phase_breakdown.climb.avg_tas_kt,
+              avgGsKt: p.profile.phase_breakdown.climb.avg_gs_kt,
+              timeMin: p.profile.phase_breakdown.climb.time_min,
+            },
+            cruise: {
+              avgTasKt: p.profile.phase_breakdown.cruise.avg_tas_kt,
+              avgGsKt: p.profile.phase_breakdown.cruise.avg_gs_kt,
+              timeMin: p.profile.phase_breakdown.cruise.time_min,
+            },
+            descent: {
+              avgTasKt: p.profile.phase_breakdown.descent.avg_tas_kt,
+              avgGsKt: p.profile.phase_breakdown.descent.avg_gs_kt,
+              timeMin: p.profile.phase_breakdown.descent.time_min,
+            },
+          }
+        : undefined,
     },
     meta: {
       flightKey: p.flight_key,

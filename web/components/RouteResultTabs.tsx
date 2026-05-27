@@ -143,6 +143,57 @@ export default function RouteResultTabs({
                 <dd>{fmtAlt(profile.tod?.altitudeFt ?? null)}</dd>
               </div>
             </dl>
+
+            {/* Phase-3: planned speed schedule + per-phase aggregates. */}
+            {profile.speedSchedule && (
+              <div className="rt-speed">
+                <div className="rt-speed-head">Speed schedule</div>
+                <p className="rt-speed-line">
+                  <span className="rt-speed-chip ph-climb">Climb</span>
+                  {profile.speedSchedule.climbCasKt} kt CAS · M
+                  {profile.speedSchedule.climbMach}
+                </p>
+                <p className="rt-speed-line">
+                  <span className="rt-speed-chip ph-cruise">Cruise</span>
+                  M{profile.speedSchedule.cruiseMach}
+                </p>
+                <p className="rt-speed-line">
+                  <span className="rt-speed-chip ph-descent">Descent</span>
+                  M{profile.speedSchedule.descentMach} ·
+                  {profile.speedSchedule.descentCasKt} kt CAS
+                </p>
+                <p className="rt-speed-foot">
+                  {profile.speedSchedule.belowFl100RestrictionKt} kt CAS
+                  below FL100 · CAS→Mach crossover at FL
+                  {Math.round(profile.speedSchedule.crossoverFt / 100)}
+                </p>
+              </div>
+            )}
+
+            {profile.phaseBreakdown && (
+              <dl className="rt-phase-grid">
+                {(["climb", "cruise", "descent"] as const).map((p) => {
+                  const row = profile.phaseBreakdown![p];
+                  return (
+                    <div key={p} className={`ph-row ph-${p}`}>
+                      <dt>
+                        {p.charAt(0).toUpperCase() + p.slice(1)}
+                      </dt>
+                      <dd>
+                        {row.timeMin == null
+                          ? "—"
+                          : `${row.timeMin.toFixed(1)} min`}
+                        <span className="rt-phase-gs">
+                          {row.avgGsKt == null
+                            ? ""
+                            : ` · ${Math.round(row.avgGsKt)} kt`}
+                        </span>
+                      </dd>
+                    </div>
+                  );
+                })}
+              </dl>
+            )}
           </>
         )}
 

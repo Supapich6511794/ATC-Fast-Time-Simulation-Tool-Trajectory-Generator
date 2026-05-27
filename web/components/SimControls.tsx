@@ -10,11 +10,14 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import type { TrajectoryResult } from "@/lib/trajectory/types";
 import {
   SIM_SPEEDS,
   type SimPlayback,
   type SimSpeed,
 } from "@/lib/useSimPlayback";
+
+export type PlaybackSource = number | "all";
 
 function mmss(sec: number): string {
   const s = Math.max(0, Math.round(sec));
@@ -103,14 +106,152 @@ function AltReadout({ ft }: { ft: number | null | undefined }) {
   );
 }
 
-export default function SimControls({ sim }: { sim: SimPlayback }) {
+/** Live ground-speed / true-airspeed pill. */
+function SpeedReadout({
+  gsKt,
+  tasKt,
+}: {
+  gsKt: number | null | undefined;
+  tasKt: number | null | undefined;
+}) {
+  if (gsKt == null) return null;
+  const gs = Math.round(gsKt);
+  return (
+    <span
+      className="sim-speed"
+      title={
+        tasKt != null
+          ? `GS ${gs} kt · TAS ${Math.round(tasKt)} kt`
+          : `GS ${gs} kt`
+      }
+    >
+      <strong>{gs}</strong> kt
+    </span>
+  );
+}
+
+/** Compact dropdown to pick which generated route the playback engine
+ *  is bound to. Hidden when there's only one route — the dropdown
+ *  isn't useful for a single-flight playback. */
+function RouteSourcePicker({
+  trajectories,
+  playbackIdx,
+  onChange,
+}: {
+  trajectories: TrajectoryResult[];
+  playbackIdx: PlaybackSource;
+  onChange: (next: PlaybackSource) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  if (trajectories.length < 2) return null;
+
+  const label =
+    playbackIdx === "all"
+      ? `All routes`
+      : `R${playbackIdx + 1}`;
+
+  return (
+    <div className="sim-route-picker" ref={ref}>
+      <button
+        type="button"
+        className="sim-route-trigger"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title="Replay source"
+      >
+        <span className="sim-route-label">{label}</span>
+        <span className="caret">{open ? "▾" : "▴"}</span>
+      </button>
+      {open && (
+        <ul className="sim-route-menu" role="listbox">
+          {trajectories.map((t, i) => (
+            <li key={t.meta.flightKey} role="option" aria-selected={playbackIdx === i}>
+              <button
+                type="button"
+                className={playbackIdx === i ? "active" : undefined}
+                onClick={() => {
+                  onChange(i);
+                  setOpen(false);
+                }}
+                title={t.meta.flightKey}
+              >
+                <span className="sim-route-tag">R{i + 1}</span>
+                <span className="sim-route-key">{t.meta.callsign}</span>
+                <span className="sim-route-meta">
+                  {t.stats.timeMinutes} min
+                </span>
+              </button>
+            </li>
+          ))}
+          <li role="option" aria-selected={playbackIdx === "all"}>
+            <button
+              type="button"
+              className={playbackIdx === "all" ? "active" : undefined}
+              onClick={() => {
+                onChange("all");
+                setOpen(false);
+              }}
+              title="Play every route together on the longest timeline"
+            >
+              <span className="sim-route-tag all">∗</span>
+              <span className="sim-route-key">All routes</span>
+            </button>
+          </li>
+        </ul>
+      )}
+    </div>
+  );
+}
+
+interface SimControlsProps {
+  sim: SimPlayback;
+  trajectories?: TrajectoryResult[];
+  playbackIdx?: PlaybackSource;
+  onPlaybackIdxChange?: (next: PlaybackSource) => void;
+}
+
+export default function SimControls({
+  sim,
+  trajectories = [],
+  playbackIdx = 0,
+  onPlaybackIdxChange,
+}: SimControlsProps) {
   if (!sim.ready) return null;
   const ac = sim.aircraft;
+  const activeLabel = (() => {
+    if (trajectories.length < 2) return null;
+    if (playbackIdx === "all") return "Playing: all routes";
+    const t = trajectories[playbackIdx as number];
+    return t ? `Playing: R${(playbackIdx as number) + 1} · ${t.meta.callsign}` : null;
+  })();
 
   return (
     <div className="sim">
-      <div className="sim-live" aria-live="polite">
+      {onPlaybackIdxChange && trajectories.length >= 2 && (
+        <RouteSourcePicker
+          trajectories={trajectories}
+          playbackIdx={playbackIdx}
+          onChange={onPlaybackIdxChange}
+        />
+      )}
+
+      <div className="sim-live" aria-live="polite" title={activeLabel ?? undefined}>
         <AltReadout ft={ac?.altitudeFt ?? null} />
+        <SpeedReadout gsKt={ac?.gsKt ?? null} tasKt={ac?.tasKt ?? null} />
         {ac && <PhaseChip phase={ac.phase} />}
       </div>
 

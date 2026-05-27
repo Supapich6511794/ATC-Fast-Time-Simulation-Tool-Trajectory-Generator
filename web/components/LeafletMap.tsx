@@ -55,6 +55,10 @@ interface Props {
   previewRoutes?: PreviewPoint[][];
   /** Shared sim clock (seconds); each aircraft is interpolated at it. */
   simT: number;
+  /** Which route is currently driving the playback clock — a numeric
+   *  index renders only that aircraft; ``"all"`` renders every aircraft
+   *  on the longest-route clock (legacy behaviour). */
+  playbackIdx?: number | "all";
   /** Bubbles the underlying Leaflet map instance up so the parent can
    *  drive zoom buttons rendered outside MapContainer (e.g. the +/− on
    *  the floating top-right toolbar). */
@@ -269,6 +273,7 @@ export default function LeafletMap({
   trajectories,
   previewRoutes,
   simT,
+  playbackIdx,
   onMapReady,
 }: Props) {
   const tiles = BASEMAPS[basemap];
@@ -578,6 +583,12 @@ export default function LeafletMap({
       {trajectoryLayer}
 
       {trajectories.map((t, ti) => {
+        // Only the route currently bound to the playback engine gets an
+        // animated aircraft icon — the others keep their static
+        // polyline + endpoint markers. "all" mode renders every plane.
+        if (playbackIdx !== undefined && playbackIdx !== "all" && playbackIdx !== ti) {
+          return null;
+        }
         const ac = aircraftAt(samplesByRoute[ti] ?? [], simT);
         if (!ac) return null;
         return (

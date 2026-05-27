@@ -39,6 +39,8 @@ from trajectory_sim.output import (
     write_csv,
     write_geopackage,
 )
+from trajectory_sim.performance import aircraft_speeds, crossover_altitude_ft
+from trajectory_sim.trajectory import build_flight_timeline
 
 # Project root = parent of this `api/` package.
 _ROOT = Path(__file__).resolve().parent.parent
@@ -305,6 +307,8 @@ def generate(req: GenerateRequest) -> dict[str, object]:
 
     # Build the JSON payload first (it's all the web needs to render the
     # map); the heavier file exports follow.
+    # Phase 3: include `tas_kt` per point. `pd.isna` guards the legacy
+    # constant-speed path where the column is None for every row.
     points = [
         {
             "lat": float(geom.y),
@@ -312,14 +316,16 @@ def generate(req: GenerateRequest) -> dict[str, object]:
             "epoch_ts": ts.isoformat(),
             "altitude_ft": None if alt is None else float(alt),
             "gs_kt": float(gs),
+            "tas_kt": None if tas is None or pd.isna(tas) else float(tas),
             "track_deg": float(trk),
             "phase": str(ph),
         }
-        for geom, ts, alt, gs, trk, ph in zip(
+        for geom, ts, alt, gs, tas, trk, ph in zip(
             gdf.geometry,
             gdf["epoch_ts"],
             gdf["altitude_ft"],
             gdf["gs_kt"],
+            gdf["tas_kt"],
             gdf["track_deg"],
             gdf["phase"],
             strict=True,
@@ -357,6 +363,52 @@ def generate(req: GenerateRequest) -> dict[str, object]:
         if gdf["altitude_ft"].notna().any()
         else None
     )
+
+    # Phase-3 summary: time-weighted average GS per phase + the planned
+    # speed schedule the airframe is flying. Computed straight off the
+    # gdf rather than re-running build_flight_timeline (one pass, all
+    # the data already on hand).
+    def _avg(col: str, phase: str) -> float | None:
+        rows = gdf[gdf["phase"] == phase][col].dropna()
+        if rows.empty:
+            return None
+        return float(rows.mean())
+
+    def _phase_minutes(phase: str) -> float | None:
+        rows = gdf[gdf["phase"] == phase]["epoch_ts"]
+        if rows.empty:
+            return None
+        return float(
+            (rows.iloc[-1] - rows.iloc[0]).total_seconds() / 60.0
+        )
+
+    speeds_obj = aircraft_speeds("B738")
+    speed_schedule = {
+        "climb_cas_kt": speeds_obj.climb_cas_kt,
+        "climb_mach": speeds_obj.climb_mach,
+        "cruise_mach": speeds_obj.cruise_mach,
+        "descent_mach": speeds_obj.descent_mach,
+        "descent_cas_kt": speeds_obj.descent_cas_kt,
+        "crossover_ft": crossover_altitude_ft("B738"),
+        "below_fl100_restriction_kt": 250.0,
+    }
+    phase_breakdown = {
+        "climb": {
+            "avg_tas_kt": _avg("tas_kt", "climb"),
+            "avg_gs_kt": _avg("gs_kt", "climb"),
+            "time_min": _phase_minutes("climb"),
+        },
+        "cruise": {
+            "avg_tas_kt": _avg("tas_kt", "cruise"),
+            "avg_gs_kt": _avg("gs_kt", "cruise"),
+            "time_min": _phase_minutes("cruise"),
+        },
+        "descent": {
+            "avg_tas_kt": _avg("tas_kt", "descent"),
+            "avg_gs_kt": _avg("gs_kt", "descent"),
+            "time_min": _phase_minutes("descent"),
+        },
+    }
 
     gpkg_path = _OUT_DIR / f"{flight_key}.gpkg"
     csv_path = _OUT_DIR / f"{flight_key}.csv"
@@ -400,6 +452,8 @@ def generate(req: GenerateRequest) -> dict[str, object]:
         "profile": {
             "toc": toc,
             "tod": tod,
+            "speed_schedule": speed_schedule,
+            "phase_breakdown": phase_breakdown,
         },
         "route": [
             {"ident": i, "lat": la, "lon": lo} for i, la, lo in route_pts

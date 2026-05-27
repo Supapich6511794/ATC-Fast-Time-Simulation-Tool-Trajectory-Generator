@@ -57,6 +57,12 @@ export default function MapApp() {
   // increments by one each click. Reset on every fresh generation.
   const [visibleCount, setVisibleCount] = useState(1);
 
+  // Playback source: which generated route the SimControls clock is
+  // bound to. A number picks one route; "all" plays every route on the
+  // longest route's timeline (legacy behaviour). The engine itself
+  // stays single-instance — only the source changes.
+  const [playbackIdx, setPlaybackIdx] = useState<number | "all">(0);
+
   // Leaflet map instance, captured via MapRefBridge inside LeafletMap.
   // Used to drive the custom +/− zoom buttons in MapOverlay (the
   // built-in Leaflet zoom control is disabled).
@@ -89,8 +95,10 @@ export default function MapApp() {
   // (VTPStoVTBS.csv / airway Y8), not every fix in the airway file.
   const [routeIdents, setRouteIdents] = useState<string[]>([]);
 
-  // Aircraft animation. The shared clock runs over the longest of the
-  // generated routes so every flight finishes within the timeline.
+  // Aircraft animation. One playback engine drives the clock; the
+  // source is whichever route the user picked (R1, R2, …) or "all",
+  // which falls back to the longest route so every flight fits the
+  // timeline. The selector lives in SimControls.
   const longest = useMemo(
     () =>
       trajectories.reduce<TrajectoryResult | null>(
@@ -100,7 +108,20 @@ export default function MapApp() {
       ),
     [trajectories],
   );
-  const sim = useSimPlayback(longest?.points);
+  // Clamp playbackIdx to the current list (e.g. after a route is
+  // removed). "all" stays as-is; numeric out-of-range falls back to R1
+  // when at least one route exists.
+  const safePlaybackIdx =
+    playbackIdx === "all"
+      ? "all"
+      : trajectories[playbackIdx]
+        ? playbackIdx
+        : trajectories.length > 0
+          ? 0
+          : 0;
+  const activeTrajectory =
+    safePlaybackIdx === "all" ? longest : trajectories[safePlaybackIdx] ?? null;
+  const sim = useSimPlayback(activeTrajectory?.points);
 
   useEffect(() => {
     let cancelled = false;
@@ -156,6 +177,13 @@ export default function MapApp() {
     setDownloads((xs) => xs.filter((_, k) => k !== i));
     // Keep the "all routes" pagination in range when a route is removed.
     setVisibleCount((c) => Math.max(1, Math.min(c, next.length)));
+    // And keep the playback source pointing at a still-existing route.
+    setPlaybackIdx((p) => {
+      if (p === "all") return next.length > 0 ? "all" : 0;
+      if (p === i) return 0;
+      if (p > i) return p - 1;
+      return p;
+    });
     if (next.length === 0) {
       setNav({ kind: "generator" });
     } else if (nav?.kind === "route") {
@@ -244,6 +272,10 @@ export default function MapApp() {
                 setNav({ kind: "all" });
                 setVisibleCount(1);
                 setSidebarOpen(true);
+                // Reset playback source to R1 so the clock starts on
+                // the newly-generated flight instead of replaying an
+                // older route's timeline.
+                setPlaybackIdx(0);
               }
             }}
             onDownloadsChange={setDownloads}
@@ -368,9 +400,15 @@ export default function MapApp() {
               trajectories={trajectories}
               previewRoutes={previewRoutes}
               simT={sim.simT}
+              playbackIdx={safePlaybackIdx}
               onMapReady={onMapReady}
             />
-            <SimControls sim={sim} />
+            <SimControls
+              sim={sim}
+              trajectories={trajectories}
+              playbackIdx={safePlaybackIdx}
+              onPlaybackIdxChange={setPlaybackIdx}
+            />
             {trajectories.length > 0 && <AltitudeLegend />}
           </>
         )}
