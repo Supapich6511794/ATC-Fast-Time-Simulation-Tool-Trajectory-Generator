@@ -55,6 +55,25 @@ interface Props {
   previewRoutes?: PreviewPoint[][];
   /** Shared sim clock (seconds); each aircraft is interpolated at it. */
   simT: number;
+  /** Bubbles the underlying Leaflet map instance up so the parent can
+   *  drive zoom buttons rendered outside MapContainer (e.g. the +/− on
+   *  the floating top-right toolbar). */
+  onMapReady?: (map: L.Map | null) => void;
+}
+
+/** Captures the Leaflet map instance (only obtainable from inside a
+ *  MapContainer via the useMap hook) and hands it back to the parent. */
+function MapRefBridge({
+  onReady,
+}: {
+  onReady: (m: L.Map | null) => void;
+}) {
+  const map = useMap();
+  useEffect(() => {
+    onReady(map);
+    return () => onReady(null);
+  }, [map, onReady]);
+  return null;
 }
 
 /** Per-route colours (cycled if there are more routes than entries). */
@@ -131,6 +150,34 @@ function profileBadge(text: string, color: string): L.DivIcon {
     iconAnchor: [20, 9],
     html: `<span class="profile-badge-pill" style="background:${color}">${text}</span>`,
   });
+}
+
+/** Small pill badge identifying which route a polyline belongs to (R1, R2…)
+ *  when several routes are flown at once. The pill is drawn just off the
+ *  start endpoint so it doesn't overlap the green Start dot. */
+function routeIndexBadge(text: string, color: string): L.DivIcon {
+  return L.divIcon({
+    className: "route-index-badge",
+    iconSize: [26, 18],
+    iconAnchor: [-6, 28],
+    html: `<span class="route-index-pill" style="background:${color};color:#06283d">${text}</span>`,
+  });
+}
+
+/** Altitude → polyline colour: brighter (yellow) at low altitudes,
+ *  saturated cyan/blue at cruise. The same scale is used for every
+ *  generated route so the user reads altitude consistently — different
+ *  *routes* are still distinguishable by their physical path and the
+ *  R1/R2/R3 badge near the start dot. */
+function altitudeColor(altFt: number | null): string {
+  if (altFt == null || !Number.isFinite(altFt)) return "#94a3b8";
+  // Normalise 0–FL400 onto 0–1; clamp so any altitude maps to a colour.
+  const f = Math.max(0, Math.min(1, altFt / 40000));
+  // Hue sweeps warm-yellow (50°) → cyan-blue (210°) as altitude climbs;
+  // lightness drops 72 % → 38 % so low altitudes literally look brighter.
+  const hue = 50 + f * 160;
+  const light = 72 - f * 34;
+  return `hsl(${hue.toFixed(0)}, 92%, ${light.toFixed(0)}%)`;
 }
 
 /**
@@ -222,6 +269,7 @@ export default function LeafletMap({
   trajectories,
   previewRoutes,
   simT,
+  onMapReady,
 }: Props) {
   const tiles = BASEMAPS[basemap];
 
@@ -355,6 +403,8 @@ export default function LeafletMap({
     );
   }, [previewRoutes]);
 
+  const multiRoute = trajectories.length > 1;
+
   const trajectoryLayer = useMemo(
     () =>
       trajectories.map((trajectory, ti) => {
@@ -365,12 +415,64 @@ export default function LeafletMap({
         const color = ROUTE_COLORS[ti % ROUTE_COLORS.length];
         const kp = meta.flightKey;
 
+        // Colour the polyline by altitude: each interpolated 4-second
+        // sample is split into a handful of sub-segments with the colour
+        // interpolated linearly between the two altitudes, and segments
+        // use round line caps so they overlap and visually blend at
+        // joints instead of stair-stepping. Same scale on every route.
+        const SUB = 5;
+        const altSegments: ReactNode[] = [];
+        for (let i = 0; i < pts.length - 1; i++) {
+          const a = pts[i];
+          const b = pts[i + 1];
+          const altA = a.altitude_ft ?? 0;
+          const altB = b.altitude_ft ?? 0;
+          for (let k = 0; k < SUB; k++) {
+            const t1 = k / SUB;
+            const t2 = (k + 1) / SUB;
+            const lat1 = a.lat + (b.lat - a.lat) * t1;
+            const lon1 = a.lon + (b.lon - a.lon) * t1;
+            const lat2 = a.lat + (b.lat - a.lat) * t2;
+            const lon2 = a.lon + (b.lon - a.lon) * t2;
+            const altMid = altA + (altB - altA) * ((t1 + t2) / 2);
+            altSegments.push(
+              <Polyline
+                key={`${kp}-alt-${i}-${k}`}
+                positions={[
+                  [lat1, lon1],
+                  [lat2, lon2],
+                ]}
+                interactive={false}
+                pathOptions={{
+                  color: altitudeColor(altMid),
+                  weight: 5,
+                  opacity: 0.95,
+                  // Round caps overlap at sub-segment joints so the
+                  // colour transitions blend instead of stair-stepping.
+                  lineCap: "round",
+                  lineJoin: "round",
+                }}
+              />,
+            );
+          }
+        }
+
         return (
           <Fragment key={kp}>
+            {/* Faint dark casing under the altitude-coloured segments so
+                the route stays readable over both light and dark tiles. */}
             <Polyline
               positions={line}
-              pathOptions={{ color, weight: 3, opacity: 0.95 }}
+              interactive={false}
+              pathOptions={{
+                color: "#0f172a",
+                weight: 8,
+                opacity: 0.45,
+                lineCap: "round",
+                lineJoin: "round",
+              }}
             />
+            {altSegments}
 
             {route.slice(1, -1).map((w) => (
               <HoverFix
@@ -395,6 +497,14 @@ export default function LeafletMap({
                 </Popup>
               </HoverFix>
             ))}
+
+            {multiRoute && (
+              <Marker
+                position={line[0]}
+                interactive={false}
+                icon={routeIndexBadge(`R${ti + 1}`, color)}
+              />
+            )}
 
             <EndpointMarker
               position={line[0]}
@@ -443,7 +553,7 @@ export default function LeafletMap({
           </Fragment>
         );
       }),
-    [trajectories],
+    [trajectories, multiRoute],
   );
 
   return (
@@ -452,9 +562,14 @@ export default function LeafletMap({
       zoom={DEFAULT_ZOOM}
       scrollWheelZoom
       preferCanvas
+      // Leaflet's default zoom control sits top-left. We disable it so a
+      // custom +/− pair can be rendered next to the Light/Dark toggle
+      // (see MapOverlay) — see onMapReady prop below.
+      zoomControl={false}
       style={{ height: "100%", width: "100%" }}
     >
       <TileLayer key={basemap} attribution={tiles.attribution} url={tiles.url} />
+      {onMapReady && <MapRefBridge onReady={onMapReady} />}
 
       {firLayer}
       {airwayLayer}

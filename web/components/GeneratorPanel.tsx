@@ -18,7 +18,6 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import AltitudeProfile from "@/components/AltitudeProfile";
 import IdentCombobox, { type ComboOption } from "@/components/IdentCombobox";
 import RouteBuilder from "@/components/RouteBuilder";
 import { generateTrajectory } from "@/lib/api";
@@ -36,10 +35,22 @@ type InputMode = "manual" | "file";
 /** How the route portion is supplied (all three kept, none removed). */
 type RouteMode = "fpl" | "build" | "csv";
 
+interface DownloadInfo {
+  callsign: string;
+  flightKey: string;
+  route: string;
+  gpkg: string;
+  csv: string;
+  geojson: string;
+}
+
 interface Props {
   /** Emits the generated trajectories (or null to clear) to the parent.
    *  An array so several routes can be flown/shown at once. */
   onResult: (results: TrajectoryResult[] | null) => void;
+  /** Emits the matching download URLs alongside results. Lifted to the
+   *  parent so the floating NavToolbar + DownloadModal can read them. */
+  onDownloadsChange?: (dl: DownloadInfo[]) => void;
   /** Live preview of all routes the user has in flight (the queued
    *  routes plus the one currently being typed/built), so the map can
    *  show each as a faint distinctly-coloured polyline in real time. */
@@ -70,6 +81,7 @@ const SUPPORTED_PAIR = ["VTBS", "VTSP"];
 
 export default function GeneratorPanel({
   onResult,
+  onDownloadsChange,
   onPreviewChange,
   waypointIdents,
 }: Props) {
@@ -97,17 +109,7 @@ export default function GeneratorPanel({
   // on each download card removes that one entry from both arrays and
   // from the map (via onResult).
   const [results, setResults] = useState<TrajectoryResult[]>([]);
-  const [dlList, setDlList] = useState<
-    {
-      callsign: string;
-      flightKey: string;
-      route: string;
-      gpkg: string;
-      csv: string;
-      geojson: string;
-    }[]
-  >([]);
-  const firstResult = results[0] ?? null;
+  const [dlList, setDlList] = useState<DownloadInfo[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -345,40 +347,31 @@ export default function GeneratorPanel({
       );
 
       const trajectories = settled.map((s) => s.result);
+      const newDownloads: DownloadInfo[] = settled.map((s, i) => ({
+        callsign: s.result.meta.callsign,
+        flightKey: s.result.meta.flightKey,
+        route:
+          apiSource === "csv"
+            ? `Airway CSV · ${dep}→${des}`
+            : list[i] || "(route)",
+        gpkg: s.downloads.gpkg,
+        csv: s.downloads.csv,
+        geojson: s.downloads.geojson,
+      }));
       setResults(trajectories);
-      setDlList(
-        settled.map((s, i) => ({
-          callsign: s.result.meta.callsign,
-          flightKey: s.result.meta.flightKey,
-          route:
-            apiSource === "csv"
-              ? `Airway CSV · ${dep}→${des}`
-              : list[i] || "(route)",
-          gpkg: s.downloads.gpkg,
-          csv: s.downloads.csv,
-          geojson: s.downloads.geojson,
-        })),
-      );
+      setDlList(newDownloads);
       setWarnings(settled.flatMap((s) => s.warnings));
       onResult(trajectories);
+      onDownloadsChange?.(newDownloads);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Generation failed.");
       setResults([]);
       setDlList([]);
       onResult(null);
+      onDownloadsChange?.([]);
     } finally {
       setBusy(false);
     }
-  }
-
-  /** Drop one finished route by index — removes its download card and
-   *  its line from the map (via onResult), so the user can clean up
-   *  individual flights without re-running Generate. */
-  function removeResultAt(i: number) {
-    const nextResults = results.filter((_, k) => k !== i);
-    setResults(nextResults);
-    setDlList((xs) => xs.filter((_, k) => k !== i));
-    onResult(nextResults.length ? nextResults : null);
   }
 
   return (
@@ -713,74 +706,13 @@ export default function GeneratorPanel({
 
       {error && <p className="gen-error">⚠ {error}</p>}
 
-      {warnings.length > 0 && (
-        <ul className="gen-warn">
-          {warnings.map((w, i) => (
-            <li key={i}>{w}</li>
-          ))}
-        </ul>
-      )}
-
-      {firstResult && dlList.length > 0 && (
-        <div className="gen-result">
-          <dl>
-            <div>
-              <dt>{dlList.length > 1 ? "Routes" : "Waypoints"}</dt>
-              <dd>
-                {dlList.length > 1
-                  ? dlList.length
-                  : firstResult.stats.waypointCount}
-              </dd>
-            </div>
-            <div>
-              <dt>Points</dt>
-              <dd>{firstResult.stats.pointCount}</dd>
-            </div>
-            <div>
-              <dt>Distance</dt>
-              <dd>{firstResult.stats.distanceNm} NM</dd>
-            </div>
-            <div>
-              <dt>Flight time</dt>
-              <dd>{firstResult.stats.timeMinutes} min</dd>
-            </div>
-          </dl>
-
-          <AltitudeProfile trajectory={firstResult} />
-
-          {/* One export set per generated flight. ✕ clears that flight
-              from both the download list and the map. */}
-          {dlList.map((d, i) => (
-            <div className="gen-dl-route" key={d.flightKey}>
-              <div className="gen-dl-head">
-                <p className="gen-key">{d.flightKey}</p>
-                <button
-                  type="button"
-                  className="gen-dl-close"
-                  onClick={() => removeResultAt(i)}
-                  title="Remove this flight from the map and downloads"
-                  aria-label={`Remove ${d.flightKey}`}
-                >
-                  ✕
-                </button>
-              </div>
-              <p className="gen-dl-rt" title={d.route}>
-                ↳ {d.route}
-              </p>
-              <div className="gen-downloads">
-                <a className="dl-btn" href={d.gpkg}>
-                  ⬇ GeoPackage
-                </a>
-                <a className="dl-btn" href={d.csv}>
-                  ⬇ CSV
-                </a>
-                <a className="dl-btn" href={d.geojson}>
-                  ⬇ GeoJSON
-                </a>
-              </div>
-            </div>
-          ))}
-        </div>
+      {results.length > 0 && (
+        <p className="gen-results-shortcut">
+          ✓ {results.length === 1 ? "1 trajectory" : `${results.length} trajectories`} ready
+          <span className="gen-results-shortcut-cta">
+            Open <strong>Generated ▾</strong> in the menu
+          </span>
+        </p>
       )}
     </section>
   );

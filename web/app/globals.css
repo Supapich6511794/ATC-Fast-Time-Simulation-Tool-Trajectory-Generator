@@ -113,6 +113,1592 @@ body {
   color: var(--accent);
 }
 
+/* ============================================================= *
+ *  Floating tool menu — top-left of the map (NavToolbar component)
+ * ============================================================= */
+.tool-menu {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 1000;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--panel);
+  border: 1px solid #33415588;
+  border-radius: 12px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+.tool-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.tool-item:hover:not(:disabled) {
+  color: var(--accent);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.tool-item.active {
+  background: rgba(56, 189, 248, 0.16);
+  color: var(--accent);
+  border-color: rgba(56, 189, 248, 0.55);
+}
+
+.tool-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  color: var(--muted);
+}
+
+.tool-ico {
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.tool-label {
+  white-space: nowrap;
+}
+
+.tool-count {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 6px;
+  background: #fbbf24;
+  color: #422006;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.5;
+  flex-shrink: 0;
+}
+
+.tool-item.active .tool-count {
+  background: rgba(56, 189, 248, 0.35);
+  color: #06283d;
+}
+
+.tool-caret {
+  font-size: 10px;
+  color: var(--muted);
+  flex-shrink: 0;
+  margin-left: 2px;
+}
+
+.tool-item.active .tool-caret,
+.tool-item.open .tool-caret {
+  color: var(--accent);
+}
+
+/* The dropdown wrapper sits inline; its inner button takes the look. */
+.tool-dd {
+  position: relative;
+  padding: 0;
+}
+
+.tool-dd-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  background: transparent;
+  color: inherit;
+  border: none;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tool-dd-trigger:disabled {
+  cursor: not-allowed;
+}
+
+/* ---- Cascading dropdown menu (clicked from "Generated ▾") ---- */
+.tm-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  min-width: 240px;
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid #33415588;
+  border-radius: 10px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+  z-index: 1500;
+  animation: tm-fade 0.14s ease;
+}
+
+@keyframes tm-fade {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.tm-item {
+  position: relative;
+  list-style: none;
+}
+
+.tm-item + .tm-item {
+  margin-top: 2px;
+}
+
+.tm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.tm-item:hover > .tm-row,
+.tm-item > .tm-row:focus-visible {
+  background: rgba(56, 189, 248, 0.1);
+  color: var(--accent);
+  outline: none;
+}
+
+.tm-item.current > .tm-row {
+  background: rgba(56, 189, 248, 0.14);
+  color: var(--accent);
+}
+
+.tm-item.expanded > .tm-row {
+  background: rgba(56, 189, 248, 0.18);
+  color: var(--accent);
+}
+
+.tm-tag {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  background: var(--accent);
+  color: #06283d;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  letter-spacing: 0.04em;
+}
+
+.tm-key {
+  flex: 1;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tm-arrow {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+/* Sub-menu — clicked-open cascade to the right of the parent on
+   desktop, stacks inline underneath on phones. Rendered conditionally
+   in JSX so there's no hover-gap dead zone. */
+.tm-submenu {
+  position: absolute;
+  top: -6px;
+  left: calc(100% + 6px);
+  min-width: 240px;
+  max-width: 320px;
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid #33415588;
+  border-radius: 10px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
+  z-index: 1600;
+  animation: tm-fade 0.14s ease;
+}
+
+.tm-sub-route {
+  padding: 8px 10px;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  border-radius: 6px;
+  word-break: break-word;
+  cursor: default;
+  background: rgba(15, 23, 42, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.tm-sub-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-weight: 700;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+.tm-sub-routestr {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.tm-sub-divider {
+  height: 1px;
+  background: #33415588;
+  margin: 4px 0;
+}
+
+.tm-submenu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, color 0.15s;
+}
+
+.tm-submenu button:hover {
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--accent);
+}
+
+.tm-submenu button.active {
+  background: var(--accent);
+  color: #06283d;
+  font-weight: 700;
+}
+
+.tm-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tm-dot.vp {
+  background: #38bdf8;
+}
+
+.tm-dot.ts {
+  background: #fbbf24;
+}
+
+.tm-submenu button.active .tm-dot {
+  background: rgba(6, 40, 61, 0.7);
+}
+
+.tm-sub-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+
+.tm-sub-title {
+  font-weight: 600;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.tm-sub-meta {
+  color: var(--muted);
+  font-size: 10px;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  line-height: 1.2;
+}
+
+.tm-submenu button.active .tm-sub-meta {
+  color: rgba(6, 40, 61, 0.7);
+}
+
+.app.theme-light .tool-menu,
+.app.theme-light .tm-menu,
+.app.theme-light .tm-submenu {
+  background: #ffffff;
+  border-color: #cbd5e1;
+}
+
+/* Responsive: on a phone the tool menu stretches across the top so all
+   three actions remain reachable without scrolling. */
+@media (max-width: 640px) {
+  .tool-menu {
+    left: 6px;
+    right: 56px; /* leave room for the hamburger (top-left) */
+    top: 8px;
+    padding: 4px 6px;
+  }
+  .tool-item,
+  .tool-dd-trigger {
+    padding: 6px 8px;
+    font-size: 12px;
+  }
+  .tm-menu,
+  .tm-submenu {
+    min-width: 200px;
+  }
+  /* Stack the submenu underneath the parent item on mobile rather than
+     to the right, so it stays within the viewport. */
+  .tm-submenu {
+    position: static;
+    margin: 4px 0 6px 24px;
+    box-shadow: none;
+    border-color: #33415544;
+    min-width: 0;
+    max-width: none;
+  }
+}
+
+/* The sidebar can be hidden entirely (no nav item active) — slides out
+   to the left while staying in the DOM so animations work both ways. */
+.sidebar.hidden {
+  transform: translateX(-105%);
+  pointer-events: none;
+}
+
+@media (min-width: 861px) {
+  /* Desktop: collapse the gutter when the sidebar is hidden so the map
+     fills the full viewport width. */
+  .sidebar {
+    transition: width 0.25s ease, transform 0.25s ease, padding 0.25s ease;
+  }
+  .sidebar.hidden {
+    width: 0;
+    padding: 0;
+    border-right: none;
+  }
+}
+
+/* ============================================================= *
+ *  Top-level navigation bar (legacy in-sidebar nav — kept for now)
+ * ============================================================= */
+.nav-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 14px;
+  padding: 0 0 10px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #33415588;
+  border-radius: 0;
+}
+
+.nav-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  /* natural width — each item is exactly as wide as its text needs */
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.nav-item:hover:not(:disabled) {
+  color: var(--accent);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.nav-item.active {
+  background: rgba(56, 189, 248, 0.14);
+  color: var(--accent);
+  border-color: rgba(56, 189, 248, 0.55);
+}
+
+.nav-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  color: var(--muted);
+}
+
+.nav-ico {
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.nav-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.nav-count {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 6px;
+  background: #fbbf24;
+  color: #422006;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.5;
+  flex-shrink: 0;
+}
+
+.nav-item.active .nav-count {
+  background: rgba(6, 40, 61, 0.18);
+  color: inherit;
+}
+
+.nav-caret {
+  font-size: 10px;
+  color: var(--muted);
+  flex-shrink: 0;
+  margin-left: 2px;
+}
+
+.nav-item.active .nav-caret {
+  color: var(--accent);
+}
+
+.nav-item.active .nav-caret {
+  color: #06283d;
+}
+
+/* ---- Multi-level "Generated" dropdown ---- */
+.nav-dd {
+  position: relative;
+}
+
+.nav-dd-btn {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nav-dd-btn:disabled {
+  cursor: not-allowed;
+}
+
+.nav-dd-menu {
+  position: absolute;
+  top: calc(100% + 12px);
+  left: 0;
+  /* Wider than the (now narrow) trigger so the route strings get room */
+  min-width: 260px;
+  max-width: 320px;
+  background: var(--panel);
+  border: 1px solid #33415588;
+  border-radius: 10px;
+  padding: 6px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+  z-index: 2000;
+  max-height: 70vh;
+  overflow-y: auto;
+  animation: nav-dd-fade 0.15s ease;
+}
+
+@keyframes nav-dd-fade {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.nav-dd-route + .nav-dd-route {
+  margin-top: 4px;
+  border-top: 1px dashed #334155;
+  padding-top: 4px;
+}
+
+.nav-dd-route-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.nav-dd-route-head:hover {
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.nav-dd-route-head.current {
+  background: rgba(56, 189, 248, 0.14);
+  color: var(--accent);
+}
+
+.nav-dd-tag {
+  flex-shrink: 0;
+  display: inline-block;
+  padding: 1px 7px;
+  background: var(--accent);
+  color: #06283d;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.nav-dd-routestr {
+  flex: 1;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-dd-arrow {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.nav-dd-leaves {
+  list-style: none;
+  margin: 4px 0 6px;
+  padding: 0 0 0 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.nav-dd-leaves button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.nav-dd-leaves button:hover {
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.nav-dd-leaves button.active {
+  background: var(--accent);
+  color: #06283d;
+  font-weight: 700;
+}
+
+.nav-dd-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.nav-dd-dot.vp {
+  background: #38bdf8;
+}
+
+.nav-dd-dot.ts {
+  background: #fbbf24;
+}
+
+.nav-dd-leaves button.active .nav-dd-dot {
+  background: rgba(6, 40, 61, 0.6);
+}
+
+.nav-dd-sub {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+}
+
+.nav-dd-leaves button.active .nav-dd-sub {
+  color: rgba(6, 40, 61, 0.65);
+}
+
+/* ---- Breadcrumb under the nav bar when viewing a route ---- */
+.nav-breadcrumb {
+  margin: 0 0 12px;
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nav-breadcrumb strong {
+  color: var(--accent);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+}
+
+.nav-crumb-link {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  text-decoration: underline dotted;
+}
+
+.nav-crumb-link:hover {
+  color: var(--accent);
+}
+
+/* ============================================================= *
+ *  Download modal
+ * ============================================================= */
+.dlm-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.65);
+  backdrop-filter: blur(2px);
+  z-index: 4000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: dlm-fade 0.15s ease;
+}
+
+@keyframes dlm-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.dlm-card {
+  width: 100%;
+  max-width: 460px;
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid #33415588;
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  animation: dlm-pop 0.18s ease;
+}
+
+@keyframes dlm-pop {
+  from {
+    transform: scale(0.95) translateY(8px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+.dlm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid #334155;
+}
+
+.dlm-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.dlm-close {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 8px;
+  border-radius: 6px;
+  height: 28px;
+}
+
+.dlm-close:hover {
+  border-color: #f87171;
+  color: #f87171;
+}
+
+.dlm-section {
+  padding: 12px 16px;
+  border-bottom: 1px solid #1e293b;
+  /* No section-level overflow — the suggestion popup is positioned
+     absolutely inside .dlm-combo and would be clipped here. Scrolling
+     for the modal body is handled by the card's own overflow. */
+}
+
+.dlm-section:last-of-type {
+  border-bottom: none;
+}
+
+.dlm-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.dlm-quick {
+  display: flex;
+  gap: 4px;
+}
+
+.dlm-quick button {
+  background: transparent;
+  border: 1px solid #33415588;
+  color: var(--muted);
+  border-radius: 5px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.dlm-quick button:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.dlm-list,
+.dlm-fmt-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ---- Download modal — typeahead route picker (chips + suggestions) ---- */
+.dlm-combo {
+  position: relative;
+  background: #0f172a;
+  border: 1px solid #33415588;
+  border-radius: 8px;
+  padding: 6px;
+  cursor: text;
+  transition: border-color 0.15s;
+}
+
+.dlm-combo:hover,
+.dlm-combo.open {
+  border-color: var(--accent);
+}
+
+.dlm-chips {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  /* ≈ 4 chip rows visible at once; the rest scroll. Chip row is ~30 px
+     tall (padding 3+3 + content ~22 + border 2); 4 × 30 + 3 × 6 ≈ 138 px. */
+  max-height: 138px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
+}
+
+.dlm-chips::-webkit-scrollbar {
+  width: 8px;
+}
+
+.dlm-chips::-webkit-scrollbar-thumb {
+  background: #33415588;
+  border-radius: 999px;
+}
+
+.dlm-chips::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+
+.dlm-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 8px;
+  background: rgba(56, 189, 248, 0.16);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  min-width: 0;
+  /* One chip per row — the chip stretches across the combo so longer
+     route strings stay readable instead of wrapping inside the chip. */
+  width: 100%;
+}
+
+.dlm-chip-tag {
+  flex-shrink: 0;
+  padding: 0 6px;
+  background: var(--accent);
+  color: #06283d;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  letter-spacing: 0.04em;
+}
+
+.dlm-chip-route {
+  flex: 1;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dlm-chip-x {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.dlm-chip-x:hover {
+  background: #f87171;
+  color: #fff;
+}
+
+.dlm-combo-input {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 6px 4px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+/* When no chips are selected the input is the only child — drop the
+   top margin so it sits flush against the combo's top edge. */
+.dlm-combo > .dlm-combo-input:first-child {
+  margin-top: 0;
+}
+
+.dlm-combo-input::placeholder {
+  color: var(--muted);
+}
+
+.dlm-suggest {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid #33415588;
+  border-radius: 8px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
+  z-index: 4100;
+  /* Exactly 3 rows visible: each .dlm-suggest li has a fixed 48 px
+     height, so 3 × 48 + 8 px container padding = 152 px. Routes beyond
+     #3 scroll inside the dropdown. */
+  max-height: 152px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #475569 transparent;
+}
+
+/* Slim, themed scrollbar for the suggestion list (WebKit / Chromium). */
+.dlm-suggest::-webkit-scrollbar {
+  width: 6px;
+}
+.dlm-suggest::-webkit-scrollbar-track {
+  background: transparent;
+}
+.dlm-suggest::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 3px;
+}
+.dlm-suggest::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+
+.dlm-suggest li {
+  list-style: none;
+  /* Fixed row height so the "4 visible rows" math always holds even
+     when route strings wrap on long FPLs. */
+  height: 48px;
+  display: flex;
+  align-items: stretch;
+}
+
+.dlm-suggest button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  font: inherit;
+  overflow: hidden;
+}
+
+.dlm-suggest button:hover,
+.dlm-suggest button.active {
+  background: rgba(56, 189, 248, 0.14);
+  color: var(--accent);
+}
+
+.dlm-suggest mark {
+  background: transparent;
+  color: inherit;
+  font-weight: 800;
+  text-decoration: underline;
+}
+
+.dlm-sug-tag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  background: var(--accent);
+  color: #06283d;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  letter-spacing: 0.04em;
+}
+
+.dlm-sug-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.dlm-sug-key {
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dlm-sug-route {
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 10px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dlm-sug-meta {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.dlm-empty-hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.app.theme-light .dlm-combo {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+.app.theme-light .dlm-suggest {
+  background: #ffffff;
+  border-color: #cbd5e1;
+}
+
+.dlm-row,
+.dlm-fmt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #0f172a;
+  border: 1px solid #33415588;
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.dlm-row.on,
+.dlm-fmt.on {
+  border-color: var(--accent);
+  background: rgba(56, 189, 248, 0.05);
+}
+
+.dlm-row:hover,
+.dlm-fmt:hover {
+  border-color: var(--accent);
+}
+
+/* ---- Formats: single horizontal row of toggle pills (multi-select) ---- */
+.dlm-fmt-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dlm-fmt-pill {
+  flex: 1 1 0;
+  min-width: 95px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 8px;
+  background: #0f172a;
+  color: var(--text);
+  border: 1px solid #33415588;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.dlm-fmt-pill:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.dlm-fmt-pill.on {
+  background: rgba(56, 189, 248, 0.16);
+  color: var(--accent);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.25);
+}
+
+.dlm-fmt-check {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1.5px solid #33415588;
+  border-radius: 3px;
+  color: transparent;
+  font-size: 10px;
+  font-weight: 800;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.dlm-fmt-pill.on .dlm-fmt-check {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #06283d;
+}
+
+.dlm-fmt-pill-label {
+  white-space: nowrap;
+}
+
+.app.theme-light .dlm-fmt-pill {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.app.theme-light .dlm-fmt-pill.on {
+  background: rgba(2, 132, 199, 0.12);
+}
+
+.dlm-row input,
+.dlm-fmt input {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.dlm-row-tag {
+  flex-shrink: 0;
+  display: inline-block;
+  padding: 1px 7px;
+  background: var(--accent);
+  color: #06283d;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+}
+
+.dlm-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dlm-row-key {
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 11px;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dlm-row-route {
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 10px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dlm-row-meta {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+}
+
+.dlm-fmt-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dlm-fmt-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.dlm-fmt-sub {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+}
+
+.dlm-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid #334155;
+  background: rgba(15, 23, 42, 0.5);
+}
+
+.dlm-foot-note {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.dlm-foot-btns {
+  display: flex;
+  gap: 8px;
+}
+
+.dlm-cancel {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid #33415588;
+  border-radius: 7px;
+  padding: 7px 13px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dlm-cancel:hover {
+  color: var(--text);
+  border-color: var(--text);
+}
+
+.dlm-go {
+  background: var(--accent);
+  color: #06283d;
+  border: none;
+  border-radius: 7px;
+  padding: 7px 14px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.dlm-go:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.dlm-go:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.app.theme-light .nav-bar,
+.app.theme-light .nav-dd-menu,
+.app.theme-light .dlm-card {
+  background: #ffffff;
+  border-color: #cbd5e1;
+}
+
+.app.theme-light .dlm-row,
+.app.theme-light .dlm-fmt {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.app.theme-light .dlm-foot {
+  background: #f1f5f9;
+}
+
+/* ============================================================= *
+ *  Top-level Generator / Generated wizard tabs (legacy)
+ * ============================================================= */
+.panel-tabs {
+  display: flex;
+  gap: 0;
+  margin: 0 0 16px;
+  padding: 4px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid #334155;
+  border-radius: 10px;
+}
+
+.panel-tabs button {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 10px;
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.panel-tabs button:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(56, 189, 248, 0.06);
+}
+
+.panel-tabs button.active {
+  background: var(--accent);
+  color: #06283d;
+  box-shadow: 0 2px 8px rgba(56, 189, 248, 0.28);
+}
+
+.panel-tabs button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Numeric step pip inside the wizard tab (1 / 2). */
+.panel-tab-step {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.4);
+  color: inherit;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.panel-tabs button.active .panel-tab-step {
+  background: rgba(6, 40, 61, 0.18);
+}
+
+.panel-tab-label {
+  letter-spacing: 0.04em;
+}
+
+/* Result count pill (e.g. "2") on the Generated tab. */
+.panel-tab-badge {
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 5px;
+  background: #fbbf24;
+  color: #422006;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.6;
+  letter-spacing: 0;
+}
+
+.panel-tabs button.active .panel-tab-badge {
+  background: rgba(6, 40, 61, 0.18);
+  color: inherit;
+}
+
+.panel-view {
+  animation: panel-fade 0.18s ease;
+}
+
+@keyframes panel-fade {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Header strip on the Generated tab: count + "Edit flight plan" link. */
+.gen-results-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 10px;
+}
+
+.gen-results-head .gen-multi-head {
+  margin: 0;
+}
+
+.gen-edit-link {
+  background: none;
+  border: 1px dashed #33415588;
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 4px 9px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.gen-edit-link:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Empty state on the Generated tab when no flights exist yet. */
+.gen-empty {
+  margin-top: 24px;
+  text-align: center;
+  padding: 28px 14px;
+  background: rgba(15, 23, 42, 0.4);
+  border: 1px dashed #334155;
+  border-radius: 12px;
+}
+
+.gen-empty-icon {
+  font-size: 36px;
+  color: var(--accent);
+  line-height: 1;
+  filter: drop-shadow(0 1px 6px rgba(56, 189, 248, 0.25));
+}
+
+.gen-empty-title {
+  margin: 14px 0 6px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.gen-empty-sub {
+  margin: 0 auto;
+  max-width: 240px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.gen-empty-cta {
+  display: inline-block;
+  margin-top: 16px;
+  padding: 7px 14px;
+  background: var(--accent);
+  color: #06283d;
+  border: none;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.gen-empty-cta:hover {
+  filter: brightness(1.08);
+}
+
+/* "Results ready" shortcut shown under Generate when user is still on
+   the Generator tab after a successful run. */
+.gen-results-shortcut {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin: 12px 0 0;
+  padding: 9px 12px;
+  background: rgba(34, 197, 94, 0.08);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  border-radius: 7px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.gen-results-shortcut:hover {
+  background: rgba(34, 197, 94, 0.16);
+}
+
+.gen-results-shortcut-cta {
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.app.theme-light .panel-tabs {
+  background: #ffffff;
+  border-color: #cbd5e1;
+}
+
+.app.theme-light .panel-tab-step {
+  background: #e2e8f0;
+}
+
+.app.theme-light .panel-tabs button.active {
+  color: #ffffff;
+}
+
+.app.theme-light .gen-empty {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -262,9 +1848,321 @@ body {
 }
 
 .gen-dl-route + .gen-dl-route {
-  margin-top: 10px;
+  margin-top: 14px;
   border-top: 1px dashed #334155;
-  padding-top: 10px;
+  padding-top: 12px;
+}
+
+/* ============================================================= *
+ *  "All routes" landing view — stacked sections per route + Show More
+ * ============================================================= */
+.gen-all {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* Section title shown above each section when RouteResultTabs renders
+   in stacked mode (no tab strip). */
+.rt-section-title {
+  margin: 6px 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.rt-section-sep {
+  margin: 16px 0;
+  border: none;
+  border-top: 1px dashed #33415588;
+}
+
+/* "Show more / Show only R1" buttons under the stacked list. */
+.gen-show-more,
+.gen-show-less {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: rgba(56, 189, 248, 0.08);
+  color: var(--accent);
+  border: 1px dashed rgba(56, 189, 248, 0.45);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  width: 100%;
+  text-align: center;
+}
+
+.gen-show-more:hover,
+.gen-show-less:hover {
+  background: rgba(56, 189, 248, 0.16);
+  border-style: solid;
+}
+
+.gen-show-less {
+  background: transparent;
+  color: var(--muted);
+  border-color: #33415588;
+  font-weight: 600;
+  margin-top: 6px;
+}
+
+.gen-show-less:hover {
+  color: var(--text);
+  background: rgba(148, 163, 184, 0.08);
+}
+
+/* Header shown only when 2+ routes were generated, so the user knows
+   they need to scroll for each route's stats / chart / downloads. */
+.gen-multi-head {
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+/* Coloured "R1 / R2 / R3" badge next to the flight_key when multi-route. */
+.gen-route-tag {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  background: var(--accent);
+  color: #06283d;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+/* ============================================================= *
+ *  Per-route Vertical / Summary / Download tabs
+ * ============================================================= */
+.rt-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 10px 0 0;
+  background: #0f172a;
+  padding: 3px;
+  border-radius: 8px;
+  border: 1px solid #334155;
+}
+
+.rt-tabs button {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 4px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.rt-tabs button:hover {
+  color: var(--text);
+}
+
+.rt-tabs button.active {
+  background: var(--accent);
+  color: #06283d;
+  box-shadow: 0 1px 4px rgba(56, 189, 248, 0.25);
+}
+
+.rt-tabpanel {
+  margin-top: 10px;
+  animation: rt-fade 0.15s ease;
+}
+
+@keyframes rt-fade {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Vertical-profile tab: compact stat row under the chart. */
+.rt-vp-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 8px 0 0;
+}
+
+.rt-vp-stats div {
+  background: #0f172a;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.rt-vp-stats dt {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.rt-vp-stats dd {
+  margin: 1px 0 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+}
+
+/* ---- Trajectory summary tab: hero 2×2 grid + secondary meta strip ---- */
+.rt-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.rt-summary-grid {
+  display: grid !important;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px !important;
+  margin: 0 !important;
+}
+
+.rt-summary-grid div {
+  background: #0f172a !important;
+  border: 1px solid #33415588;
+  border-radius: 10px !important;
+  padding: 14px 14px !important;
+}
+
+.rt-summary-grid dt {
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  text-transform: uppercase;
+  letter-spacing: 0.08em !important;
+  color: var(--muted) !important;
+  font-family: ui-sans-serif, system-ui, sans-serif !important;
+}
+
+.rt-summary-grid dd {
+  margin: 6px 0 0 !important;
+  font-size: 22px !important;
+  font-weight: 800 !important;
+  color: var(--text) !important;
+  font-family: ui-sans-serif, system-ui, sans-serif !important;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+
+.rt-summary-unit {
+  margin-left: 2px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* Secondary meta strip — single column, monospace key/value rows. */
+.rt-summary-meta {
+  display: grid !important;
+  grid-template-columns: 1fr !important;
+  gap: 0 !important;
+  margin: 0 !important;
+  padding: 10px 14px !important;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid #33415588;
+  border-radius: 10px;
+}
+
+.rt-summary-meta div {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: transparent !important;
+  padding: 7px 0 !important;
+  border-radius: 0 !important;
+}
+
+.rt-summary-meta div + div {
+  border-top: 1px dashed #33415555;
+}
+
+.rt-summary-meta dt {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+  color: var(--muted) !important;
+}
+
+.rt-summary-meta dd {
+  margin: 0 !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  color: var(--text) !important;
+  font-family: ui-monospace, "SFMono-Regular", monospace !important;
+}
+
+.rt-arrow {
+  margin: 0 4px;
+  color: var(--accent);
+}
+
+.app.theme-light .rt-summary-grid div,
+.app.theme-light .rt-summary-meta {
+  background: #ffffff !important;
+  border-color: #cbd5e1;
+}
+
+/* Download tab: full-width stacked buttons with format hint. */
+.rt-dl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dl-btn-full {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 9px 12px;
+  background: #0f172a;
+  color: var(--text);
+  border: 1px solid #334155;
+  border-radius: 7px;
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 600;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.dl-btn-full:hover {
+  border-color: var(--accent);
+  background: rgba(56, 189, 248, 0.05);
+}
+
+.dl-btn-full .dl-sub {
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--muted);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+}
+
+.app.theme-light .rt-tabs,
+.app.theme-light .rt-vp-stats div,
+.app.theme-light .dl-btn-full {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
 }
 
 .gen-downloads {
@@ -530,6 +2428,57 @@ body {
 .ov-chip.active {
   background: var(--accent);
   color: #06283d;
+}
+
+/* Custom +/− zoom pair to the right of the Light/Dark toggle. The two
+   buttons share a single rounded shell — visually one control with a
+   thin divider down the middle — and replace Leaflet's default top-left
+   zoom which is disabled in LeafletMap. */
+.ov-zoom {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 1px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid #33415544;
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.ov-zoom-btn {
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  width: 32px;
+  min-width: 32px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.ov-zoom-btn:hover {
+  background: var(--accent);
+  color: #06283d;
+}
+
+.app.theme-light .ov-zoom {
+  background: #ffffff;
+  border-color: #cbd5e1;
+}
+
+.app.theme-light .ov-zoom-btn {
+  background: #ffffff;
+}
+
+.app.theme-light .ov-zoom-btn:hover {
+  background: var(--accent);
+  color: #ffffff;
 }
 
 /* Anchor the Layers dropdown directly under the 🗂 Layers chip. */
@@ -1539,4 +3488,90 @@ body {
   letter-spacing: 0.06em;
   white-space: nowrap;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+/* ============================================================= *
+ *  Multi-route R1/R2 badge near the start endpoint
+ * ============================================================= */
+.route-index-badge {
+  background: transparent !important;
+  border: none !important;
+}
+
+.route-index-pill {
+  display: inline-block;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 800;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  border-radius: 4px;
+  border: 1.5px solid rgba(15, 23, 42, 0.7);
+  letter-spacing: 0.05em;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+/* ============================================================= *
+ *  Altitude colour legend — bottom-left HUD
+ * ============================================================= */
+.alt-legend {
+  position: absolute;
+  left: 14px;
+  bottom: 16px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border-radius: 10px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+}
+
+.alt-legend-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.alt-legend-body {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.alt-legend-bar {
+  width: 14px;
+  height: 110px;
+  border-radius: 4px;
+  border: 1px solid #33415544;
+}
+
+.alt-legend-ticks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text);
+  line-height: 1;
+}
+
+.app.theme-light .alt-legend {
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18);
+}
+
+@media (max-width: 860px) {
+  .alt-legend {
+    left: 10px;
+    bottom: 78px; /* clear the sim playback bar on phones */
+    padding: 6px 8px;
+  }
+  .alt-legend-bar {
+    height: 80px;
+  }
 }

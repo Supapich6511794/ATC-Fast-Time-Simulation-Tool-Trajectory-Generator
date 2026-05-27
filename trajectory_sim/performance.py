@@ -87,6 +87,61 @@ _PERF_TABLES: dict[str, tuple[tuple[_Segment, ...], tuple[_Segment, ...]]] = {
     "B77W": (_B77W_CLIMB, _B77W_DESCENT),
 }
 
+
+@dataclass(frozen=True)
+class SpeedSchedule:
+    """BADA-style climb / cruise / descent speed schedule.
+
+    Units:
+      - ``climb_cas_kt`` — calibrated airspeed in knots below the climb
+        crossover altitude (typically below FL280).
+      - ``climb_mach`` — Mach number above the crossover (climb-out at
+        high altitude flies a constant Mach, not constant CAS).
+      - ``cruise_mach`` — long-range or normal cruise Mach number.
+      - ``descent_mach`` — Mach number above the crossover.
+      - ``descent_cas_kt`` — CAS in knots below the crossover.
+    The 250 KCAS / FL100 ATC speed limit is **not** modelled here — the
+    Phase 1 horizontal trajectory uses a single ground speed; speeds are
+    exposed for callers that want to display the planned schedule.
+    """
+
+    climb_cas_kt: float
+    climb_mach: float
+    cruise_mach: float
+    descent_mach: float
+    descent_cas_kt: float
+
+
+# Per-airframe speed schedules — published nominal values, not the
+# licensed BADA APF dataset. Mirror the shape of BADA's airline-procedure
+# file (APF) so a real APF can drop in later without API change.
+_SPEED_SCHEDULES: dict[str, SpeedSchedule] = {
+    "B738": SpeedSchedule(
+        climb_cas_kt=290.0, climb_mach=0.78,
+        cruise_mach=0.785,
+        descent_mach=0.78, descent_cas_kt=290.0,
+    ),
+    "A320": SpeedSchedule(
+        climb_cas_kt=290.0, climb_mach=0.78,
+        cruise_mach=0.78,
+        descent_mach=0.78, descent_cas_kt=290.0,
+    ),
+    "B77W": SpeedSchedule(
+        climb_cas_kt=310.0, climb_mach=0.84,
+        cruise_mach=0.84,
+        descent_mach=0.84, descent_cas_kt=300.0,
+    ),
+}
+
+# Manufacturer-published service ceilings (feet). The segmented climb
+# tables above stop at these altitudes; an aircraft asked to climb past
+# its ceiling is clipped there.
+_SERVICE_CEILING_FT: dict[str, float] = {
+    "B738": 41000.0,
+    "A320": 41000.0,
+    "B77W": 43100.0,
+}
+
 # Field elevations (ft AMSL) for the airports in scope. Real navdata
 # (airports layer) isn't delivered yet, so these are the published AIP
 # elevations for the single city pair; default 0 elsewhere.
@@ -177,6 +232,35 @@ def _altitude_after_descent(
     return max(cur, floor_ft)
 
 
+def aircraft_speeds(aircraft_type: str) -> SpeedSchedule:
+    """Return the climb / cruise / descent speed schedule for an airframe.
+
+    Args:
+        aircraft_type: ICAO designator, e.g. ``"B738"``. Case-insensitive.
+
+    Returns:
+        A :class:`SpeedSchedule` with CAS in knots and Mach numbers as
+        floats. Falls back to the B738 schedule when the type is unknown
+        (sensible default per the spec).
+    """
+    return _SPEED_SCHEDULES.get(aircraft_type.upper(), _SPEED_SCHEDULES["B738"])
+
+
+def service_ceiling_ft(aircraft_type: str) -> float:
+    """Manufacturer-published service ceiling in feet AMSL.
+
+    Args:
+        aircraft_type: ICAO designator. Case-insensitive.
+
+    Returns:
+        Service ceiling in feet (e.g. 41 000 for B738). Falls back to
+        the B738 value when the type is unknown.
+    """
+    return _SERVICE_CEILING_FT.get(
+        aircraft_type.upper(), _SERVICE_CEILING_FT["B738"]
+    )
+
+
 def aircraft_roc_rod(aircraft_type: str) -> tuple[float, float]:
     """Return (average ROC, average ROD) in ft/min for an aircraft type.
 
@@ -229,6 +313,10 @@ class VerticalProfile:
     ) -> VerticalProfile:
         climb_segs, desc_segs = _segments_for(aircraft_type)
 
+        # Clamp the requested level to the airframe's service ceiling —
+        # an FL above the ceiling is physically unreachable.
+        rfl_ft = min(rfl_ft, service_ceiling_ft(aircraft_type))
+
         climb_time = _time_to_climb(climb_segs, dep_elev_ft, rfl_ft)
         descent_time = _time_to_climb(desc_segs, des_elev_ft, rfl_ft)
         cruise_alt = rfl_ft
@@ -266,6 +354,30 @@ class VerticalProfile:
             _climb_segs=climb_segs,
             _desc_segs=desc_segs,
         )
+
+    def at_distance(
+        self,
+        along_track_nm: float,
+        total_distance_nm: float,
+    ) -> tuple[float, Phase]:
+        """Return ``(altitude_ft, phase)`` at an along-track distance.
+
+        Args:
+            along_track_nm: Distance flown from ADEP along the great-circle,
+                in nautical miles.
+            total_distance_nm: Total route length, in nautical miles. Used
+                to map distance back to the time grid (constant ground
+                speed in Phase 1).
+
+        Returns:
+            ``(altitude_ft, phase)`` exactly as :meth:`at`, but indexed
+            by distance instead of time. Convenience for the Phase 2
+            acceptance criterion ("altitude vs. along-track distance").
+        """
+        if total_distance_nm <= 0:
+            return self.at(0.0)
+        f = max(0.0, min(1.0, along_track_nm / total_distance_nm))
+        return self.at(f * self.total_time_s)
 
     def at(self, elapsed_s: float) -> tuple[float, Phase]:
         """Return (altitude_ft, phase) at an elapsed time into the flight."""

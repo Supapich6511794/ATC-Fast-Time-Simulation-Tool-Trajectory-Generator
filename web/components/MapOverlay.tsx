@@ -25,6 +25,10 @@ interface Props {
   onFir: (on: boolean) => void;
   firLoading: boolean;
   onToggleSidebar: () => void;
+  /** Custom map zoom drivers — the built-in Leaflet zoom control is
+   *  disabled so a matching +/− pair can sit inline with this toolbar. */
+  onZoomIn?: () => void;
+  onZoomOut?: () => void;
 }
 
 export default function MapOverlay({
@@ -40,6 +44,8 @@ export default function MapOverlay({
   onFir,
   firLoading,
   onToggleSidebar,
+  onZoomIn,
+  onZoomOut,
 }: Props) {
   const [airspaceOpen, setAirspaceOpen] = useState(false);
 
@@ -124,6 +130,39 @@ export default function MapOverlay({
           >
             {theme === "dark" ? "☀ Light" : "🌙 Dark"}
           </button>
+
+          {(onZoomIn || onZoomOut) && (
+            <div
+              className="ov-zoom"
+              role="group"
+              aria-label="Map zoom"
+            >
+              <button
+                type="button"
+                className="ov-chip ov-zoom-btn"
+                onClick={() => {
+                  onZoomIn?.();
+                  setAirspaceOpen(false);
+                }}
+                title="Zoom in"
+                aria-label="Zoom in"
+              >
+                +
+              </button>
+              <button
+                type="button"
+                className="ov-chip ov-zoom-btn"
+                onClick={() => {
+                  onZoomOut?.();
+                  setAirspaceOpen(false);
+                }}
+                title="Zoom out"
+                aria-label="Zoom out"
+              >
+                −
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </>

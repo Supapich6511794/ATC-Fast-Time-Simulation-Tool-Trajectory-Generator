@@ -16,8 +16,11 @@ by `trajectory_sim.output.write_geopackage`.
 
 from __future__ import annotations
 
+import io
 import os
 import re
+import zipfile
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
@@ -25,10 +28,10 @@ import geopandas as gpd
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from trajectory_sim.fpl import parse_eobt, parse_route
+from trajectory_sim.fpl import FlightPlan, parse_eobt, parse_route
 from trajectory_sim.geodesy import route_distance_nm
 from trajectory_sim.navdata import load_route_csv
 from trajectory_sim.output import (
@@ -252,6 +255,27 @@ def generate(req: GenerateRequest) -> dict[str, object]:
     except ValueError as e:
         raise HTTPException(400, f"Invalid EOBT: {e}") from None
 
+    # Construct the canonical FlightPlan dataclass — Phase 2 spec says
+    # RFL must be read from FlightPlan, not threaded as a bare int. The
+    # ``route`` field captures the raw Item-15 string (or a synthetic one
+    # in CSV mode) so the FPL is round-trippable.
+    if req.source == "csv":
+        fpl_route_str = "DCT " + " ".join(p[0] for p in route_pts) + " DCT"
+    else:
+        fpl_route_str = req.route
+    try:
+        fpl = FlightPlan(
+            callsign=req.callsign or "FLT",
+            aircraft_type="B738",
+            adep=adep,
+            ades=ades,
+            eobt=eobt,
+            rfl=int(req.rfl),
+            route=fpl_route_str,
+        )
+    except ValueError as e:
+        raise HTTPException(400, f"Invalid flight plan: {e}") from None
+
     waypoint_sequence = [(lat, lon) for _, lat, lon in route_pts]
     # Multi-route requests share (callsign, EOBT) — disambiguate the
     # flight_key/filename with an R-prefixed suffix instead of mangling
@@ -262,13 +286,16 @@ def generate(req: GenerateRequest) -> dict[str, object]:
     try:
         gdf = build_trajectory_gdf(
             waypoint_sequence=waypoint_sequence,
-            eobt=eobt,
-            callsign=req.callsign,
-            aircraft_type="B738",
-            adep=adep,
-            ades=ades,
+            eobt=fpl.eobt,
+            callsign=fpl.callsign,
+            aircraft_type=fpl.aircraft_type,
+            adep=fpl.adep,
+            ades=fpl.ades,
             ground_speed_kt=req.gs_kt,
-            rfl=req.rfl,
+            # Phase 2 acceptance: cruise FL must be an exact match to the
+            # FPL-requested level — read it from the dataclass, not from
+            # the raw int the browser sent.
+            rfl=fpl.rfl,
             flight_key_suffix=flight_key_suffix,
         )
     except ValueError as e:
@@ -406,4 +433,62 @@ def download(flight_key: str, ext: str) -> FileResponse:
         raise HTTPException(404, "File not found — generate it first.")
     return FileResponse(
         path, media_type=_MEDIA[ext], filename=f"{flight_key}.{ext}"
+    )
+
+
+class _ZipFileSpec(BaseModel):
+    """One file to include in a download bundle."""
+
+    flight_key: str
+    ext: str  # "gpkg" | "csv" | "geojson"
+
+
+class ZipRequest(BaseModel):
+    """POST body for ``/api/download_zip``.
+
+    Each entry pairs a server-generated flight_key with one of the
+    supported extensions; the response is a single ``.zip`` archive
+    containing every matching file laid out as ``<flight_key>.<ext>``.
+    """
+
+    files: list[_ZipFileSpec] = Field(default_factory=list)
+
+
+@app.post("/api/download_zip")
+def download_zip(req: ZipRequest) -> StreamingResponse:
+    if not req.files:
+        raise HTTPException(400, "No files requested.")
+
+    # Build the archive in memory so we can stream it back without ever
+    # writing it to disk — the output files are already on disk, this
+    # endpoint only repackages them.
+    buf = io.BytesIO()
+    added = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for spec in req.files:
+            ext = spec.ext.lower()
+            flight_key = spec.flight_key
+            # Reject the same path-traversal patterns the single-file
+            # endpoint rejects.
+            if ext not in _MEDIA:
+                continue
+            if "/" in flight_key or "\\" in flight_key or ".." in flight_key:
+                continue
+            path = _OUT_DIR / f"{flight_key}.{ext}"
+            if path.is_file():
+                zf.write(path, arcname=f"{flight_key}.{ext}")
+                added += 1
+
+    if added == 0:
+        raise HTTPException(404, "None of the requested files were found.")
+
+    buf.seek(0)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archive_name = f"trajectories_{stamp}.zip"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{archive_name}"'
+        },
     )
