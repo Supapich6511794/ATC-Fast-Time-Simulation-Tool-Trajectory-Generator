@@ -1000,24 +1000,22 @@ body {
   color: var(--muted);
 }
 
-/* Small ⓘ note marker — explanation shown on hover via title attr. */
+/* Question-circle note marker — explanation shown on hover via title.
+   Hosts an inline SVG (AntD twotone question-circle) that inherits
+   colour; no background pill so the two-tone glyph reads cleanly. */
 .dlm-note {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #33415588;
+  font-size: 14px;
+  line-height: 0;
   color: var(--muted);
-  font-size: 9px;
-  font-weight: 800;
   cursor: help;
+  transition: color 0.15s;
 }
 
 .dlm-note:hover {
-  background: var(--accent);
-  color: #06283d;
+  color: var(--accent);
 }
 
 .app.theme-light .dlm-mode-opt {
