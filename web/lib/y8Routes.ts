@@ -18,9 +18,12 @@
  *   linear graph, enumerate-then-sort yields exactly the K-shortest set
  *   (the same result Dijkstra + Yen's would produce, without the
  *   bookkeeping).
+ *
+ * Fix coordinates + the Y8 ordering now come from the CAAT eAIP cache
+ * (`/data/aip_VT.json`), replacing the retired VTPStoVTBS.csv.
  */
 
-const CSV_URL = "/data/VTPStoVTBS.csv";
+import { fetchAip } from "@/lib/aip";
 
 export interface Y8Fix {
   ident: string;
@@ -35,43 +38,18 @@ export interface RouteOption {
   distanceNm: number;
 }
 
-function parseCsv(text: string): Record<string, string>[] {
-  const lines = text.trim().split(/\r?\n/);
-  const header = lines[0].split(",");
-  return lines.slice(1).map((line) => {
-    const cells = line.split(",");
-    const row: Record<string, string> = {};
-    header.forEach((h, i) => (row[h] = cells[i] ?? ""));
-    return row;
-  });
-}
-
-/** Y8 fixes with coords, in airway order (chained by seqno). */
+/** Y8 fixes with coords, in published airway order (BKK → PUT). */
 export async function fetchY8Fixes(): Promise<Y8Fix[]> {
-  const res = await fetch(CSV_URL, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Failed to load ${CSV_URL}: ${res.status}`);
-  const rows = parseCsv(await res.text());
-  rows.sort((a, b) => Number(a.seqno) - Number(b.seqno));
-
-  const ordered: Y8Fix[] = [];
-  const seen = new Set<string>();
-  const push = (id: string, la: string, lo: string) => {
-    const lat = Number(la);
-    const lon = Number(lo);
-    if (id && !seen.has(id) && Number.isFinite(lat) && Number.isFinite(lon)) {
-      seen.add(id);
-      ordered.push({ ident: id, lat, lon });
+  const aip = await fetchAip();
+  const seq = aip.airways.Y8 ?? [];
+  const out: Y8Fix[] = [];
+  for (const ident of seq) {
+    const w = aip.waypoints[ident];
+    if (w && Number.isFinite(w.lat) && Number.isFinite(w.lon)) {
+      out.push({ ident, lat: w.lat, lon: w.lon });
     }
-  };
-  for (const r of rows) {
-    push(r.waypoint_identifier, r.waypoint_latitude, r.waypoint_longitude);
-    push(
-      r.waypoint_identifier_2,
-      r.waypoint_latitude_2,
-      r.waypoint_longitude_2,
-    );
   }
-  return ordered;
+  return out;
 }
 
 const R_NM = 3440.065;

@@ -927,6 +927,104 @@ body {
   color: var(--muted);
 }
 
+/* ---- Bundle-mode toggle (Separate vs Combined) ---- */
+.dlm-mode {
+  display: flex;
+  gap: 8px;
+}
+
+.dlm-mode-opt {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 11px;
+  background: #0f172a;
+  border: 1px solid #33415588;
+  border-radius: 9px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.dlm-mode-opt:hover {
+  border-color: var(--accent);
+}
+
+.dlm-mode-opt.on {
+  border-color: var(--accent);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.dlm-mode-radio {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #475569;
+  transition: border-color 0.15s;
+  position: relative;
+}
+
+.dlm-mode-opt.on .dlm-mode-radio {
+  border-color: var(--accent);
+}
+
+.dlm-mode-opt.on .dlm-mode-radio::after {
+  content: "";
+  position: absolute;
+  inset: 2.5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.dlm-mode-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dlm-mode-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.dlm-mode-sub {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+/* Small ⓘ note marker — explanation shown on hover via title attr. */
+.dlm-note {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #33415588;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  cursor: help;
+}
+
+.dlm-note:hover {
+  background: var(--accent);
+  color: #06283d;
+}
+
+.app.theme-light .dlm-mode-opt {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
 .dlm-quick {
   display: flex;
   gap: 4px;

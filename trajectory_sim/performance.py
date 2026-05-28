@@ -393,6 +393,19 @@ def field_elevation_ft(icao: str) -> float:
     return _FIELD_ELEV_FT.get(icao.upper(), 0.0)
 
 
+def register_field_elevations(mapping: dict[str, float]) -> None:
+    """Merge externally-sourced field elevations (e.g. the CAAT AIP AD
+    section) into the lookup used by :func:`field_elevation_ft`.
+
+    Lets the API inject real aerodrome elevations for every Thai airport
+    at startup without this pure-engine module reading any data files.
+    Keys are upper-cased; existing entries are overwritten so the AIP is
+    authoritative over the small hardcoded fallback set.
+    """
+    for icao, elev_ft in mapping.items():
+        _FIELD_ELEV_FT[icao.upper()] = float(elev_ft)
+
+
 def _segments_for(aircraft_type: str) -> tuple[tuple[_Segment, ...], tuple[_Segment, ...]]:
     """Return (climb_segments, descent_segments) for an aircraft type.
 

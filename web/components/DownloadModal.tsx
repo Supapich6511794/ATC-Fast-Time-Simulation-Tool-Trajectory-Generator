@@ -77,6 +77,13 @@ export default function DownloadModal({
   const [routeSel, setRouteSel] = useState<Set<number>>(() => new Set());
   const [fmtSel, setFmtSel] = useState<Set<Format>>(() => new Set());
 
+  // Bundle mode — "separate" downloads each route as its own file
+  // (zipped when several); "combined" merges every selected route into
+  // a single file per format on the server.
+  const [bundleMode, setBundleMode] = useState<"separate" | "combined">(
+    "separate",
+  );
+
   // Typeahead state for the route picker — open while focused / typing.
   const [routeQuery, setRouteQuery] = useState("");
   const [routeOpen, setRouteOpen] = useState(false);
@@ -89,6 +96,7 @@ export default function DownloadModal({
     if (open) {
       setRouteSel(new Set());
       setFmtSel(new Set());
+      setBundleMode("separate");
       setRouteQuery("");
       setRouteOpen(false);
       setRouteActive(0);
@@ -283,9 +291,62 @@ export default function DownloadModal({
   // JSX when the modal is closed.
   if (!open) return null;
 
+  // POST a JSON body to an endpoint that returns a file blob, then save
+  // it. Returns false on any failure so the caller can fall back.
+  const downloadFromEndpoint = async (
+    endpoint: string,
+    body: unknown,
+    fallbackName: string,
+  ): Promise<boolean> => {
+    try {
+      const res = await fetch(`${API_BASE}${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      // Cross-origin responses often strip Content-Disposition, so fall
+      // back to our own stamped name when the header isn't readable.
+      const cd = res.headers.get("content-disposition") ?? "";
+      const m = cd.match(/filename="([^"]+)"/);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = m?.[1] ?? fallbackName;
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const runDownload = async () => {
     const rIdx = Array.from(routeSel).sort((a, b) => a - b);
     const fmts = Array.from(fmtSel);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+
+    // ---- Combined mode: merge every selected route into ONE file per
+    // format (server-side). Single format → that file; several → a zip.
+    if (bundleMode === "combined") {
+      const flightKeys = rIdx
+        .map((i) => downloads[i]?.flightKey)
+        .filter((k): k is string => !!k);
+      const ext = fmts.length === 1 ? fmts[0] : "zip";
+      await downloadFromEndpoint(
+        "/api/download_combined",
+        { flight_keys: flightKeys, formats: fmts },
+        `combined_${stamp}.${ext}`,
+      );
+      onClose();
+      return;
+    }
+
+    // ---- Separate mode ----
     const totalFiles = rIdx.length * fmts.length;
 
     // Single file → direct cross-origin iframe download (no zip overhead).
@@ -304,34 +365,12 @@ export default function DownloadModal({
       return fmts.map((f) => ({ flight_key: d.flightKey, ext: f }));
     });
 
-    try {
-      const res = await fetch(`${API_BASE}/api/download_zip`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ files }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const blob = await res.blob();
-      // The server suggests a filename via Content-Disposition; if the
-      // browser strips it on cross-origin (common), fall back to our
-      // own stamped name so the download is never just "blob".
-      const cd = res.headers.get("content-disposition") ?? "";
-      const m = cd.match(/filename="([^"]+)"/);
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      const fallback = `trajectories_${stamp}.zip`;
-      const filename = m?.[1] ?? fallback;
-
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      a.style.display = "none";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      // Give the browser a moment to start the save before revoking.
-      setTimeout(() => URL.revokeObjectURL(url), 30000);
-    } catch {
+    const ok = await downloadFromEndpoint(
+      "/api/download_zip",
+      { files },
+      `trajectories_${stamp}.zip`,
+    );
+    if (!ok) {
       // Network / server failure: fall back to staggered individual
       // downloads so the user always gets *something*.
       let n = 0;
@@ -366,6 +405,60 @@ export default function DownloadModal({
             ✕
           </button>
         </div>
+
+        {/* Bundle mode — choose BEFORE picking routes. Each option has
+            a ⓘ note explained on hover. */}
+        <section className="dlm-section">
+          <div className="dlm-section-head">
+            <span>How to download</span>
+          </div>
+          <div className="dlm-mode" role="radiogroup" aria-label="Bundle mode">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={bundleMode === "separate"}
+              className={`dlm-mode-opt${bundleMode === "separate" ? " on" : ""}`}
+              onClick={() => setBundleMode("separate")}
+            >
+              <span className="dlm-mode-radio" aria-hidden="true" />
+              <span className="dlm-mode-text">
+                <span className="dlm-mode-title">
+                  Separate
+                  <span
+                    className="dlm-note"
+                    title="Each selected route is downloaded as its own file (zipped together when you pick several). One file per route × format."
+                    aria-label="Download each route as a separate file"
+                  >
+                    ⓘ
+                  </span>
+                </span>
+                <span className="dlm-mode-sub">one file per route</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={bundleMode === "combined"}
+              className={`dlm-mode-opt${bundleMode === "combined" ? " on" : ""}`}
+              onClick={() => setBundleMode("combined")}
+            >
+              <span className="dlm-mode-radio" aria-hidden="true" />
+              <span className="dlm-mode-text">
+                <span className="dlm-mode-title">
+                  Combined
+                  <span
+                    className="dlm-note"
+                    title="All selected routes are merged into a single file per format (e.g. one GeoPackage holding every flight). Best for loading a whole traffic scenario at once."
+                    aria-label="Merge all routes into one file"
+                  >
+                    ⓘ
+                  </span>
+                </span>
+                <span className="dlm-mode-sub">all routes in one file</span>
+              </span>
+            </button>
+          </div>
+        </section>
 
         <section className="dlm-section">
           <div className="dlm-section-head">
@@ -539,7 +632,13 @@ export default function DownloadModal({
           <span className="dlm-foot-note">
             {total === 0
               ? "Pick at least one route and one format"
-              : `${total} file${total === 1 ? "" : "s"} will download`}
+              : bundleMode === "combined"
+                ? `${routeSel.size} route${routeSel.size === 1 ? "" : "s"} merged → ${
+                    fmtSel.size === 1
+                      ? `1 ${Array.from(fmtSel)[0]} file`
+                      : `${fmtSel.size} files (zip)`
+                  }`
+                : `${total} file${total === 1 ? "" : "s"} will download`}
           </span>
           <div className="dlm-foot-btns">
             <button className="dlm-cancel" onClick={onClose}>

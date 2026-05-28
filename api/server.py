@@ -17,14 +17,15 @@ by `trajectory_sim.output.write_geopackage`.
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
+import tempfile
 import zipfile
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
-import geopandas as gpd
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,28 +34,27 @@ from pydantic import BaseModel, Field
 
 from trajectory_sim.fpl import FlightPlan, parse_eobt, parse_route
 from trajectory_sim.geodesy import route_distance_nm
-from trajectory_sim.navdata import load_route_csv
 from trajectory_sim.output import (
     build_trajectory_gdf,
     write_csv,
     write_geopackage,
 )
-from trajectory_sim.performance import aircraft_speeds, crossover_altitude_ft
+from trajectory_sim.performance import (
+    aircraft_speeds,
+    crossover_altitude_ft,
+    register_field_elevations,
+)
 from trajectory_sim.trajectory import build_flight_timeline
 
 # Project root = parent of this `api/` package.
 _ROOT = Path(__file__).resolve().parent.parent
 _DATA = _ROOT / "web" / "public" / "data"
-_CSV_PATH = _DATA / "VTPStoVTBS.csv"
-_AIRWAY_GEOJSON = _DATA / "airway_waypoint.geojson"
+# Thai navdata now comes from the CAAT eAIP, parsed once per AIRAC cycle
+# into this JSON cache by scripts/ingest_aip.py (waypoints + airways).
+# Replaces the hand-curated VTPStoVTBS.csv / airway_waypoint.geojson.
+_AIP_PATH = _DATA / "aip_VT.json"
 _OUT_DIR = _ROOT / "api" / "_outputs"
 _OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-# Approx airport reference coords (lat, lon), used only to orient an
-# fpl/picked route to the requested ADEP (so swapping ADEP/ADES really
-# reverses the written file and the animation).
-_AIRPORT_LL = {"VTBS": (13.6811, 100.7475), "VTSP": (8.1132, 98.3169)}
-
 
 def _sq_dist(a: tuple[float, float], b: tuple[float, float]) -> float:
     return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
@@ -104,46 +104,98 @@ class GenerateRequest(BaseModel):
 
 
 @lru_cache(maxsize=1)
-def _airway_waypoint_index() -> dict[str, tuple[float, float]]:
-    """ident -> (lat, lon) built from the real airway GeoJSON's own coords."""
-    gdf = gpd.read_file(_AIRWAY_GEOJSON)
-    index: dict[str, tuple[float, float]] = {}
-    for _, r in gdf.iterrows():
-        for id_col, la_col, lo_col in (
-            ("waypoint_identifier", "waypoint_latitude", "waypoint_longitude"),
-            ("waypoint_identifier_2", "waypoint_latitude_2", "waypoint_longitude_2"),
-        ):
-            ident = str(r[id_col])
-            if ident and ident not in index:
-                index[ident] = (float(r[la_col]), float(r[lo_col]))
-    return index
+def _aip() -> dict[str, object]:
+    """Load the CAAT eAIP navdata cache (built by scripts/ingest_aip.py).
+
+    Cached for the process lifetime — the file only changes per AIRAC
+    cycle, which means a redeploy/restart anyway.
+    """
+    if not _AIP_PATH.is_file():
+        raise RuntimeError(
+            f"AIP navdata cache missing at {_AIP_PATH}. "
+            "Run: python scripts/ingest_aip.py --airac <YYYY-MM-DD>"
+        )
+    return json.loads(_AIP_PATH.read_text(encoding="utf-8"))
 
 
 @lru_cache(maxsize=1)
-def _y8_sequence() -> list[str]:
-    """Ordered Y8 fix sequence (BKK -> PUT) from the airway CSV.
+def _airway_waypoint_index() -> dict[str, tuple[float, float]]:
+    """ident -> (lat, lon) from the AIP significant points + airway fixes."""
+    waypoints = _aip()["waypoints"]
+    return {
+        ident: (float(w["lat"]), float(w["lon"]))
+        for ident, w in waypoints.items()  # type: ignore[union-attr]
+    }
 
-    Used to expand `<fix> Y8 <fix>` spans in an Item-15 route string into
-    the full set of intermediate Y8 fixes, so the generated trajectory
-    actually follows the airway instead of cutting a direct great-circle
-    between the two named endpoints.
+
+@lru_cache(maxsize=1)
+def _airways() -> dict[str, list[str]]:
+    """designator -> ordered ident sequence, straight from the AIP cache."""
+    return {
+        desig: list(seq)
+        for desig, seq in _aip()["airways"].items()  # type: ignore[union-attr]
+    }
+
+
+@lru_cache(maxsize=1)
+def _airports() -> dict[str, dict[str, object]]:
+    """ICAO -> {lat, lon, elev_ft?, name?} from the AIP AD section."""
+    return {
+        icao: dict(info)  # type: ignore[arg-type]
+        for icao, info in _aip().get("airports", {}).items()  # type: ignore[union-attr]
+    }
+
+
+def _airport_ll(icao: str) -> tuple[float, float] | None:
+    """Aerodrome reference point (lat, lon) from the AIP, or None."""
+    a = _airports().get(icao)
+    if a and "lat" in a and "lon" in a:
+        return (float(a["lat"]), float(a["lon"]))  # type: ignore[arg-type]
+    return None
+
+
+def _register_field_elevations() -> None:
+    """Push AIP aerodrome elevations into the performance model so the
+    climb/descent profile uses real field elevations for every Thai
+    airport, not just the three hardcoded in performance.py."""
+    elevs = {
+        icao: float(a["elev_ft"])  # type: ignore[arg-type]
+        for icao, a in _airports().items()
+        if "elev_ft" in a
+    }
+    if elevs:
+        register_field_elevations(elevs)
+
+
+# Inject real AIP field elevations at startup. Guarded so a missing
+# cache (fresh checkout before the first ingest) never blocks boot.
+try:
+    _register_field_elevations()
+except Exception:  # noqa: BLE001 — fall back to the hardcoded set
+    pass
+
+
+def _airway_sequence(designator: str) -> list[str]:
+    """Ordered fix sequence for an airway (e.g. 'Y8'), or [] if unknown."""
+    return _airways().get(designator, [])
+
+
+def _airway_route_points(
+    designator: str, reverse: bool
+) -> list[tuple[str, float, float]]:
+    """Resolve an airway to (ident, lat, lon) points, optionally reversed.
+
+    Used by CSV-mode generation: the published Y8 sequence is BKK→PUT, so
+    ``reverse=True`` (VTSP→VTBS) flips it.
     """
-    df = pd.read_csv(_CSV_PATH).sort_values("seqno").reset_index(drop=True)
-    seq: list[str] = []
-    seen: set[str] = set()
-    for row in df.itertuples(index=False):
-        for ident in (row.waypoint_identifier, row.waypoint_identifier_2):
-            ident = str(ident)
-            if ident and ident not in seen:
-                seen.add(ident)
-                seq.append(ident)
-    return seq
+    index = _airway_waypoint_index()
+    pts = [
+        (ident, *index[ident])
+        for ident in _airway_sequence(designator)
+        if ident in index
+    ]
+    return list(reversed(pts)) if reverse else pts
 
-
-# Airway → ordered fix sequence. Only Y8 is supported in Phase 1 (the
-# single VTBS↔VTSP corridor); add more entries here when the project
-# grows to other airways.
-_AIRWAY_SEQUENCES: dict[str, "callable[[], list[str]]"] = {"Y8": _y8_sequence}
 
 _FIX_TOKEN_RE = re.compile(r"^[A-Z]{2,5}$")
 
@@ -158,6 +210,7 @@ def _expand_airways(route_str: str) -> str:
     it as before, so existing parsing is unchanged for non-airway
     routes.
     """
+    airways = _airways()
     tokens = route_str.split()
     out: list[str] = []
     i = 0
@@ -167,10 +220,10 @@ def _expand_airways(route_str: str) -> str:
         if (
             i + 2 < len(tokens)
             and _FIX_TOKEN_RE.match(tokens[i])
-            and tokens[i + 1] in _AIRWAY_SEQUENCES
+            and tokens[i + 1] in airways
             and _FIX_TOKEN_RE.match(tokens[i + 2])
         ):
-            seq = _AIRWAY_SEQUENCES[tokens[i + 1]]()
+            seq = airways[tokens[i + 1]]
             a_ident, b_ident = tokens[i], tokens[i + 2]
             if a_ident in seq and b_ident in seq:
                 a = seq.index(a_ident)
@@ -184,44 +237,46 @@ def _expand_airways(route_str: str) -> str:
 
 @app.get("/api/health")
 def health() -> dict[str, object]:
-    return {
-        "ok": True,
-        "csv_present": _CSV_PATH.is_file(),
-        "airway_present": _AIRWAY_GEOJSON.is_file(),
-    }
+    info: dict[str, object] = {"ok": True, "aip_present": _AIP_PATH.is_file()}
+    if _AIP_PATH.is_file():
+        try:
+            aip = _aip()
+            info["airac"] = aip.get("airac")
+            info["waypoint_count"] = aip.get("waypoint_count")
+            info["airway_count"] = aip.get("airway_count")
+        except Exception:  # noqa: BLE001 — health must never 500
+            info["ok"] = False
+    return info
 
 
 @app.post("/api/generate")
 def generate(req: GenerateRequest) -> dict[str, object]:
     warnings: list[str] = []
 
-    # --- Validate the city pair (Phase 1 scope: VTBS <-> VTSP only) ---
+    # --- Validate the city pair (any Thai aerodrome pair is allowed) ---
     adep = req.adep.strip().upper()
     ades = req.ades.strip().upper()
-    supported = {"VTBS", "VTSP"}
     if not adep or not ades:
         raise HTTPException(400, "ADEP and ADES are required.")
     if adep == ades:
         raise HTTPException(
             400, f"ADEP and ADES must differ (both {adep})."
         )
-    unsupported = {adep, ades} - supported
-    if unsupported:
-        raise HTTPException(
-            400,
-            "Phase 1 supports only the VTBS <-> VTSP route. "
-            f"Unsupported: {', '.join(sorted(unsupported))}.",
-        )
-    # Direction is implied by the departure aerodrome.
-    vtsp_to_vtbs = adep == "VTSP"
 
     if req.source == "csv":
-        route = load_route_csv(_CSV_PATH, reverse=vtsp_to_vtbs)
-        route_pts = [(w.ident, w.lat, w.lon) for w in route]
+        # Legacy shortcut: "follow the full published Y8 airway" from the
+        # AIP cache. Only meaningful for the VTBS<->VTSP corridor; any
+        # other pair should use FPL mode (type the route explicitly).
+        if {adep, ades} != {"VTBS", "VTSP"}:
+            raise HTTPException(
+                400,
+                "CSV (full-Y8) mode only covers VTBS <-> VTSP. "
+                "Use route mode to type an Item-15 route for other pairs.",
+            )
+        route_pts = _airway_route_points("Y8", reverse=adep == "VTSP")
     elif req.source == "fpl":
-        # Expand `<fix> Y8 <fix>` spans before parsing so the trajectory
-        # actually flies along the airway (matches the live preview and
-        # the distance shown in the Best Routes ranker).
+        # Expand `<fix> <airway> <fix>` spans before parsing so the
+        # trajectory follows the airway. Works for ALL 134 AIP airways.
         idents = parse_route(_expand_airways(req.route))
         if not idents:
             raise HTTPException(400, "No waypoints parsed from route string.")
@@ -236,12 +291,14 @@ def generate(req: GenerateRequest) -> dict[str, object]:
                 missing.append(ident)
         if missing:
             warnings.append(
-                f"Not found in airway data (skipped): {', '.join(missing)}"
+                f"Not found in AIP navdata (skipped): {', '.join(missing)}"
             )
-        # Orient the route by ADEP so the file/animation actually follow
-        # the city pair: the path must start at the fix nearest ADEP.
-        if len(route_pts) >= 2:
-            adep_ll = _AIRPORT_LL[adep]
+        # Orient the route by ADEP so the file/animation follow the city
+        # pair: the path must start at the fix nearest ADEP. Only possible
+        # when the departure aerodrome's coordinates are in the AIP; if
+        # not (unknown/foreign field), keep the route as typed.
+        adep_ll = _airport_ll(adep)
+        if adep_ll is not None and len(route_pts) >= 2:
             d0 = _sq_dist(route_pts[0][1:], adep_ll)
             dN = _sq_dist(route_pts[-1][1:], adep_ll)
             if dN < d0:
@@ -420,9 +477,9 @@ def generate(req: GenerateRequest) -> dict[str, object]:
     # CSV mode the route is the full Y8, so render it as "BKK Y8 PUT"
     # (or its reverse) for consistency with the live preview.
     if req.source == "csv":
-        seq = _y8_sequence()
+        seq = _airway_sequence("Y8")
         route_for_header = (
-            f"{seq[-1]} Y8 {seq[0]}" if vtsp_to_vtbs else f"{seq[0]} Y8 {seq[-1]}"
+            f"{seq[-1]} Y8 {seq[0]}" if adep == "VTSP" else f"{seq[0]} Y8 {seq[-1]}"
         )
     else:
         route_for_header = req.route
@@ -544,5 +601,159 @@ def download_zip(req: ZipRequest) -> StreamingResponse:
         media_type="application/zip",
         headers={
             "Content-Disposition": f'attachment; filename="{archive_name}"'
+        },
+    )
+
+
+class CombineRequest(BaseModel):
+    """POST body for ``/api/download_combined``.
+
+    Unlike ``/api/download_zip`` (which bundles each route as its own
+    file), this MERGES the listed routes into a single combined file
+    per requested format — e.g. one GeoPackage holding every flight's
+    points in one ``trajectory`` layer, distinguishable by ``flight_key``.
+    Useful for loading a whole traffic scenario as one dataset.
+    """
+
+    flight_keys: list[str] = Field(default_factory=list)
+    formats: list[str] = Field(default_factory=list)
+
+
+def _safe_key(flight_key: str) -> bool:
+    return not (
+        "/" in flight_key or "\\" in flight_key or ".." in flight_key
+    )
+
+
+def _load_combined_gdf(flight_keys: list[str]) -> "gpd.GeoDataFrame":
+    """Read every route's GeoPackage and concat into one GeoDataFrame.
+
+    The per-route ``.gpkg`` is the richest saved artefact (typed columns
+    + POINT Z), so it's the canonical source for the merge.
+    """
+    import geopandas as gpd  # already loaded via trajectory_sim.output
+
+    frames = []
+    for fk in flight_keys:
+        if not _safe_key(fk):
+            continue
+        path = _OUT_DIR / f"{fk}.gpkg"
+        if path.is_file():
+            frames.append(gpd.read_file(path))
+    if not frames:
+        return None  # type: ignore[return-value]
+    combined = pd.concat(frames, ignore_index=True)
+    combined = gpd.GeoDataFrame(
+        combined, crs=frames[0].crs, geometry="geometry"
+    )
+    if "flight_key" in combined and "epoch_ts" in combined:
+        combined = combined.sort_values(
+            ["flight_key", "epoch_ts"]
+        ).reset_index(drop=True)
+    return combined
+
+
+def _combined_bytes(combined: "gpd.GeoDataFrame", ext: str) -> bytes:
+    """Serialise the merged GeoDataFrame to one file of the given format."""
+    if ext == "gpkg":
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "combined.gpkg"
+            write_geopackage(combined, p)
+            return p.read_bytes()
+
+    if ext == "geojson":
+        g = combined.copy()
+        # GeoJSON driver wants plain strings for datetimes.
+        if "epoch_ts" in g:
+            g["epoch_ts"] = g["epoch_ts"].astype(str)
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "combined.geojson"
+            g.to_file(p, driver="GeoJSON")
+            return p.read_bytes()
+
+    raise HTTPException(400, f"Unsupported format .{ext}")
+
+
+def _combined_csv_from_files(flight_keys: list[str]) -> bytes:
+    """Stack each route's own readable CSV block into one file.
+
+    The CSV is the human-readable export (ROUTE / DEST / ACTYPE / FL /
+    ATD header + the 8-column table). For a combined download we keep
+    that exact per-route layout and concatenate the blocks with a clear
+    divider between routes, rather than flattening into one machine
+    table — so the file reads like several flight strips in sequence.
+    """
+    blocks: list[str] = []
+    total = len(flight_keys)
+    for n, fk in enumerate(flight_keys, start=1):
+        if not _safe_key(fk):
+            continue
+        path = _OUT_DIR / f"{fk}.csv"
+        if not path.is_file():
+            continue
+        # Plain-ASCII divider — em-dashes mojibake in Excel/Notepad under
+        # the cp874 Thai-Windows default (same reason write_csv avoids them).
+        header = (
+            "=" * 64
+            + f"\nFLIGHT {n} of {total}  -  {fk}\n"
+            + "=" * 64
+            + "\n\n"
+        )
+        blocks.append(header + path.read_text(encoding="utf-8").rstrip("\n"))
+    if not blocks:
+        raise HTTPException(404, "None of the requested routes were found.")
+    return ("\n\n\n".join(blocks) + "\n").encode("utf-8")
+
+
+@app.post("/api/download_combined")
+def download_combined(req: CombineRequest) -> StreamingResponse:
+    flight_keys = [fk for fk in req.flight_keys if _safe_key(fk)]
+    formats = [f.lower() for f in req.formats if f.lower() in _MEDIA]
+    if not flight_keys:
+        raise HTTPException(400, "No routes requested.")
+    if not formats:
+        raise HTTPException(400, "No formats requested.")
+
+    # The merged GeoDataFrame is only needed for the data formats
+    # (GeoPackage / GeoJSON). The CSV stays human-readable by stacking
+    # each route's own CSV block, so it doesn't go through the gdf.
+    need_gdf = any(f in ("gpkg", "geojson") for f in formats)
+    combined = _load_combined_gdf(flight_keys) if need_gdf else None
+    if need_gdf and (combined is None or len(combined) == 0):
+        raise HTTPException(404, "None of the requested routes were found.")
+
+    def bytes_for(ext: str) -> bytes:
+        if ext == "csv":
+            return _combined_csv_from_files(flight_keys)
+        return _combined_bytes(combined, ext)  # type: ignore[arg-type]
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    # Single format → return that combined file directly. Multiple
+    # formats → zip the combined files together.
+    if len(formats) == 1:
+        ext = formats[0]
+        return StreamingResponse(
+            iter([bytes_for(ext)]),
+            media_type=_MEDIA[ext],
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="combined_{stamp}.{ext}"'
+                )
+            },
+        )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for ext in formats:
+            zf.writestr(f"combined_{stamp}.{ext}", bytes_for(ext))
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="combined_{stamp}.zip"'
+            )
         },
     )

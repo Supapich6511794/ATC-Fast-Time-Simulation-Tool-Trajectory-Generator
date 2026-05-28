@@ -20,6 +20,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import IdentCombobox, { type ComboOption } from "@/components/IdentCombobox";
 import RouteBuilder from "@/components/RouteBuilder";
+import {
+  fetchAirports,
+  fetchAirwaysMap,
+  fetchAllFixes,
+  type AirportOption,
+  type Fix,
+} from "@/lib/aip";
 import { generateTrajectory } from "@/lib/api";
 import { parseFlightFile, type FlightRecord } from "@/lib/flightFile";
 import {
@@ -28,8 +35,8 @@ import {
   resolveRoutePreview,
   type PreviewPoint,
 } from "@/lib/routePreview";
+import { kBestRoutes } from "@/lib/routeFinder";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
-import { fetchY8Fixes, kBestY8Routes, type Y8Fix } from "@/lib/y8Routes";
 
 type InputMode = "manual" | "file";
 /** How the route portion is supplied (all three kept, none removed). */
@@ -66,18 +73,22 @@ const AIRCRAFT = [
   ["B77W", "B77W — Boeing 777-300ER"],
 ] as const;
 
-/** Suggested ICAO airports (free typing of any code is still allowed). */
-const AIRPORTS: ComboOption[] = [
+/** Fallback airport list used only until the AIP airports load (free
+ *  typing of any ICAO is always allowed). The live list comes from the
+ *  CAAT eAIP AD section — all 46 Thai aerodromes. */
+const AIRPORTS_FALLBACK: ComboOption[] = [
   { code: "VTBS", label: "Suvarnabhumi · Bangkok" },
   { code: "VTSP", label: "Phuket" },
-  { code: "VTBD", label: "Don Mueang · Bangkok" },
   { code: "VTCC", label: "Chiang Mai" },
-  { code: "VTSS", label: "Hat Yai" },
-  { code: "VTUD", label: "Udon Thani" },
 ];
 
-/** Phase 1 scope: the only corridor with route data. */
-const SUPPORTED_PAIR = ["VTBS", "VTSP"];
+/** Title-case an ALL-CAPS AIP airport name for the dropdown label. */
+function tidyAirportName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .replace(/\bInternational\b/i, "Intl");
+}
 
 export default function GeneratorPanel({
   onResult,
@@ -120,39 +131,64 @@ export default function GeneratorPanel({
     [builtWpts],
   );
 
-  // Y8 fixes (with coords) for the best-route search; loaded once.
-  const [y8Fixes, setY8Fixes] = useState<Y8Fix[]>([]);
+  // Full Thai navdata from the CAAT eAIP cache — all fixes, all airways,
+  // and all aerodromes — loaded once on mount.
+  const [allFixes, setAllFixes] = useState<Fix[]>([]);
+  const [airwaysMap, setAirwaysMap] = useState<Record<string, string[]>>({});
+  const [airports, setAirports] = useState<AirportOption[]>([]);
   const [showAllRoutes, setShowAllRoutes] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    fetchY8Fixes()
-      .then((f) => !cancelled && setY8Fixes(f))
+    Promise.all([fetchAllFixes(), fetchAirwaysMap(), fetchAirports()])
+      .then(([fixes, aw, aps]) => {
+        if (cancelled) return;
+        setAllFixes(fixes);
+        setAirwaysMap(aw);
+        setAirports(aps);
+      })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
   }, []);
 
-  // Route/fix suggestions only make sense once a valid city pair is
-  // entered — they're specific to the VTBS<->VTSP corridor.
+  // Airport combobox options — from the AIP AD section when loaded, else
+  // a tiny fallback. Free typing of any ICAO is always allowed.
+  const airportOptions: ComboOption[] = useMemo(
+    () =>
+      airports.length
+        ? airports.map((a) => ({
+            code: a.code,
+            label: tidyAirportName(a.name),
+          }))
+        : AIRPORTS_FALLBACK,
+    [airports],
+  );
+
+  // Any distinct, non-empty ICAO pair is routable now.
   const dep = adep.trim().toUpperCase();
   const des = ades.trim().toUpperCase();
-  const pairReady =
-    !!dep &&
-    !!des &&
-    dep !== des &&
-    SUPPORTED_PAIR.includes(dep) &&
-    SUPPORTED_PAIR.includes(des);
+  const pairReady = !!dep && !!des && dep !== des;
+  const isY8Corridor =
+    (dep === "VTBS" && des === "VTSP") || (dep === "VTSP" && des === "VTBS");
 
-  // K best Y8 routes for the entered direction (constrained search +
-  // distance/compliance ranking). Recomputed only when inputs change.
-  const bestRoutes = useMemo(
-    () =>
-      pairReady && y8Fixes.length >= 2
-        ? kBestY8Routes(y8Fixes, dep, des, { maxSkip: 2, maxHops: 12, k: 8 })
-        : [],
-    [pairReady, y8Fixes, dep, des],
-  );
+  // Aerodrome reference coords, keyed by ICAO, for the route finder.
+  const airportLL = useMemo(() => {
+    const m = new Map<string, { lat: number; lon: number }>();
+    for (const a of airports) m.set(a.code, { lat: a.lat, lon: a.lon });
+    return m;
+  }, [airports]);
+
+  // K best routes for ANY aerodrome pair — graph search (Yen's
+  // k-shortest) over the whole Thai airway network. Empty when either
+  // airport's coordinates aren't in the AIP (e.g. a free-typed field).
+  const bestRoutes = useMemo(() => {
+    if (!pairReady || allFixes.length === 0) return [];
+    const depLL = airportLL.get(dep) ?? null;
+    const desLL = airportLL.get(des) ?? null;
+    if (!depLL || !desLL) return [];
+    return kBestRoutes(allFixes, airwaysMap, depLL, desLL, { k: 6 });
+  }, [pairReady, dep, des, airportLL, allFixes, airwaysMap]);
 
   // The route the Item-15 box currently resolves to (typed or built).
   const effectiveRoute =
@@ -189,13 +225,13 @@ export default function GeneratorPanel({
   // recognised. Includes every queued route plus the one currently
   // being typed/built; emitted upward via onPreviewChange.
   const previewRoutes = useMemo<PreviewPoint[][]>(() => {
-    if (y8Fixes.length === 0) return [];
+    if (allFixes.length === 0) return [];
     const out: PreviewPoint[][] = [];
 
     // Queued routes (always typed/built — never CSV, since the Add
     // Route button is hidden in CSV mode).
     for (const r of routes) {
-      const pts = resolveRoutePreview(r, y8Fixes);
+      const pts = resolveRoutePreview(r, allFixes, airwaysMap);
       if (pts.length > 0) out.push(pts);
     }
 
@@ -206,14 +242,16 @@ export default function GeneratorPanel({
     if (routeMode === "build") {
       const trimmed = builtRoute.trim();
       if (trimmed && !routes.includes(trimmed)) {
-        current = resolvePreviewFromIdents(builtWpts, y8Fixes);
+        current = resolvePreviewFromIdents(builtWpts, allFixes);
       }
     } else if (routeMode === "csv") {
-      current = pairReady ? resolvePreviewFullY8(y8Fixes, dep) : [];
+      current = isY8Corridor
+        ? resolvePreviewFullY8(allFixes, airwaysMap, dep)
+        : [];
     } else {
       const trimmed = routeStr.trim();
       if (trimmed && !routes.includes(trimmed)) {
-        current = resolveRoutePreview(trimmed, y8Fixes);
+        current = resolveRoutePreview(trimmed, allFixes, airwaysMap);
       }
     }
     if (current.length > 0) out.push(current);
@@ -225,9 +263,10 @@ export default function GeneratorPanel({
     builtRoute,
     builtWpts,
     routes,
-    y8Fixes,
+    allFixes,
+    airwaysMap,
     dep,
-    pairReady,
+    isY8Corridor,
   ]);
 
   useEffect(() => {
@@ -278,22 +317,17 @@ export default function GeneratorPanel({
       const dep = adep.trim().toUpperCase();
       const des = ades.trim().toUpperCase();
 
-      // Phase 1 scope: VTBS <-> VTSP only (validate before the round-trip).
-      const SUPPORTED = ["VTBS", "VTSP"];
+      // Any distinct ICAO pair is routable now; the server resolves the
+      // typed route against the full AIP navdata.
       if (!dep || !des) {
         throw new Error("ADEP and ADES are required.");
       }
       if (dep === des) {
         throw new Error(`ADEP and ADES must differ (both ${dep}).`);
       }
-      const bad = [dep, des].filter((a) => !SUPPORTED.includes(a));
-      if (bad.length) {
-        throw new Error(
-          `Now supports only VTBS ↔ VTSP. Unsupported: ${bad.join(", ")}.`,
-        );
-      }
 
-      // Direction is implied by the departure aerodrome.
+      // Direction is implied by the departure aerodrome (used by CSV/Y8
+      // mode only; FPL mode flies the route exactly as typed).
       const vtspToVtbs = dep === "VTSP";
       // "build" piggybacks the FPL pipeline with the composed string.
       const apiSource = routeMode === "csv" ? "csv" : "fpl";
@@ -461,7 +495,7 @@ export default function GeneratorPanel({
               <IdentCombobox
                 value={adep}
                 onChange={setAdep}
-                options={AIRPORTS}
+                options={airportOptions}
                 placeholder="Departure"
               />
             </label>
@@ -470,7 +504,7 @@ export default function GeneratorPanel({
               <IdentCombobox
                 value={ades}
                 onChange={setAdes}
-                options={AIRPORTS}
+                options={airportOptions}
                 placeholder="Destination"
               />
             </label>
@@ -550,32 +584,26 @@ export default function GeneratorPanel({
                 {!pairReady && (
                   <p className="rt-hint">
                     {!dep || !des
-                      ? "Enter ADEP and ADES above to see the possible route and the allowed fixes for that pair."
-                      : dep === des
-                        ? "ADEP and ADES cannot be the same."
-                        : `No information for ${dep} to ${des} — Route data for VTBS ↔ VTSP only.`}
+                      ? "Enter ADEP and ADES above to start a route."
+                      : "ADEP and ADES cannot be the same."}
                   </p>
                 )}
 
-                {pairReady && waypointIdents.length > 0 && (
-                  <>
-                    <div className="rt-routes">
-                      <span>
-                        Best routes ({dep} → {des}) · Y8 — ranked by compliance.
-                      </span>
-                      {bestRoutes.length === 0 && (
-                        <em className="rt-more">computing…</em>
-                      )}
-                      {(showAllRoutes
-                        ? bestRoutes
-                        : bestRoutes.slice(0, 3)
-                      ).map((r, i) => {
+                {/* Best-route ranker — graph search over the whole Thai
+                    airway network, for ANY aerodrome pair. */}
+                {pairReady && bestRoutes.length > 0 && (
+                  <div className="rt-routes">
+                    <span>
+                      Best routes ({dep} → {des}) — ranked shortest first.
+                    </span>
+                    {(showAllRoutes ? bestRoutes : bestRoutes.slice(0, 3)).map(
+                      (r, i) => {
                         const best = bestRoutes[0];
                         const tag =
                           i === 0
                             ? " ★ recommended"
-                            : r.distanceNm < best.distanceNm
-                              ? " · shorter via DCT"
+                            : r.distanceNm > best.distanceNm
+                              ? ` · +${Math.round(r.distanceNm - best.distanceNm)} NM`
                               : "";
                         return (
                           <button
@@ -583,46 +611,37 @@ export default function GeneratorPanel({
                             type="button"
                             className={i === 0 ? "rt-best" : undefined}
                             onClick={() => setRouteStr(r.text)}
-                            title={
-                              i === 0
-                                ? `Recommended — full Y8, ${r.distanceNm} NM`
-                                : `${r.distanceNm} NM`
-                            }
+                            title={`${r.distanceNm} NM total`}
                           >
                             {r.text} · {r.distanceNm} NM{tag}
                           </button>
                         );
-                      })}
-                      {bestRoutes.length > 3 && (
-                        <button
-                          type="button"
-                          className="rt-more"
-                          onClick={() => setShowAllRoutes((v) => !v)}
-                        >
-                          {showAllRoutes
-                            ? "See less"
-                            : `See more (${bestRoutes.length - 3})`}
-                        </button>
-                      )}
-                    </div>
+                      },
+                    )}
+                    {bestRoutes.length > 3 && (
+                      <button
+                        type="button"
+                        className="rt-more"
+                        onClick={() => setShowAllRoutes((v) => !v)}
+                      >
+                        {showAllRoutes
+                          ? "See less"
+                          : `See more (${bestRoutes.length - 3})`}
+                      </button>
+                    )}
+                  </div>
+                )}
 
-                    <p className="rt-fixes">
-                      <span>Allowed fixes — click to append:</span>
-                      {waypointIdents.map((id) => (
-                        <button
-                          key={id}
-                          type="button"
-                          onClick={() =>
-                            setRouteStr((s) =>
-                              s.trim() ? `${s.trim()} ${id}` : id,
-                            )
-                          }
-                        >
-                          {id}
-                        </button>
-                      ))}
-                    </p>
-                  </>
+                {/* Pair is set but no airway routing found (e.g. an
+                    airport with no coords in the AIP) — guide the user. */}
+                {pairReady && bestRoutes.length === 0 && (
+                  <p className="rt-hint">
+                    No airway routing found for {dep} → {des}. Type an
+                    Item-15 route using any airway (e.g.{" "}
+                    <code>BKK A1 UBL</code>) — every airway is expanded
+                    automatically — or use <strong>Pick waypoints</strong>{" "}
+                    to search all {waypointIdents.length} fixes.
+                  </p>
                 )}
               </>
             )}
@@ -717,3 +736,4 @@ export default function GeneratorPanel({
     </section>
   );
 }
+     
