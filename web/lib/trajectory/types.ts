@@ -80,6 +80,20 @@ export interface VerticalProfileMeta {
   phaseBreakdown?: PhaseBreakdown;
 }
 
+/** CAT62 flight-time validation result, null when the city pair has no
+ *  reference entry in cat62_reference.json. */
+export interface FlightTimeValidation {
+  route: string;
+  cat62Min: number;
+  simulatedMin: number;
+  deltaMin: number;
+  thresholdMin: number;
+  status: "PASS" | "FAIL";
+  passed: boolean;
+  /** "cat62" = real reference sample; "estimate" = distance-based. */
+  source: "cat62" | "estimate";
+}
+
 /** Full result of a generation run. */
 export interface TrajectoryResult {
   /** Resolved route used (for map markers + listing). */
@@ -89,6 +103,8 @@ export interface TrajectoryResult {
   stats: TrajectoryStats;
   /** Vertical-profile waypoints (TOC/TOD), null until a profile is built. */
   profile: VerticalProfileMeta;
+  /** CAT62 flight-time check, null when the pair has no reference. */
+  validation: FlightTimeValidation | null;
   /** Metadata echoed into exports. */
   meta: {
     flightKey: string;

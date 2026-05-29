@@ -47,11 +47,16 @@ export default function NavToolbar({
   onOpenDownload,
 }: Props) {
   const ddRef = useRef<HTMLDivElement>(null);
+  const navRef = useRef<HTMLElement>(null);
   const generatedCount = results.length;
   /** Click-to-expand state: only one route's leaf-menu is open at a
    *  time. Far more reliable than CSS hover-cascade — and works the
    *  same on touch devices. */
   const [expanded, setExpanded] = useState<number | null>(null);
+  /** Mobile: the three top-level items collapse behind a ☰ button; this
+   *  toggles the vertical menu. Ignored on desktop (CSS shows the items
+   *  inline regardless). */
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   // Click outside the Generated dropdown closes it.
   useEffect(() => {
@@ -66,6 +71,18 @@ export default function NavToolbar({
     return () => document.removeEventListener("mousedown", onDown);
   }, [generatedOpen, onGeneratedOpenChange]);
 
+  // Click outside the whole nav closes the mobile menu.
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (navRef.current && !navRef.current.contains(e.target as Node)) {
+        setMobileOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [mobileOpen]);
+
   // Pre-expand the currently-viewed route when the menu opens.
   useEffect(() => {
     if (!generatedOpen) return;
@@ -76,15 +93,37 @@ export default function NavToolbar({
     onNavChange({ kind: "route", routeIdx, section });
     onGeneratedOpenChange(false);
     setExpanded(null);
+    setMobileOpen(false);
   };
 
   return (
-    <nav className="tool-menu" aria-label="Application menu">
+    <nav
+      className={`tool-menu${mobileOpen ? " mobile-open" : ""}`}
+      aria-label="Application menu"
+      ref={navRef}
+    >
+      {/* Mobile-only ☰ — collapses the three items into a vertical menu.
+          Hidden on desktop (CSS), where the items render inline. */}
+      <button
+        className="tool-hamburger"
+        onClick={() => setMobileOpen((v) => !v)}
+        aria-label="Toggle menu"
+        aria-expanded={mobileOpen}
+      >
+        <span className="tool-ico">{mobileOpen ? "✕" : "☰"}</span>
+        <span className="tool-hamburger-label">Menu</span>
+        {generatedCount > 0 && (
+          <span className="tool-count">{generatedCount}</span>
+        )}
+      </button>
+
+      <div className={`tool-items${mobileOpen ? " open" : ""}`}>
       <button
         className={`tool-item${nav?.kind === "generator" ? " active" : ""}`}
         onClick={() => {
           onNavChange({ kind: "generator" });
           onGeneratedOpenChange(false);
+          setMobileOpen(false);
         }}
         title="Edit the flight plan"
       >
@@ -212,7 +251,10 @@ export default function NavToolbar({
 
       <button
         className="tool-item"
-        onClick={onOpenDownload}
+        onClick={() => {
+          onOpenDownload();
+          setMobileOpen(false);
+        }}
         disabled={generatedCount === 0}
         title={
           generatedCount === 0
@@ -223,6 +265,7 @@ export default function NavToolbar({
         <span className="tool-ico">⬇</span>
         <span className="tool-label">Download</span>
       </button>
+      </div>
     </nav>
   );
 }

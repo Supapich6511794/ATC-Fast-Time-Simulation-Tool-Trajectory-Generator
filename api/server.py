@@ -21,6 +21,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import zipfile
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -42,9 +43,14 @@ from trajectory_sim.output import (
 from trajectory_sim.performance import (
     aircraft_speeds,
     crossover_altitude_ft,
+    get_speed_restriction,
     register_field_elevations,
+    set_speed_restriction,
+    set_speed_schedule,
+    tune_speed_schedule,
 )
 from trajectory_sim.trajectory import build_flight_timeline
+from trajectory_sim.validation import CAT62Reference
 
 # Project root = parent of this `api/` package.
 _ROOT = Path(__file__).resolve().parent.parent
@@ -101,6 +107,35 @@ class GenerateRequest(BaseModel):
     # each file/PK is unique; the Callsign column itself stays the
     # user-typed value. Omit for a single-route request.
     flight_index: int | None = None
+
+    # --- Optional speed-schedule overrides (Phase 3 tuning) -----------
+    # Any field left None keeps the airframe's default. Applied per
+    # request and restored afterwards, so one user's tuning never leaks
+    # into another's generation.
+    climb_cas_kt: float | None = None
+    climb_mach: float | None = None
+    cruise_mach: float | None = None
+    descent_mach: float | None = None
+    descent_cas_kt: float | None = None
+    # Below-FL100 CAS cap (default 250 kt). Pass a large value to lift it.
+    restrict_cas_kt: float | None = None
+
+
+# Per-airframe speed tuning mutates module-level state in
+# trajectory_sim.performance; serialise generation so concurrent
+# requests (FastAPI runs sync endpoints in a threadpool) can't see each
+# other's overrides mid-build. Generation is fast, so a lock is cheap.
+_GEN_LOCK = threading.Lock()
+
+# CAT62 reference times, loaded once. Falls back to an empty table if the
+# bundled file is somehow missing, so the endpoint never hard-fails.
+try:
+    _CAT62_REF = CAT62Reference.load()
+except Exception:  # noqa: BLE001
+    _CAT62_REF = CAT62Reference({})
+
+# The only airframe the sim flies; speed-tuning snapshots target it.
+_ACTYPE = "B738"
 
 
 @lru_cache(maxsize=1)
@@ -249,6 +284,19 @@ def health() -> dict[str, object]:
     return info
 
 
+@app.get("/api/cat62_reference")
+def cat62_reference() -> dict[str, object]:
+    """Flight-time reference table + acceptance threshold for the web.
+
+    Lets the route picker pre-screen candidate routes (PASS/FAIL within
+    the threshold) without round-tripping each one through /api/generate.
+    """
+    return {
+        "threshold_min": _CAT62_REF.threshold_min,
+        "routes": _CAT62_REF.table(),
+    }
+
+
 @app.post("/api/generate")
 def generate(req: GenerateRequest) -> dict[str, object]:
     warnings: list[str] = []
@@ -342,23 +390,60 @@ def generate(req: GenerateRequest) -> dict[str, object]:
     flight_key_suffix = (
         f"R{req.flight_index + 1}" if req.flight_index is not None else ""
     )
-    try:
-        gdf = build_trajectory_gdf(
-            waypoint_sequence=waypoint_sequence,
-            eobt=fpl.eobt,
-            callsign=fpl.callsign,
-            aircraft_type=fpl.aircraft_type,
-            adep=fpl.adep,
-            ades=fpl.ades,
-            ground_speed_kt=req.gs_kt,
-            # Phase 2 acceptance: cruise FL must be an exact match to the
-            # FPL-requested level — read it from the dataclass, not from
-            # the raw int the browser sent.
-            rfl=fpl.rfl,
-            flight_key_suffix=flight_key_suffix,
+    # Any speed-schedule override present?
+    _has_sched_override = any(
+        v is not None
+        for v in (
+            req.climb_cas_kt,
+            req.climb_mach,
+            req.cruise_mach,
+            req.descent_mach,
+            req.descent_cas_kt,
         )
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from None
+    )
+    _has_override = _has_sched_override or req.restrict_cas_kt is not None
+
+    # Serialise generation: the tuning setters mutate module globals in
+    # trajectory_sim.performance, so we snapshot → apply → build →
+    # restore under a lock to keep requests isolated.
+    with _GEN_LOCK:
+        orig_sched = aircraft_speeds(_ACTYPE)
+        orig_restrict = get_speed_restriction()
+        try:
+            if _has_sched_override:
+                tune_speed_schedule(
+                    _ACTYPE,
+                    climb_cas_kt=req.climb_cas_kt,
+                    climb_mach=req.climb_mach,
+                    cruise_mach=req.cruise_mach,
+                    descent_mach=req.descent_mach,
+                    descent_cas_kt=req.descent_cas_kt,
+                )
+            if req.restrict_cas_kt is not None:
+                set_speed_restriction(cas_kt=req.restrict_cas_kt)
+
+            gdf = build_trajectory_gdf(
+                waypoint_sequence=waypoint_sequence,
+                eobt=fpl.eobt,
+                callsign=fpl.callsign,
+                aircraft_type=fpl.aircraft_type,
+                adep=fpl.adep,
+                ades=fpl.ades,
+                ground_speed_kt=req.gs_kt,
+                # Phase 2 acceptance: cruise FL must be an exact match to
+                # the FPL-requested level — read it from the dataclass,
+                # not from the raw int the browser sent.
+                rfl=fpl.rfl,
+                flight_key_suffix=flight_key_suffix,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        finally:
+            # Always restore the baseline schedule + restriction.
+            set_speed_schedule(_ACTYPE, orig_sched)
+            set_speed_restriction(
+                cas_kt=orig_restrict[0], below_alt_ft=orig_restrict[1]
+            )
 
     flight_key = str(gdf["flight_key"].iloc[0])
 
@@ -392,6 +477,11 @@ def generate(req: GenerateRequest) -> dict[str, object]:
     elapsed_min = (
         gdf["epoch_ts"].iloc[-1] - gdf["epoch_ts"].iloc[0]
     ).total_seconds() / 60.0
+
+    # Flight-time validation — real CAT62 sample where we have one, else a
+    # distance-based estimate so every routable pair reports a delta.
+    _val = _CAT62_REF.validate(adep, ades, elapsed_min, distance_nm=distance_nm)
+    validation = _val.to_dict() if _val is not None else None
 
     # Top of Climb / Top of Descent — first cruise sample and the sample
     # *after* the last cruise sample respectively. The web uses these for
@@ -512,6 +602,7 @@ def generate(req: GenerateRequest) -> dict[str, object]:
             "speed_schedule": speed_schedule,
             "phase_breakdown": phase_breakdown,
         },
+        "validation": validation,
         "route": [
             {"ident": i, "lat": la, "lon": lo} for i, la, lo in route_pts
         ],

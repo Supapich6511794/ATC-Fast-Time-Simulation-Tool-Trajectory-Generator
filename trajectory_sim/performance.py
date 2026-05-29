@@ -18,7 +18,7 @@ Units: altitude in feet, rates in ft/min, time in seconds.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 #: Flight phase along the vertical profile.
@@ -156,45 +156,50 @@ class _Segment:
 # 1500–2500 ft/min envelope below FL300; above FL300 the model lets ROC
 # fall below 1500 fpm because that's what the airframe actually does
 # (the brief's envelope is a planning average, not a physical limit).
+# Brief Phase 2 requires ROC/ROD within 1500-2500 ft/min. Climb tapers
+# with altitude but stays inside that band all the way to FL410.
 _B738_CLIMB: tuple[_Segment, ...] = (
-    _Segment(0,     10000, 2500.0),
-    _Segment(10000, 20000, 2000.0),
-    _Segment(20000, 30000, 1500.0),
-    _Segment(30000, 37000, 1100.0),
-    _Segment(37000, 41000,  700.0),
+    _Segment(0,     10000, 2400.0),
+    _Segment(10000, 20000, 2200.0),
+    _Segment(20000, 30000, 2000.0),
+    _Segment(30000, 37000, 1800.0),
+    _Segment(37000, 41000, 1600.0),
 )
+# Descent mirrors the climb (brief), all rates inside the 1500-2500 band:
+# steeper up high, easing under FL100 where the 250 kt limit + config slow
+# it. (The old flat 1800 fpm made descent ~20 min — unrealistically slow.)
 _B738_DESCENT: tuple[_Segment, ...] = (
-    _Segment(0,     10000, 1500.0),
-    _Segment(10000, 24000, 1800.0),
-    _Segment(24000, 41000, 1800.0),
+    _Segment(0,     10000, 1800.0),
+    _Segment(10000, 24000, 2200.0),
+    _Segment(24000, 41000, 2400.0),
 )
 
 # A320 — same family of numbers, slightly weaker climb at altitude.
 _A320_CLIMB: tuple[_Segment, ...] = (
-    _Segment(0,     10000, 2400.0),
-    _Segment(10000, 20000, 1900.0),
-    _Segment(20000, 30000, 1400.0),
-    _Segment(30000, 37000, 1000.0),
-    _Segment(37000, 41000,  600.0),
+    _Segment(0,     10000, 2300.0),
+    _Segment(10000, 20000, 2100.0),
+    _Segment(20000, 30000, 1900.0),
+    _Segment(30000, 37000, 1700.0),
+    _Segment(37000, 41000, 1550.0),
 )
 _A320_DESCENT: tuple[_Segment, ...] = (
-    _Segment(0,     10000, 1500.0),
-    _Segment(10000, 24000, 1700.0),
-    _Segment(24000, 41000, 1700.0),
+    _Segment(0,     10000, 1700.0),
+    _Segment(10000, 24000, 2100.0),
+    _Segment(24000, 41000, 2300.0),
 )
 
 # B77W — heavy long-haul; lower fpm but higher ceiling.
 _B77W_CLIMB: tuple[_Segment, ...] = (
     _Segment(0,     10000, 2200.0),
-    _Segment(10000, 20000, 1800.0),
-    _Segment(20000, 30000, 1300.0),
-    _Segment(30000, 37000,  900.0),
-    _Segment(37000, 43000,  500.0),
+    _Segment(10000, 20000, 2000.0),
+    _Segment(20000, 30000, 1800.0),
+    _Segment(30000, 37000, 1600.0),
+    _Segment(37000, 43000, 1500.0),
 )
 _B77W_DESCENT: tuple[_Segment, ...] = (
-    _Segment(0,     10000, 1500.0),
-    _Segment(10000, 24000, 1700.0),
-    _Segment(24000, 43000, 1700.0),
+    _Segment(0,     10000, 1700.0),
+    _Segment(10000, 24000, 2100.0),
+    _Segment(24000, 43000, 2300.0),
 )
 
 _PERF_TABLES: dict[str, tuple[tuple[_Segment, ...], tuple[_Segment, ...]]] = {
@@ -234,7 +239,7 @@ class SpeedSchedule:
 _SPEED_SCHEDULES: dict[str, SpeedSchedule] = {
     "B738": SpeedSchedule(
         climb_cas_kt=290.0, climb_mach=0.78,
-        cruise_mach=0.785,
+        cruise_mach=0.78,
         descent_mach=0.78, descent_cas_kt=290.0,
     ),
     "A320": SpeedSchedule(
@@ -282,6 +287,77 @@ def crossover_altitude_ft(aircraft_type: str) -> float:
     return _CROSSOVER_FT.get(
         aircraft_type.upper(), _CROSSOVER_FT["B738"]
     )
+
+
+# ---------------------------------------------------------------------------
+# Tuning API — the speed schedule + 250 kt restriction are configurable at
+# runtime so a caller (e.g. the flight-time validator) can adjust climb
+# CAS / cruise Mach / descent CAS-Mach / the below-FL100 limit and re-run
+# the simulation until total time matches the CAT62 reference. All setters
+# mutate module state in place; `target_tas_kt` reads them on every call,
+# so a change takes effect on the next `build_flight_timeline`.
+# ---------------------------------------------------------------------------
+
+
+def set_speed_schedule(aircraft_type: str, schedule: SpeedSchedule) -> None:
+    """Replace the whole speed schedule for an aircraft type."""
+    _SPEED_SCHEDULES[aircraft_type.upper()] = schedule
+
+
+def tune_speed_schedule(
+    aircraft_type: str,
+    *,
+    climb_cas_kt: float | None = None,
+    climb_mach: float | None = None,
+    cruise_mach: float | None = None,
+    descent_mach: float | None = None,
+    descent_cas_kt: float | None = None,
+) -> SpeedSchedule:
+    """Override individual speed-schedule fields, keeping the rest.
+
+    Any argument left as ``None`` is unchanged. Returns the new schedule
+    (also stored, so subsequent :func:`aircraft_speeds` calls see it).
+    Unknown aircraft types seed from the B738 baseline before tuning.
+    """
+    base = aircraft_speeds(aircraft_type)
+    updates = {
+        k: v
+        for k, v in {
+            "climb_cas_kt": climb_cas_kt,
+            "climb_mach": climb_mach,
+            "cruise_mach": cruise_mach,
+            "descent_mach": descent_mach,
+            "descent_cas_kt": descent_cas_kt,
+        }.items()
+        if v is not None
+    }
+    new = replace(base, **updates)
+    _SPEED_SCHEDULES[aircraft_type.upper()] = new
+    return new
+
+
+def set_speed_restriction(
+    *,
+    cas_kt: float | None = None,
+    below_alt_ft: float | None = None,
+) -> None:
+    """Tune the ATC speed restriction (default 250 kt CAS below FL100).
+
+    The restriction is applied as ``min(phase_cas, cas_kt)`` below
+    ``below_alt_ft``, so pass a very high ``cas_kt`` (e.g. 9999) to
+    effectively disable the cap; ``below_alt_ft`` moves the altitude the
+    cap applies under (set 0 to disable by altitude).
+    """
+    global _BELOW_FL100_CAS_KT, _RESTRICTION_ALT_FT
+    if cas_kt is not None:
+        _BELOW_FL100_CAS_KT = float(cas_kt)
+    if below_alt_ft is not None:
+        _RESTRICTION_ALT_FT = float(below_alt_ft)
+
+
+def get_speed_restriction() -> tuple[float, float]:
+    """Return the current ``(cas_kt, below_alt_ft)`` restriction values."""
+    return _BELOW_FL100_CAS_KT, _RESTRICTION_ALT_FT
 
 
 def target_tas_kt(

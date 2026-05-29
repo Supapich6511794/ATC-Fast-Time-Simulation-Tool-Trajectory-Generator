@@ -35,6 +35,14 @@ export interface GenerateInput {
    *  suffixes the flight_key/filename with `_R{n+1}` to keep files
    *  distinct without mangling the user's callsign. */
   flight_index?: number;
+  /** Optional Phase-3 speed-schedule overrides for tuning toward the
+   *  CAT62 reference time. Omitted fields keep the airframe default. */
+  climb_cas_kt?: number;
+  climb_mach?: number;
+  cruise_mach?: number;
+  descent_mach?: number;
+  descent_cas_kt?: number;
+  restrict_cas_kt?: number;
 }
 
 export interface GenerateResponse {
@@ -91,6 +99,16 @@ interface ApiPayload {
       descent: { avg_tas_kt: number | null; avg_gs_kt: number | null; time_min: number | null };
     };
   };
+  validation: {
+    route: string;
+    cat62_min: number;
+    simulated_min: number;
+    delta_min: number;
+    threshold_min: number;
+    status: "PASS" | "FAIL";
+    passed: boolean;
+    source: "cat62" | "estimate";
+  } | null;
   route: RouteWaypoint[];
   points: {
     lat: number;
@@ -198,6 +216,18 @@ export async function generateTrajectory(
           }
         : undefined,
     },
+    validation: p.validation
+      ? {
+          route: p.validation.route,
+          cat62Min: p.validation.cat62_min,
+          simulatedMin: p.validation.simulated_min,
+          deltaMin: p.validation.delta_min,
+          thresholdMin: p.validation.threshold_min,
+          status: p.validation.status,
+          passed: p.validation.passed,
+          source: p.validation.source,
+        }
+      : null,
     meta: {
       flightKey: p.flight_key,
       callsign: p.meta.callsign,

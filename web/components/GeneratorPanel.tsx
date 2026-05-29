@@ -35,6 +35,13 @@ import {
   resolveRoutePreview,
   type PreviewPoint,
 } from "@/lib/routePreview";
+import {
+  estimateReferenceMin,
+  estimateSimMin,
+  fetchCat62Reference,
+  lookupReferenceMin,
+  type Cat62Table,
+} from "@/lib/cat62";
 import { kBestRoutes } from "@/lib/routeFinder";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
 
@@ -106,6 +113,15 @@ export default function GeneratorPanel({
   const [eobt, setEobt] = useState("");
   const [gsKt, setGsKt] = useState(450);
   const [rfl, setRfl] = useState(350);
+
+  // Phase-3 speed-schedule tuning (advanced, collapsed by default).
+  // Empty string = use the airframe default for that field.
+  const [tuneOpen, setTuneOpen] = useState(false);
+  const [climbCas, setClimbCas] = useState("");
+  const [cruiseMach, setCruiseMach] = useState("");
+  const [descentCas, setDescentCas] = useState("");
+  const [descentMach, setDescentMach] = useState("");
+  const [restrictCas, setRestrictCas] = useState("");
   const [routeStr, setRouteStr] = useState("");
   const [builtWpts, setBuiltWpts] = useState<string[]>([]);
   /** Extra Item-15 routes to fly together (capped at #possible routes). */
@@ -189,6 +205,53 @@ export default function GeneratorPanel({
     if (!depLL || !desLL) return [];
     return kBestRoutes(allFixes, airwaysMap, depLL, desLL, { k: 6 });
   }, [pairReady, dep, des, airportLL, allFixes, airwaysMap]);
+
+  // CAT62 reference table (loaded once) for pre-screening candidate
+  // routes against the city-pair reference time.
+  const [cat62, setCat62] = useState<Cat62Table | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetchCat62Reference()
+      .then((t) => !cancelled && setCat62(t))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // One target time for the whole pair: the real CAT62 reference if we
+  // have one, otherwise a distance-based estimate anchored on the
+  // shortest (recommended) route — so EVERY pair gets a PASS/FAIL, not
+  // just the few with table entries.
+  const threshold = cat62?.thresholdMin ?? 5;
+  const pairRefMin = useMemo(() => {
+    if (!cat62 || bestRoutes.length === 0) return null;
+    const real = lookupReferenceMin(cat62, dep, des);
+    if (real != null) return real;
+    return estimateReferenceMin(bestRoutes[0].distanceNm);
+  }, [cat62, dep, des, bestRoutes]);
+
+  // Annotate each candidate route with its predicted flight time +
+  // PASS/FAIL against the pair target, then split passing / failing.
+  const rankedRoutes = useMemo(
+    () =>
+      bestRoutes.map((r) => {
+        const simMin = estimateSimMin(r.distanceNm);
+        const passed =
+          pairRefMin != null
+            ? Math.abs(simMin - pairRefMin) < threshold
+            : null;
+        return { ...r, simMin, passed };
+      }),
+    [bestRoutes, pairRefMin, threshold],
+  );
+
+  const passingRoutes = rankedRoutes.filter((r) => r.passed === true);
+  const hasReference = pairRefMin != null;
+  // Prefer passing routes; if none pass, show everything so the user can
+  // still pick + then tune (never a dead end).
+  const shownRoutes =
+    hasReference && passingRoutes.length > 0 ? passingRoutes : rankedRoutes;
 
   // The route the Item-15 box currently resolves to (typed or built).
   const effectiveRoute =
@@ -359,6 +422,28 @@ export default function GeneratorPanel({
             : [apiRoute];
       const multi = list.length > 1;
 
+      // Speed-schedule overrides — only include fields the user actually
+      // set, so empty inputs keep the airframe default server-side.
+      const num = (s: string) => {
+        const v = parseFloat(s);
+        return Number.isFinite(v) ? v : undefined;
+      };
+      const speedOverrides = {
+        ...(num(climbCas) !== undefined ? { climb_cas_kt: num(climbCas) } : {}),
+        ...(num(cruiseMach) !== undefined
+          ? { cruise_mach: num(cruiseMach) }
+          : {}),
+        ...(num(descentCas) !== undefined
+          ? { descent_cas_kt: num(descentCas) }
+          : {}),
+        ...(num(descentMach) !== undefined
+          ? { descent_mach: num(descentMach) }
+          : {}),
+        ...(num(restrictCas) !== undefined
+          ? { restrict_cas_kt: num(restrictCas) }
+          : {}),
+      };
+
       const settled = await Promise.all(
         list.map((r, i) =>
           generateTrajectory({
@@ -375,6 +460,7 @@ export default function GeneratorPanel({
             eobt,
             gs_kt: gsKt,
             rfl,
+            ...speedOverrides,
             ...(multi ? { flight_index: i } : {}),
           }),
         ),
@@ -543,6 +629,100 @@ export default function GeneratorPanel({
             </label>
           </div>
 
+          {/* Advanced: speed-schedule tuning. Collapsed by default; the
+              fields override the airframe BADA defaults so the user can
+              tune total flight time toward the CAT62 reference. */}
+          <div className="tune">
+            <button
+              type="button"
+              className="tune-toggle"
+              aria-expanded={tuneOpen}
+              onClick={() => setTuneOpen((v) => !v)}
+            >
+              <span>⚙ Speed schedule (advanced)</span>
+              <span className="tune-caret">{tuneOpen ? "▾" : "▸"}</span>
+            </button>
+
+            {tuneOpen && (
+              <div className="tune-body">
+                <p className="tune-hint">
+                  Leave blank to use the B738 defaults. Tune these to match
+                  the CAT62 reference time (shown on each result).
+                </p>
+                <div className="field-row">
+                  <label className="field">
+                    <span>Climb CAS (kt)</span>
+                    <input
+                      type="number"
+                      placeholder="290"
+                      value={climbCas}
+                      onChange={(e) => setClimbCas(e.target.value)}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Cruise Mach</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder="0.785"
+                      value={cruiseMach}
+                      onChange={(e) => setCruiseMach(e.target.value)}
+                    />
+                  </label>
+                </div>
+                <div className="field-row">
+                  <label className="field">
+                    <span>Descent CAS (kt)</span>
+                    <input
+                      type="number"
+                      placeholder="290"
+                      value={descentCas}
+                      onChange={(e) => setDescentCas(e.target.value)}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Descent Mach</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder="0.78"
+                      value={descentMach}
+                      onChange={(e) => setDescentMach(e.target.value)}
+                    />
+                  </label>
+                </div>
+                <label className="field">
+                  <span>Below-FL100 CAS cap (kt) — 250 ATC limit</span>
+                  <input
+                    type="number"
+                    placeholder="250"
+                    value={restrictCas}
+                    onChange={(e) => setRestrictCas(e.target.value)}
+                  />
+                </label>
+                {(climbCas ||
+                  cruiseMach ||
+                  descentCas ||
+                  descentMach ||
+                  restrictCas) && (
+                  <button
+                    type="button"
+                    className="tune-reset"
+                    onClick={() => {
+                      setClimbCas("");
+                      setCruiseMach("");
+                      setDescentCas("");
+                      setDescentMach("");
+                      setRestrictCas("");
+                    }}
+                  >
+                    Reset to defaults
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
           <div className="field">
             <span>Route string (Item 15)</span>
             <div className="rt-modes" role="tablist">
@@ -590,35 +770,61 @@ export default function GeneratorPanel({
                 )}
 
                 {/* Best-route ranker — graph search over the whole Thai
-                    airway network, for ANY aerodrome pair. */}
+                    airway network, for ANY aerodrome pair. When the pair
+                    has a flight-time reference, only routes that PASS the
+                    <5 min check are shown (falls back to all if none). */}
                 {pairReady && bestRoutes.length > 0 && (
                   <div className="rt-routes">
                     <span>
-                      Best routes ({dep} → {des}) — ranked shortest first.
+                      Best routes ({dep} → {des})
+                      {hasReference
+                        ? passingRoutes.length > 0
+                          ? " — within 5 min of reference"
+                          : " — none within 5 min; showing all"
+                        : " — ranked shortest first"}
                     </span>
-                    {(showAllRoutes ? bestRoutes : bestRoutes.slice(0, 3)).map(
+                    {(showAllRoutes ? shownRoutes : shownRoutes.slice(0, 3)).map(
                       (r, i) => {
-                        const best = bestRoutes[0];
-                        const tag =
-                          i === 0
-                            ? " ★ recommended"
-                            : r.distanceNm > best.distanceNm
-                              ? ` · +${Math.round(r.distanceNm - best.distanceNm)} NM`
+                        const passTag =
+                          r.passed === true
+                            ? " · PASS"
+                            : r.passed === false
+                              ? " · FAIL"
                               : "";
+                        const timeTag = ` · ~${Math.round(r.simMin)} min`;
+                        const cls = [
+                          i === 0 ? "rt-best" : "",
+                          r.passed === true ? "rt-pass" : "",
+                          r.passed === false ? "rt-fail" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ");
+                        const delta =
+                          pairRefMin != null ? r.simMin - pairRefMin : null;
                         return (
                           <button
                             key={r.text}
                             type="button"
-                            className={i === 0 ? "rt-best" : undefined}
+                            className={cls || undefined}
                             onClick={() => setRouteStr(r.text)}
-                            title={`${r.distanceNm} NM total`}
+                            title={
+                              pairRefMin != null
+                                ? `${r.distanceNm} NM · ~${Math.round(
+                                    r.simMin,
+                                  )} min sim vs ${Math.round(
+                                    pairRefMin,
+                                  )} min ref (Δ ${
+                                    delta! >= 0 ? "+" : "-"
+                                  }${Math.abs(Math.round(delta!))} min)`
+                                : `${r.distanceNm} NM total`
+                            }
                           >
-                            {r.text} · {r.distanceNm} NM{tag}
+                            {r.text} · {r.distanceNm} NM{timeTag}{passTag}
                           </button>
                         );
                       },
                     )}
-                    {bestRoutes.length > 3 && (
+                    {shownRoutes.length > 3 && (
                       <button
                         type="button"
                         className="rt-more"
@@ -626,7 +832,7 @@ export default function GeneratorPanel({
                       >
                         {showAllRoutes
                           ? "See less"
-                          : `See more (${bestRoutes.length - 3})`}
+                          : `See more (${shownRoutes.length - 3})`}
                       </button>
                     )}
                   </div>

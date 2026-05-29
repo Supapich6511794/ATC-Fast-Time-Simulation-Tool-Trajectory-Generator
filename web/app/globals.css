@@ -113,6 +113,154 @@ body {
   color: var(--accent);
 }
 
+/* ---- Advanced speed-schedule tuning panel ---- */
+.tune {
+  margin: 0 0 10px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.4);
+  overflow: hidden;
+}
+
+.tune-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 9px 11px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tune-toggle:hover {
+  color: var(--accent);
+}
+
+.tune-caret {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.tune-body {
+  padding: 4px 11px 11px;
+  border-top: 1px solid #334155;
+}
+
+.tune-hint {
+  margin: 8px 0 10px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.tune-reset {
+  margin-top: 4px;
+  padding: 5px 10px;
+  background: transparent;
+  border: 1px dashed #33415588;
+  border-radius: 6px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.tune-reset:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.app.theme-light .tune {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+/* ---- CAT62 flight-time validation badge (in route summary) ---- */
+.rt-cat62 {
+  margin: 10px 0 0;
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid;
+}
+
+.rt-cat62.pass {
+  background: rgba(34, 197, 94, 0.1);
+  border-color: rgba(34, 197, 94, 0.45);
+}
+
+.rt-cat62.fail {
+  background: rgba(248, 113, 113, 0.1);
+  border-color: rgba(248, 113, 113, 0.45);
+}
+
+.rt-cat62-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.rt-cat62-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* "est" tag — marks a distance-estimated reference (not a real CAT62
+   sample). cursor:help because it carries a title tooltip. */
+.rt-cat62-est {
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: #33415588;
+  color: var(--muted);
+  cursor: help;
+}
+
+.rt-cat62-status {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+
+.rt-cat62.pass .rt-cat62-status {
+  background: #22c55e;
+  color: #052e16;
+}
+
+.rt-cat62.fail .rt-cat62-status {
+  background: #f87171;
+  color: #450a0a;
+}
+
+.rt-cat62-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+}
+
+.rt-cat62-row strong {
+  color: var(--text);
+  font-weight: 700;
+}
+
 /* ============================================================= *
  *  Floating tool menu — top-left of the map (NavToolbar component)
  * ============================================================= */
@@ -130,6 +278,19 @@ body {
   border: 1px solid #33415588;
   border-radius: 12px;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+/* Wrapper around the three top-level items. Inline row on desktop; on
+   mobile it collapses behind the ☰ hamburger (see the ≤640px block). */
+.tool-items {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Hamburger is desktop-hidden; only the inline items show there. */
+.tool-hamburger {
+  display: none;
 }
 
 .tool-item {
@@ -467,30 +628,92 @@ body {
 /* Responsive: on a phone the tool menu stretches across the top so all
    three actions remain reachable without scrolling. */
 @media (max-width: 640px) {
+  /* Tool menu collapses to a compact ☰ button at top-left. The three
+     items live in a dropdown panel that opens beneath it. */
   .tool-menu {
-    left: 6px;
-    right: 56px; /* leave room for the hamburger (top-left) */
+    left: 8px;
     top: 8px;
-    padding: 4px 6px;
+    padding: 4px;
+    flex-wrap: nowrap;
   }
-  .tool-item,
-  .tool-dd-trigger {
-    padding: 6px 8px;
-    font-size: 12px;
+
+  .tool-hamburger {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 8px 12px;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
   }
-  .tm-menu,
-  .tm-submenu {
-    min-width: 200px;
+
+  .tool-menu.mobile-open .tool-hamburger {
+    color: var(--accent);
   }
-  /* Stack the submenu underneath the parent item on mobile rather than
-     to the right, so it stays within the viewport. */
-  .tm-submenu {
+
+  .tool-hamburger-label {
+    letter-spacing: 0.02em;
+  }
+
+  /* Items hidden until the hamburger is tapped, then a vertical panel. */
+  .tool-items {
+    display: none;
+  }
+  .tool-items.open {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    min-width: 220px;
+    padding: 6px;
+    background: var(--panel);
+    border: 1px solid #33415588;
+    border-radius: 12px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+    animation: tm-fade 0.15s ease;
+  }
+
+  /* Each item fills the panel width and left-aligns. */
+  .tool-items.open .tool-item,
+  .tool-items.open .tool-dd-trigger {
+    width: 100%;
+    justify-content: flex-start;
+    padding: 9px 10px;
+    font-size: 13px;
+  }
+  .tool-items.open .tool-dd {
+    width: 100%;
+  }
+  /* Generated's route list stacks inline inside the panel rather than as
+     an absolute popover, so it can't spill off-screen. */
+  .tool-items.open .tm-menu {
     position: static;
-    margin: 4px 0 6px 24px;
+    margin: 2px 0 4px;
+    min-width: 0;
+    box-shadow: none;
+    border: 1px solid #33415544;
+  }
+  .tool-items.open .tm-submenu {
+    position: static;
+    margin: 4px 0 6px 18px;
     box-shadow: none;
     border-color: #33415544;
     min-width: 0;
     max-width: none;
+  }
+
+  /* Map controls stay top-right — the hamburger is small, so no overlap. */
+  .ov-top {
+    top: 8px;
+    right: 6px;
   }
 }
 
@@ -3203,8 +3426,11 @@ body {
     z-index: 1400;
   }
 
+  /* The floating tool menu's "Generator" item now opens the sidebar and
+     the sidebar has its own ✕, so the old hamburger is redundant — and
+     it overlapped the tool menu at the top-left. Keep it hidden. */
   .ov-hamburger {
-    display: block;
+    display: none;
   }
 
   .sidebar-close {
@@ -3227,20 +3453,11 @@ body {
     max-width: none;
   }
 
-  .ov-top {
-    top: 10px;
-    right: 10px;
-  }
-
+  /* ov-top keeps the default top-right on tablets (641–860px) where it
+     fits beside the tool menu; the ≤640px block stacks it below. */
   .ov-group {
     flex-wrap: wrap;
     justify-content: flex-end;
-  }
-
-  /* The mobile hamburger sits top-left; push Leaflet's zoom control
-     below it so the +/- box no longer covers the menu button. */
-  .leaflet-top.leaflet-left {
-    top: 62px;
   }
 }
 
@@ -3425,6 +3642,17 @@ body {
 .rt-routes button.rt-best:hover {
   color: #06283d;
   filter: brightness(1.08);
+}
+
+/* Flight-time check on each candidate route. A left accent bar (green
+   PASS / red FAIL) keeps the cue subtle without fighting the recommended
+   highlight. */
+.rt-routes button.rt-pass {
+  border-left: 3px solid #22c55e;
+}
+
+.rt-routes button.rt-fail {
+  border-left: 3px solid #f87171;
 }
 
 .app.theme-light .rt-routes button,
