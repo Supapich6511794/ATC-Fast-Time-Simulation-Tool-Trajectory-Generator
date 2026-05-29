@@ -4416,6 +4416,31 @@ body {
   width: 100%;
 }
 
+/* Positioning context for the animated aircraft overlay. Its height
+   matches the chart SVG (which is display:block), so the plane's top/left
+   percentages map 1:1 onto the chart's viewBox coordinates. */
+.alt-canvas {
+  position: relative;
+  width: 100%;
+}
+
+.alt-plane {
+  position: absolute;
+  width: 15px;
+  height: 15px;
+  color: var(--accent);
+  pointer-events: none;
+  will-change: left, top, transform;
+  filter: drop-shadow(0 0 3px rgba(56, 189, 248, 0.55));
+}
+
+.alt-plane svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+}
+
 .alt-empty {
   margin: 12px 0 0;
   font-size: 11px;

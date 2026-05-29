@@ -385,7 +385,36 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
     except ValueError as e:
         raise HTTPException(400, f"Invalid flight plan: {e}") from None
 
+    # Anchor the trajectory to the real aerodromes. An FPL trajectory is
+    # gate-to-gate, so it must DEPART ADEP and ARRIVE ADES regardless of
+    # which fixes the Item-15 route lists. Prepend/append the aerodrome
+    # reference points unless the route already starts/ends right on them
+    # (e.g. PUT sits on VTSP) — which would only add a zero-length leg. If
+    # the route's last fix is far from ADES, the route doesn't actually
+    # serve the city pair (e.g. a VTBS->VTSP route that ends at Chiang Mai);
+    # we still close it to ADES but flag it so the FAIL is read as a bad
+    # route, not a bad simulation.
+    _COINCIDENT_SQ = 0.0025  # ~3 NM: treat as already over the aerodrome
+    _FAR_SQ = 0.25  # ~30 NM: the route never reaches the destination field
     waypoint_sequence = [(lat, lon) for _, lat, lon in route_pts]
+    adep_ll = _airport_ll(adep)
+    ades_ll = _airport_ll(ades)
+    if (
+        adep_ll is not None
+        and _sq_dist(waypoint_sequence[0], adep_ll) > _COINCIDENT_SQ
+    ):
+        waypoint_sequence.insert(0, adep_ll)
+    if ades_ll is not None:
+        gap = _sq_dist(waypoint_sequence[-1], ades_ll)
+        if gap > _COINCIDENT_SQ:
+            waypoint_sequence.append(ades_ll)
+        if gap > _FAR_SQ:
+            warnings.append(
+                f"Route does not reach {ades}: its last fix is far from the "
+                f"destination, so a direct leg to {ades} was added. Pick a "
+                f"route that ends near {ades} for a realistic profile."
+            )
+
     # Multi-route requests share (callsign, EOBT) — disambiguate the
     # flight_key/filename with an R-prefixed suffix instead of mangling
     # the callsign so the CSV's Callsign column stays the user's value.

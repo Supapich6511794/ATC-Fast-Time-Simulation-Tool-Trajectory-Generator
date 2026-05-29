@@ -137,6 +137,13 @@ export default function MapApp() {
     safePlaybackIdx === "all" ? longest : trajectories[safePlaybackIdx] ?? null;
   const sim = useSimPlayback(activeTrajectory?.points);
 
+  // The sim clock for a given route's altitude chart: the live `simT` when
+  // that route is the one being animated on the map ("all" animates every
+  // route), else null so its plane parks at the start. Keeps each profile's
+  // plane in lock-step with the map aircraft.
+  const playSimT = (i: number): number | null =>
+    safePlaybackIdx === "all" || safePlaybackIdx === i ? sim.simT : null;
+
   useEffect(() => {
     let cancelled = false;
     fetchAirways()
@@ -374,6 +381,7 @@ export default function MapApp() {
               }
               onRemove={() => removeResultAt(nav.routeIdx)}
               forceSection={nav.section}
+              simT={playSimT(nav.routeIdx)}
             />
           )}
 
@@ -423,6 +431,7 @@ export default function MapApp() {
                 onRemove={() => removeResultAt(i)}
                 forceSection={nav.section === "both" ? undefined : nav.section}
                 stacked={nav.section === "both"}
+                simT={playSimT(i)}
               />
             ))}
 

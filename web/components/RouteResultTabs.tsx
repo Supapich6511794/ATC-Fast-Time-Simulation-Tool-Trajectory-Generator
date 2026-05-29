@@ -44,6 +44,10 @@ interface Props {
   /** Render **both** sections one above the other instead of a tab
    *  strip. The "all routes" landing page uses this. */
   stacked?: boolean;
+  /** Current simulation clock (s) for this route, forwarded to the
+   *  altitude chart so its plane tracks the map playback. Null when this
+   *  route isn't the one being animated. */
+  simT?: number | null;
 }
 
 const TABS: { id: RouteSection; label: string }[] = [
@@ -66,6 +70,7 @@ export default function RouteResultTabs({
   onRemove,
   forceSection,
   stacked,
+  simT,
 }: Props) {
   const [tab, setTab] = useState<RouteSection>(forceSection ?? "vertical");
   // Keep the rendered tab in sync when the parent drives the choice.
@@ -124,7 +129,7 @@ export default function RouteResultTabs({
             {stacked && (
               <h4 className="rt-section-title">Vertical profile</h4>
             )}
-            <AltitudeProfile trajectory={trajectory} />
+            <AltitudeProfile trajectory={trajectory} simT={simT} />
             <dl className="rt-vp-stats">
               <div>
                 <dt>Cruise</dt>
