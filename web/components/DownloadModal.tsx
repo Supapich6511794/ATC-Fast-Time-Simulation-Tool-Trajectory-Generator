@@ -308,7 +308,12 @@ export default function DownloadModal({
       return next;
     });
 
-  const total = routeSel.size * fmtSel.size;
+  // Files a download will produce. "Separate" = one file per route ×
+  // format; "combined" merges every selected route into ONE file per
+  // format, so its count is just the number of formats picked.
+  const canDownload = routeSel.size > 0 && fmtSel.size > 0;
+  const fileCount =
+    bundleMode === "combined" ? fmtSel.size : routeSel.size * fmtSel.size;
 
   // All hooks have run by this point — safe to short-circuit before the
   // JSX when the modal is closed.
@@ -354,17 +359,19 @@ export default function DownloadModal({
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 
     // ---- Combined mode: merge every selected route into ONE file per
-    // format (server-side). Single format → that file; several → a zip.
+    // format (server-side). One file per selected format, so the number
+    // of files downloaded equals the number of formats picked.
     if (bundleMode === "combined") {
       const flightKeys = rIdx
         .map((i) => downloads[i]?.flightKey)
         .filter((k): k is string => !!k);
-      const ext = fmts.length === 1 ? fmts[0] : "zip";
-      await downloadFromEndpoint(
-        "/api/download_combined",
-        { flight_keys: flightKeys, formats: fmts },
-        `combined_${stamp}.${ext}`,
-      );
+      for (const f of fmts) {
+        await downloadFromEndpoint(
+          "/api/download_combined",
+          { flight_keys: flightKeys, formats: [f] },
+          `combined_${stamp}.${f}`,
+        );
+      }
       onClose();
       return;
     }
@@ -653,15 +660,11 @@ export default function DownloadModal({
 
         <div className="dlm-foot">
           <span className="dlm-foot-note">
-            {total === 0
+            {!canDownload
               ? "Pick at least one route and one format"
               : bundleMode === "combined"
-                ? `${routeSel.size} route${routeSel.size === 1 ? "" : "s"} merged → ${
-                    fmtSel.size === 1
-                      ? `1 ${Array.from(fmtSel)[0]} file`
-                      : `${fmtSel.size} files (zip)`
-                  }`
-                : `${total} file${total === 1 ? "" : "s"} will download`}
+                ? `${routeSel.size} route${routeSel.size === 1 ? "" : "s"} merged → ${fileCount} file${fileCount === 1 ? "" : "s"} (one per format)`
+                : `${fileCount} file${fileCount === 1 ? "" : "s"} will download`}
           </span>
           <div className="dlm-foot-btns">
             <button className="dlm-cancel" onClick={onClose}>
@@ -670,9 +673,9 @@ export default function DownloadModal({
             <button
               className="dlm-go"
               onClick={runDownload}
-              disabled={total === 0}
+              disabled={!canDownload}
             >
-              ⬇ Download {total > 0 ? `(${total})` : ""}
+              ⬇ Download {canDownload ? `(${fileCount})` : ""}
             </button>
           </div>
         </div>

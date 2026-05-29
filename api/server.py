@@ -41,6 +41,7 @@ from trajectory_sim.output import (
     write_geopackage,
 )
 from trajectory_sim.performance import (
+    PERFORMANCE_SOURCE,
     aircraft_speeds,
     crossover_altitude_ft,
     get_speed_restriction,
@@ -297,8 +298,9 @@ def cat62_reference() -> dict[str, object]:
     }
 
 
-@app.post("/api/generate")
-def generate(req: GenerateRequest) -> dict[str, object]:
+def _generate_one(req: GenerateRequest) -> dict[str, object]:
+    """Build one trajectory + its payload. Shared by the single-flight
+    /api/generate endpoint and the bulk /api/generate_batch loop."""
     warnings: list[str] = []
 
     # --- Validate the city pair (any Thai aerodrome pair is allowed) ---
@@ -436,6 +438,12 @@ def generate(req: GenerateRequest) -> dict[str, object]:
                 rfl=fpl.rfl,
                 flight_key_suffix=flight_key_suffix,
             )
+            # Snapshot the schedule actually flown *before* restore, so the
+            # reported speed_schedule reflects this flight's overrides (not
+            # the baseline the globals get reset to in `finally`).
+            applied_sched = aircraft_speeds(_ACTYPE)
+            applied_crossover_ft = crossover_altitude_ft(_ACTYPE)
+            applied_restrict_kt = get_speed_restriction()[0]
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
         finally:
@@ -529,15 +537,14 @@ def generate(req: GenerateRequest) -> dict[str, object]:
             (rows.iloc[-1] - rows.iloc[0]).total_seconds() / 60.0
         )
 
-    speeds_obj = aircraft_speeds("B738")
     speed_schedule = {
-        "climb_cas_kt": speeds_obj.climb_cas_kt,
-        "climb_mach": speeds_obj.climb_mach,
-        "cruise_mach": speeds_obj.cruise_mach,
-        "descent_mach": speeds_obj.descent_mach,
-        "descent_cas_kt": speeds_obj.descent_cas_kt,
-        "crossover_ft": crossover_altitude_ft("B738"),
-        "below_fl100_restriction_kt": 250.0,
+        "climb_cas_kt": applied_sched.climb_cas_kt,
+        "climb_mach": applied_sched.climb_mach,
+        "cruise_mach": applied_sched.cruise_mach,
+        "descent_mach": applied_sched.descent_mach,
+        "descent_cas_kt": applied_sched.descent_cas_kt,
+        "crossover_ft": applied_crossover_ft,
+        "below_fl100_restriction_kt": applied_restrict_kt,
     }
     phase_breakdown = {
         "climb": {
@@ -586,7 +593,10 @@ def generate(req: GenerateRequest) -> dict[str, object]:
             "adep": adep,
             "ades": ades,
             "eobt": eobt.isoformat(),
-            "engine": "Python trajectory_sim · pyproj.Geod (WGS-84)",
+            "engine": (
+                "Python trajectory_sim · pyproj.Geod (WGS-84) · "
+                f"{PERFORMANCE_SOURCE}"
+            ),
         },
         "stats": {
             "waypoint_count": len(route_pts),
@@ -614,6 +624,49 @@ def generate(req: GenerateRequest) -> dict[str, object]:
             "geojson": f"/api/download/{flight_key}.geojson",
         },
     }
+
+
+@app.post("/api/generate")
+def generate(req: GenerateRequest) -> dict[str, object]:
+    return _generate_one(req)
+
+
+class BatchRequest(BaseModel):
+    """POST body for /api/generate_batch — a list of flight specs."""
+
+    flights: list[GenerateRequest] = Field(default_factory=list)
+
+
+@app.post("/api/generate_batch")
+def generate_batch(req: BatchRequest) -> dict[str, object]:
+    """Generate many trajectories in one request.
+
+    Each flight is built with :func:`_generate_one`. A failing flight is
+    recorded in ``errors`` rather than aborting the whole batch, so a few
+    bad rows in a 2000-row import don't sink the run. Every flight is
+    given a distinct ``flight_index`` so flight_keys never collide even
+    when two rows share callsign + EOBT.
+    """
+    if not req.flights:
+        raise HTTPException(400, "No flights provided.")
+
+    results: list[dict[str, object]] = []
+    errors: list[dict[str, object]] = []
+    for i, f in enumerate(req.flights):
+        spec = f.model_copy(update={"flight_index": i})
+        try:
+            results.append(_generate_one(spec))
+        except HTTPException as e:
+            errors.append(
+                {
+                    "index": i,
+                    "callsign": f.callsign,
+                    "adep": f.adep,
+                    "ades": f.ades,
+                    "detail": str(e.detail),
+                }
+            )
+    return {"results": results, "errors": errors, "count": len(results)}
 
 
 _MEDIA = {

@@ -12,8 +12,6 @@
  *   - "Manual"       — fill the form by hand. The route itself can be a
  *                       typed Item-15 string, the point-and-click
  *                       RouteBuilder, or the pre-resolved airway CSV.
- *   - "Upload file"  — drop a .csv/.json/.geojson; it is parsed and the
- *                       fields are pre-filled and still fully editable.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -27,7 +25,14 @@ import {
   type AirportOption,
   type Fix,
 } from "@/lib/aip";
-import { generateTrajectory } from "@/lib/api";
+import { generateBatch, generateTrajectory, type GenerateInput } from "@/lib/api";
+import SearchCombo from "@/components/SearchCombo";
+import {
+  flightOptions,
+  matchesFlight,
+  matchesRoute,
+  routeOptions,
+} from "@/lib/flightSearch";
 import { parseFlightFile, type FlightRecord } from "@/lib/flightFile";
 import {
   resolvePreviewFromIdents,
@@ -45,7 +50,6 @@ import {
 import { kBestRoutes } from "@/lib/routeFinder";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
 
-type InputMode = "manual" | "file";
 /** How the route portion is supplied (all three kept, none removed). */
 type RouteMode = "fpl" | "build" | "csv";
 
@@ -56,6 +60,64 @@ interface DownloadInfo {
   gpkg: string;
   csv: string;
   geojson: string;
+}
+
+/** One editable flight plan in the multi-plan tab strip. The active tab's
+ *  values live in the scalar editor state below; inactive tabs are stored
+ *  as snapshots here, so the whole single-plan editor JSX is reused
+ *  unchanged and tab-switching just serialises/restores these fields. */
+interface PlanDraft {
+  id: string;
+  callsign: string;
+  actype: string;
+  adep: string;
+  ades: string;
+  eobt: string;
+  gsKt: number;
+  rfl: number;
+  routeMode: RouteMode;
+  routeStr: string;
+  builtWpts: string[];
+  routes: string[];
+}
+
+let _planSeq = 0;
+const nextPlanId = () => `p${++_planSeq}`;
+
+function blankPlan(): PlanDraft {
+  return {
+    id: nextPlanId(),
+    callsign: "",
+    actype: "B738",
+    adep: "",
+    ades: "",
+    eobt: "",
+    gsKt: 450,
+    rfl: 350,
+    routeMode: "fpl",
+    routeStr: "",
+    builtWpts: [],
+    routes: [],
+  };
+}
+
+/** The route strings a draft will fly: queued routes, else the single
+ *  effective route, else none. CSV mode is one server-resolved route. */
+function draftRouteList(d: PlanDraft): string[] {
+  if (d.routeMode === "csv") return [""];
+  if (d.routes.length > 0) return d.routes;
+  const eff =
+    d.routeMode === "build"
+      ? d.builtWpts.length
+        ? `DCT ${d.builtWpts.join(" DCT ")} DCT`
+        : ""
+      : d.routeStr.trim();
+  return eff ? [eff] : [];
+}
+
+/** Short tab label for a plan. */
+function planLabel(d: PlanDraft, i: number): string {
+  return d.callsign.trim() || `Plan ${i + 1}`;
 }
 
 interface Props {
@@ -69,6 +131,9 @@ interface Props {
    *  routes plus the one currently being typed/built), so the map can
    *  show each as a faint distinctly-coloured polyline in real time. */
   onPreviewChange?: (routes: PreviewPoint[][]) => void;
+  /** Emits a short "generated / planned flights" status for the panel
+   *  header (shown beside the title, top-right). */
+  onReadyChange?: (text: string) => void;
   /** Selectable waypoint idents (from the airway file) for RouteBuilder. */
   waypointIdents: string[];
 }
@@ -101,9 +166,9 @@ export default function GeneratorPanel({
   onResult,
   onDownloadsChange,
   onPreviewChange,
+  onReadyChange,
   waypointIdents,
 }: Props) {
-  const [mode, setMode] = useState<InputMode>("manual");
   const [routeMode, setRouteMode] = useState<RouteMode>("fpl");
 
   const [callsign, setCallsign] = useState("");
@@ -127,6 +192,23 @@ export default function GeneratorPanel({
   /** Extra Item-15 routes to fly together (capped at #possible routes). */
   const [routes, setRoutes] = useState<string[]>([]);
 
+  // --- Multi-plan tabs -----------------------------------------------------
+  // The active tab's values live in the scalar state above. `plans` holds a
+  // snapshot per tab; switching tabs serialises the current scalar state
+  // into the outgoing plan and restores the incoming one. This lets one
+  // run cover thousands of flights (2000+ Thai network) without rebuilding
+  // the editor for each.
+  const initialPlanId = useRef<string>(nextPlanId());
+  const [plans, setPlans] = useState<PlanDraft[]>(() => [
+    { ...blankPlan(), id: initialPlanId.current },
+  ]);
+  const [activeId, setActiveId] = useState<string>(initialPlanId.current);
+  /** Search/filter over generated results (empty = show all). */
+  // Two-scope search over generated routes: pick a flight, then optionally
+  // narrow to one of its routes (empty route box = all routes of the flight).
+  const [flightQuery, setFlightQuery] = useState("");
+  const [routeQuery, setRouteQuery] = useState("");
+
   const [fileNote, setFileNote] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -146,6 +228,114 @@ export default function GeneratorPanel({
     () => (builtWpts.length ? `DCT ${builtWpts.join(" DCT ")} DCT` : ""),
     [builtWpts],
   );
+
+  /** Snapshot the live editor (scalar state) into a PlanDraft. */
+  const snapshotActive = (): PlanDraft => ({
+    id: activeId,
+    callsign,
+    actype,
+    adep,
+    ades,
+    eobt,
+    gsKt,
+    rfl,
+    routeMode,
+    routeStr,
+    builtWpts,
+    routes,
+  });
+
+  /** Load a PlanDraft into the live editor (scalar state). */
+  const loadDraft = (d: PlanDraft) => {
+    setCallsign(d.callsign);
+    setActype(d.actype);
+    setAdep(d.adep);
+    setAdes(d.ades);
+    setEobt(d.eobt);
+    setGsKt(d.gsKt);
+    setRfl(d.rfl);
+    setRouteMode(d.routeMode);
+    setRouteStr(d.routeStr);
+    setBuiltWpts(d.builtWpts);
+    setRoutes(d.routes);
+  };
+
+  const switchTo = (id: string) => {
+    if (id === activeId) return;
+    const snap = snapshotActive();
+    setPlans((prev) => prev.map((p) => (p.id === activeId ? snap : p)));
+    const target = plans.find((p) => p.id === id);
+    if (target) {
+      loadDraft(target);
+      setActiveId(id);
+    }
+  };
+
+  const addPlan = () => {
+    const snap = snapshotActive();
+    const fresh = blankPlan();
+    setPlans((prev) => [...prev.map((p) => (p.id === activeId ? snap : p)), fresh]);
+    loadDraft(fresh);
+    setActiveId(fresh.id);
+  };
+
+  const duplicatePlan = () => {
+    const snap = snapshotActive();
+    const copy: PlanDraft = { ...snap, id: nextPlanId() };
+    setPlans((prev) => {
+      const persisted = prev.map((p) => (p.id === activeId ? snap : p));
+      const at = persisted.findIndex((p) => p.id === activeId);
+      return [...persisted.slice(0, at + 1), copy, ...persisted.slice(at + 1)];
+    });
+    loadDraft(copy);
+    setActiveId(copy.id);
+  };
+
+  const removePlan = (id: string) => {
+    if (plans.length <= 1) return; // never drop the last tab
+    const at = plans.findIndex((p) => p.id === id);
+    const next = plans.filter((p) => p.id !== id);
+    // Keep the (possibly edited) active tab's data if it isn't the one
+    // being removed.
+    const snap = snapshotActive();
+    setPlans(next.map((p) => (p.id === activeId ? snap : p)));
+    if (id === activeId) {
+      const fallback = next[Math.max(0, at - 1)];
+      loadDraft(fallback);
+      setActiveId(fallback.id);
+    }
+  };
+
+  // Live view of every plan with the active tab reflecting unsaved edits,
+  // for the header counters and "Generate all".
+  const liveActive = snapshotActive();
+  const allDrafts = plans.map((p) => (p.id === activeId ? liveActive : p));
+  const totalRoutes = allDrafts.reduce(
+    (n, d) => n + draftRouteList(d).length,
+    0,
+  );
+  const uniqueAirports = useMemo(() => {
+    const s = new Set<string>();
+    for (const d of allDrafts) {
+      const a = d.adep.trim().toUpperCase();
+      const b = d.ades.trim().toUpperCase();
+      if (a) s.add(a);
+      if (b) s.add(b);
+    }
+    return s;
+  }, [allDrafts]);
+
+  // "generated / planned" — shown beside the panel title. Planned is the
+  // queued route count, falling back to the plan count so a fresh panel
+  // reads "0 / 1".
+  const plannedCount = Math.max(totalRoutes, plans.length);
+  const readyText = `${results.length} / ${plannedCount} flight${
+    plannedCount === 1 ? "" : "s"
+  } ready`;
+  useEffect(() => {
+    onReadyChange?.(readyText);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readyText]);
 
   // Full Thai navdata from the CAAT eAIP cache — all fixes, all airways,
   // and all aerodromes — loaded once on mount.
@@ -336,18 +526,17 @@ export default function GeneratorPanel({
     onPreviewChange?.(previewRoutes);
   }, [previewRoutes, onPreviewChange]);
 
-  /** Apply a parsed file record onto the editable fields. */
-  function applyRecord(r: FlightRecord) {
-    if (r.callsign) setCallsign(r.callsign);
-    if (r.actype) setActype(r.actype);
-    if (r.adep) setAdep(r.adep);
-    if (r.ades) setAdes(r.ades);
-    if (r.eobt) setEobt(r.eobt);
-    if (r.rfl != null) setRfl(r.rfl);
-    if (r.route) {
-      setRouteStr(r.route);
-      setRouteMode("fpl");
-    }
+  /** Turn a parsed flight row into a full PlanDraft. */
+  function recordToPlan(r: FlightRecord): PlanDraft {
+    const p = blankPlan();
+    if (r.callsign) p.callsign = r.callsign;
+    if (r.actype) p.actype = r.actype;
+    if (r.adep) p.adep = r.adep;
+    if (r.ades) p.ades = r.ades;
+    if (r.eobt) p.eobt = r.eobt;
+    if (r.rfl != null) p.rfl = r.rfl;
+    if (r.route) p.routeStr = r.route;
+    return p;
   }
 
   async function handleFiles(files: FileList | null) {
@@ -359,16 +548,197 @@ export default function GeneratorPanel({
         all.push(...(await parseFlightFile(f)));
       }
       if (all.length === 0) throw new Error("No flight rows found in file.");
-      applyRecord(all[0]);
-      setMode("manual");
+
+      // Bulk import: one tab per row, ready for "Generate all" (the
+      // 2000-flight Thai network case). Replaces the current plan set.
+      const drafts = all.map(recordToPlan);
+      setPlans(drafts);
+      loadDraft(drafts[0]);
+      setActiveId(drafts[0].id);
       setFileNote(
         all.length > 1
-          ? `Loaded ${all.length} flights — showing the first; edit before Generate`
+          ? `Imported ${all.length} flights into tabs — edit any, then "Generate all"`
           : "Loaded from file — review and edit before Generate",
       );
     } catch (e) {
       setFileNote(null);
       setError(e instanceof Error ? e.message : "Could not parse file.");
+    }
+  }
+
+  /** Speed-schedule overrides — only the fields the user actually set, so
+   *  blanks keep the airframe default server-side. Shared by single +
+   *  batch generation. */
+  function buildSpeedOverrides(): Partial<GenerateInput> {
+    const num = (s: string) => {
+      const v = parseFloat(s);
+      return Number.isFinite(v) ? v : undefined;
+    };
+    return {
+      ...(num(climbCas) !== undefined ? { climb_cas_kt: num(climbCas) } : {}),
+      ...(num(cruiseMach) !== undefined ? { cruise_mach: num(cruiseMach) } : {}),
+      ...(num(descentCas) !== undefined ? { descent_cas_kt: num(descentCas) } : {}),
+      ...(num(descentMach) !== undefined ? { descent_mach: num(descentMach) } : {}),
+      ...(num(restrictCas) !== undefined ? { restrict_cas_kt: num(restrictCas) } : {}),
+    };
+  }
+
+  // Stage 1 — narrow to the matched flight(s) by callsign / ADEP-ADES.
+  const flightFiltered = useMemo(
+    () =>
+      results
+        .map((r, i) => ({ r, dl: dlList[i], i }))
+        .filter(({ r }) =>
+          matchesFlight(flightQuery, {
+            callsign: r.meta.callsign,
+            adep: r.meta.adep,
+            ades: r.meta.ades,
+          }),
+        ),
+    [results, dlList, flightQuery],
+  );
+
+  // Stage 2 — within those, optionally pick a specific route (empty route
+  // box = every route of the matched flight). Shares the matcher with the
+  // Route Profile search so both behave identically.
+  const filtered = useMemo(
+    () =>
+      flightFiltered.filter(({ dl, i }) =>
+        matchesRoute(routeQuery, { route: dl?.route ?? "", index: i }),
+      ),
+    [flightFiltered, routeQuery],
+  );
+
+  // Flight-field options (one row per generated flight) and route-field
+  // options (one row per route, scoped to the flight already chosen).
+  const flightSugg = useMemo(
+    () =>
+      flightOptions(
+        results.map((r) => ({
+          callsign: r.meta.callsign,
+          adep: r.meta.adep,
+          ades: r.meta.ades,
+        })),
+      ),
+    [results],
+  );
+  const routeSugg = useMemo(
+    () =>
+      routeOptions(
+        flightFiltered.map(({ r, dl, i }) => ({
+          route: dl?.route ?? "",
+          index: i,
+          distanceNm: r.stats.distanceNm,
+        })),
+      ),
+    [flightFiltered],
+  );
+
+  // Search-driven map: emit only the matched flights (and their downloads)
+  // upward. Null when nothing matches so the map clears. `filtered` is a
+  // stable useMemo, so this fires only when results/downloads or either
+  // search box change — the parent callbacks are intentionally excluded
+  // from the deps to avoid a re-emit loop (onResult is inline in MapApp).
+  useEffect(() => {
+    onResult(filtered.length ? filtered.map((p) => p.r) : null);
+    onDownloadsChange?.(
+      filtered.map((p) => p.dl).filter(Boolean) as DownloadInfo[],
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered]);
+
+  /** Generate EVERY plan's routes in one batch request. */
+  async function generateAll() {
+    setBusy(true);
+    setError(null);
+    setWarnings([]);
+    try {
+      // Reflect any unsaved edits on the active tab.
+      const drafts = plans.map((p) => (p.id === activeId ? snapshotActive() : p));
+      const overrides = buildSpeedOverrides();
+
+      const built: { input: GenerateInput; label: string }[] = [];
+      const skipped: string[] = [];
+      for (const d of drafts) {
+        const dp = d.adep.trim().toUpperCase();
+        const ds = d.ades.trim().toUpperCase();
+        if (!dp || !ds || dp === ds) {
+          skipped.push(`${planLabel(d, drafts.indexOf(d))}: set distinct ADEP/ADES`);
+          continue;
+        }
+        const list = draftRouteList(d);
+        if (list.length === 0) {
+          skipped.push(`${planLabel(d, drafts.indexOf(d))}: no route`);
+          continue;
+        }
+        const isCsv = d.routeMode === "csv";
+        for (const r of list) {
+          built.push({
+            input: {
+              source: isCsv ? "csv" : "fpl",
+              vtsp_to_vtbs: dp === "VTSP",
+              adep: dp,
+              ades: ds,
+              route: isCsv ? "" : r,
+              callsign: d.callsign || "FLT",
+              eobt: d.eobt,
+              gs_kt: d.gsKt,
+              rfl: d.rfl,
+              ...overrides,
+            },
+            label: isCsv ? `Airway CSV · ${dp}→${ds}` : r || "(route)",
+          });
+        }
+      }
+
+      if (built.length === 0) {
+        throw new Error(
+          "Nothing to generate — every plan is missing ADEP/ADES or a route.",
+        );
+      }
+
+      const { results: batch, errors } = await generateBatch(
+        built.map((b) => b.input),
+      );
+
+      // The server keeps successes + failures in submission order, so the
+      // k-th success aligns to the k-th non-failed spec — recover the route
+      // label that way.
+      const failed = new Set(errors.map((e) => e.index));
+      const succeededLabels = built
+        .filter((_, i) => !failed.has(i))
+        .map((b) => b.label);
+
+      const trajectories = batch.map((s) => s.result);
+      const newDownloads: DownloadInfo[] = batch.map((s, i) => ({
+        callsign: s.result.meta.callsign,
+        flightKey: s.result.meta.flightKey,
+        route: succeededLabels[i] ?? "(route)",
+        gpkg: s.downloads.gpkg,
+        csv: s.downloads.csv,
+        geojson: s.downloads.geojson,
+      }));
+
+      const notes = [
+        ...batch.flatMap((s) => s.warnings),
+        ...errors.map((e) => `${e.callsign} ${e.adep}→${e.ades}: ${e.detail}`),
+        ...skipped,
+      ];
+
+      setFlightQuery("");
+      setRouteQuery("");
+      setResults(trajectories);
+      setDlList(newDownloads);
+      setWarnings(notes);
+      if (trajectories.length === 0) {
+        setError("All flights failed — see the messages below.");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Batch generation failed.");
+      setResults([]);
+      setDlList([]);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -424,25 +794,7 @@ export default function GeneratorPanel({
 
       // Speed-schedule overrides — only include fields the user actually
       // set, so empty inputs keep the airframe default server-side.
-      const num = (s: string) => {
-        const v = parseFloat(s);
-        return Number.isFinite(v) ? v : undefined;
-      };
-      const speedOverrides = {
-        ...(num(climbCas) !== undefined ? { climb_cas_kt: num(climbCas) } : {}),
-        ...(num(cruiseMach) !== undefined
-          ? { cruise_mach: num(cruiseMach) }
-          : {}),
-        ...(num(descentCas) !== undefined
-          ? { descent_cas_kt: num(descentCas) }
-          : {}),
-        ...(num(descentMach) !== undefined
-          ? { descent_mach: num(descentMach) }
-          : {}),
-        ...(num(restrictCas) !== undefined
-          ? { restrict_cas_kt: num(restrictCas) }
-          : {}),
-      };
+      const speedOverrides = buildSpeedOverrides();
 
       const settled = await Promise.all(
         list.map((r, i) =>
@@ -478,17 +830,16 @@ export default function GeneratorPanel({
         csv: s.downloads.csv,
         geojson: s.downloads.geojson,
       }));
+      // The search-filter effect emits the (filtered) set to the map.
+      setFlightQuery("");
+      setRouteQuery("");
       setResults(trajectories);
       setDlList(newDownloads);
       setWarnings(settled.flatMap((s) => s.warnings));
-      onResult(trajectories);
-      onDownloadsChange?.(newDownloads);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Generation failed.");
       setResults([]);
       setDlList([]);
-      onResult(null);
-      onDownloadsChange?.([]);
     } finally {
       setBusy(false);
     }
@@ -496,58 +847,75 @@ export default function GeneratorPanel({
 
   return (
     <section className="gen">
-      <div className="gen-tabs" role="tablist">
+      {/* Stat pills + batch action (mirrors the header in the mockup). */}
+      <div className="plans-stats">
+        <span className="plans-stat">
+          <span className="ps-ico" aria-hidden>
+            ≣
+          </span>{" "}
+          Plans: <b>{plans.length}</b>
+        </span>
+        <span className="plans-stat">
+          <span className="ps-ico" aria-hidden>
+            ⇄
+          </span>{" "}
+          Routes: <b>{totalRoutes}</b>
+        </span>
+        <span className="plans-stat">
+          <span className="ps-ico" aria-hidden>
+            ⌖
+          </span>{" "}
+          Airports: <b>{uniqueAirports.size}</b>
+        </span>
         <button
-          role="tab"
-          aria-selected={mode === "manual"}
-          className={mode === "manual" ? "active" : undefined}
-          onClick={() => setMode("manual")}
+          type="button"
+          className="plans-genall"
+          onClick={generateAll}
+          disabled={busy}
+          title="Generate every plan's routes in one batch"
         >
-          ⌨ Manual
-        </button>
-        <button
-          role="tab"
-          aria-selected={mode === "file"}
-          className={mode === "file" ? "active" : undefined}
-          onClick={() => setMode("file")}
-        >
-          ⬆ Upload file
+          {busy ? "Generating…" : "▶ Generate all"}
         </button>
       </div>
 
-      {mode === "file" ? (
-        <>
+      {/* Plan tab strip (underline tabs). */}
+      <div className="plans-tabs" role="tablist">
+        {allDrafts.map((d, i) => (
           <div
-            className={`dropzone${dragging ? " drag" : ""}`}
-            onClick={() => fileRef.current?.click()}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragging(true);
-            }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragging(false);
-              handleFiles(e.dataTransfer.files);
-            }}
+            key={d.id}
+            className={`plan-tab${d.id === activeId ? " active" : ""}`}
           >
-            <div className="dz-icon">⬆</div>
-            <p className="dz-main">Drag a file here, or click to choose</p>
-            <p className="dz-sub">
-              .csv · .json · .pdf · .geojson — multiple files supported
-            </p>
-            <input
-              ref={fileRef}
-              type="file"
-              accept=".csv,.json,.geojson,application/json,text/csv"
-              multiple
-              hidden
-              onChange={(e) => handleFiles(e.target.files)}
-            />
+            <button
+              type="button"
+              role="tab"
+              aria-selected={d.id === activeId}
+              onClick={() => switchTo(d.id)}
+            >
+              {planLabel(d, i)}
+            </button>
+            {plans.length > 1 && (
+              <button
+                type="button"
+                className="plan-x"
+                title="Remove this plan"
+                onClick={() => removePlan(d.id)}
+              >
+                ✕
+              </button>
+            )}
           </div>
-        </>
-      ) : (
-        <>
+        ))}
+        <button
+          type="button"
+          className="plan-add"
+          title="Add a flight plan"
+          onClick={addPlan}
+        >
+          +
+        </button>
+      </div>
+
+      <>
           {fileNote && <p className="file-note">📄 {fileNote}</p>}
 
           <div className="field-row">
@@ -915,29 +1283,108 @@ export default function GeneratorPanel({
             <code>{previewFpl || "— fill in the fields above —"}</code>
           </div>
 
-          <button
-            className="generate"
-            onClick={handleGenerate}
-            disabled={busy}
+          {/* Inline bulk import — drop a CSV/JSON of many flights to fan
+              them out into tabs, ready for "Generate all". */}
+          <div
+            className={`gen-import${dragging ? " drag" : ""}`}
+            onClick={() => fileRef.current?.click()}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragging(true);
+            }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragging(false);
+              handleFiles(e.dataTransfer.files);
+            }}
           >
-            {busy
-              ? "Generating…"
-              : routes.length > 1
-                ? `▶ Generate ${routes.length} routes`
-                : "▶ Generate trajectory"}
-          </button>
-        </>
-      )}
+            <span className="gen-import-ico" aria-hidden>
+              ⬆
+            </span>
+            <span>Drag &amp; drop CSV / JSON to bulk-import flights ↗</span>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".csv,.json,.geojson,application/json,text/csv"
+              multiple
+              hidden
+              onChange={(e) => handleFiles(e.target.files)}
+            />
+          </div>
+
+          {/* Bottom action bar — hint on the left, Duplicate + Generate
+              on the right (mirrors the mockup footer). */}
+          <div className="gen-actionbar">
+            <span className="gen-actionbar-hint">
+              {pairReady
+                ? `${dep} → ${des}`
+                : "Fill in fields above"}
+            </span>
+            <div className="gen-actionbar-btns">
+              <button
+                type="button"
+                className="plans-dup"
+                onClick={duplicatePlan}
+                title="Duplicate this plan into a new tab"
+              >
+                ⧉ Duplicate
+              </button>
+              <button
+                className="generate"
+                onClick={handleGenerate}
+                disabled={busy}
+              >
+                {busy
+                  ? "Generating…"
+                  : routes.length > 1
+                    ? `▶ Generate ${routes.length} routes`
+                    : "▶ Generate this plan"}
+              </button>
+            </div>
+          </div>
+      </>
 
       {error && <p className="gen-error">⚠ {error}</p>}
 
+      {warnings.length > 0 && (
+        <ul className="gen-warnings">
+          {warnings.map((w, i) => (
+            <li key={i}>⚠ {w}</li>
+          ))}
+        </ul>
+      )}
+
       {results.length > 0 && (
-        <p className="gen-results-shortcut">
-          ✓ {results.length === 1 ? "1 trajectory" : `${results.length} trajectories`} ready
-          <span className="gen-results-shortcut-cta">
-            Open <strong>Generated ▾</strong> in the menu
-          </span>
-        </p>
+        <div className="gen-search">
+          <div className="field-row">
+            <label className="field">
+              <span>1 · Flight</span>
+              <SearchCombo
+                value={flightQuery}
+                onChange={setFlightQuery}
+                suggestions={flightSugg}
+                placeholder="VTBS VTSP · THA201 — empty = all flights"
+              />
+            </label>
+            <label className="field">
+              <span>2 · Route</span>
+              <SearchCombo
+                value={routeQuery}
+                onChange={setRouteQuery}
+                suggestions={routeSugg}
+                placeholder="BKK Y8 PUT · R2 — empty = all routes"
+              />
+            </label>
+          </div>
+          <p className="gen-results-shortcut">
+            ✓ Showing <strong>{filtered.length}</strong> of {results.length}{" "}
+            {results.length === 1 ? "route" : "routes"}
+            <span className="gen-results-shortcut-cta">
+              Open <strong>Route Profile ▾</strong> in the menu
+            </span>
+          </p>
+        </div>
       )}
     </section>
   );

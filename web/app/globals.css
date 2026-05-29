@@ -2,7 +2,7 @@
 @import "leaflet/dist/leaflet.css";
 
 :root {
-  --sidebar-w: 330px;
+  --sidebar-w: 460px;
   --bg: #0f172a;
   --panel: #1e293b;
   --text: #e2e8f0;
@@ -421,6 +421,22 @@ body {
   }
 }
 
+/* Per-route list scrolls after ~4 rows so a long traffic set stays
+   compact; the "All routes" group above it stays pinned. */
+.tm-routes-wrap {
+  list-style: none;
+}
+
+.tm-routes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 150px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
 .tm-item {
   position: relative;
   list-style: none;
@@ -591,6 +607,65 @@ body {
 
 .tm-submenu button.active .tm-dot {
   background: rgba(6, 40, 61, 0.7);
+}
+
+/* "All routes" group pinned to the top of the Route Profile dropdown. */
+.tm-allgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+}
+
+.tm-allgroup-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 2px 10px 4px;
+}
+
+.tm-allgroup button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, color 0.15s;
+}
+
+.tm-allgroup button:hover {
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--accent);
+}
+
+.tm-allgroup button.active {
+  background: var(--accent);
+  color: #06283d;
+  font-weight: 700;
+}
+
+.tm-allgroup button.active .tm-dot {
+  background: rgba(6, 40, 61, 0.7);
+}
+
+.tm-dot.ov {
+  background: linear-gradient(135deg, #38bdf8 50%, #fbbf24 50%);
+}
+
+.tm-allgroup-sep {
+  height: 1px;
+  background: #33415588;
+  margin: 6px 6px;
+  list-style: none;
 }
 
 .tm-sub-text {
@@ -1402,6 +1477,86 @@ body {
   color: var(--muted);
 }
 
+/* SearchCombo — rich single-row suggestion dropdown shared by the
+   Generator + Route Profile search boxes (mirrors the download picker:
+   one row per flight/route, tag + label + optional distance). */
+.sc {
+  position: relative;
+  width: 100%;
+}
+
+.sc-input {
+  width: 100%;
+}
+
+.sc-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid #33415588;
+  border-radius: 8px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
+  z-index: 4100;
+  max-height: 176px; /* ~4 rows then scroll */
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #475569 transparent;
+}
+
+.sc-list > li {
+  list-style: none;
+}
+
+.sc-list button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+
+.sc-list button:hover,
+.sc-list button.active {
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.sc-tag {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #06283d;
+}
+
+.sc-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sc-meta {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+
 .dlm-suggest {
   position: absolute;
   top: calc(100% + 4px);
@@ -2179,6 +2334,33 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0;
+}
+
+/* Search box atop the Route Profile "all routes" views. */
+.rp-search {
+  margin: 2px 0 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #1e293b;
+}
+
+.rp-search .field {
+  margin-bottom: 6px;
+}
+
+.rp-search-count {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.rp-search-count strong {
+  color: var(--text);
+}
+
+.rp-search-empty {
+  margin: 8px 0;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 /* Section title shown above each section when RouteResultTabs renders
@@ -3494,6 +3676,253 @@ body {
   color: #06283d;
   border-color: var(--accent);
   font-weight: 700;
+}
+
+
+/* --- Multi-plan header: stat pills + batch action ---------------------- */
+/* "N / M flights ready" status beside the panel title. */
+.sidebar-ready {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.plans-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 12px;
+  flex-wrap: wrap;
+}
+
+.plans-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 5px 11px;
+  border: 1px solid #334155;
+  border-radius: 999px;
+  background: #0f172a;
+}
+
+.plans-stat .ps-ico {
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.plans-stat b {
+  color: var(--text, #e2e8f0);
+  font-weight: 700;
+}
+
+.plans-genall {
+  margin-left: auto;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 7px 14px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #06283d;
+  border: 1px solid var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.plans-genall:hover {
+  filter: brightness(1.05);
+}
+
+.plans-genall:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Underline-style plan tabs. */
+.plans-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 14px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid #334155;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.plan-tab {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.plan-tab > button:first-child {
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 12px;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-tab.active {
+  border-bottom-color: var(--accent);
+}
+
+.plan-tab.active > button:first-child {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.plan-x {
+  font: inherit;
+  font-size: 10px;
+  padding: 2px 6px 2px 0;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.plan-x:hover {
+  color: #f87171;
+}
+
+.plan-add {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  width: 28px;
+  height: 28px;
+  margin-left: 2px;
+  border-radius: 6px;
+  border: 1px dashed #475569;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.plan-add:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* --- Inline bulk-import dropzone (manual mode) ------------------------- */
+.gen-import {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 14px 0 0;
+  padding: 14px 12px;
+  border: 1px dashed #475569;
+  border-radius: 10px;
+  background: #0f172a;
+  color: var(--muted);
+  font-size: 12.5px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.gen-import:hover,
+.gen-import.drag {
+  border-color: var(--accent);
+  background: rgba(56, 189, 248, 0.08);
+  color: var(--text, #e2e8f0);
+}
+
+.gen-import-ico {
+  font-size: 14px;
+}
+
+/* --- Bottom action bar (hint + Duplicate + Generate) ------------------- */
+.gen-actionbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #1e293b;
+  flex-wrap: wrap;
+}
+
+.gen-actionbar-hint {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gen-actionbar-btns {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.plans-dup {
+  font: inherit;
+  font-size: 12px;
+  padding: 8px 13px;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  background: #1e293b;
+  color: var(--text, #e2e8f0);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.plans-dup:hover {
+  border-color: var(--accent);
+}
+
+.gen-actionbar .generate {
+  margin: 0;
+  width: auto;
+  white-space: nowrap;
+}
+
+/* --- Search over generated flights ------------------------------------- */
+.gen-search {
+  margin-top: 14px;
+}
+
+.gen-search .field {
+  margin-bottom: 8px;
+}
+
+.gen-warnings {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  list-style: none;
+  border: 1px solid #5b4419;
+  background: rgba(234, 179, 8, 0.08);
+  border-radius: 8px;
+  font-size: 12px;
+  color: #fcd34d;
+  max-height: 132px;
+  overflow-y: auto;
+}
+
+.gen-warnings li {
+  margin: 2px 0;
+}
+
+.app.theme-light .plan-tab > button:first-child {
+  color: inherit;
 }
 
 

@@ -153,9 +153,12 @@ export async function generateTrajectory(
   }
 
   const p = (await res.json()) as ApiPayload;
+  return mapPayload(p);
+}
 
-  // Map the Python payload onto the shared TrajectoryResult shape so the
-  // map components are unchanged.
+// Map the Python payload onto the shared TrajectoryResult shape so the
+// map components are unchanged. Shared by the single + batch endpoints.
+function mapPayload(p: ApiPayload): GenerateResponse {
   const result: TrajectoryResult = {
     route: p.route,
     points: p.points,
@@ -247,5 +250,67 @@ export async function generateTrajectory(
       csv: abs(p.downloads.csv),
       geojson: abs(p.downloads.geojson),
     },
+  };
+}
+
+/** One flight that failed inside a batch — surfaced, not fatal. */
+export interface BatchError {
+  index: number;
+  callsign: string;
+  adep: string;
+  ades: string;
+  detail: string;
+}
+
+export interface BatchResponse {
+  /** Successful flights, in submission order. */
+  results: GenerateResponse[];
+  /** Per-flight failures (e.g. an unroutable route) — the rest still run. */
+  errors: BatchError[];
+}
+
+/**
+ * Generate many flights in one request (POST /api/generate_batch).
+ *
+ * The server assigns each flight a distinct flight_index so their
+ * flight_keys/filenames never collide. A single bad flight is reported in
+ * `errors` rather than aborting the whole batch — built for the 2000-flight
+ * Thai network case.
+ */
+export async function generateBatch(
+  flights: GenerateInput[],
+): Promise<BatchResponse> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/api/generate_batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ flights }),
+    });
+  } catch {
+    throw new Error(
+      `Cannot reach the Python API at ${API_BASE}. Is the FastAPI server ` +
+        `running? (uvicorn api.server:app --port 8000)`,
+    );
+  }
+
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const j = await res.json();
+      if (j?.detail) detail = String(j.detail);
+    } catch {
+      /* keep status text */
+    }
+    throw new Error(detail);
+  }
+
+  const j = (await res.json()) as {
+    results: ApiPayload[];
+    errors: BatchError[];
+  };
+  return {
+    results: (j.results ?? []).map(mapPayload),
+    errors: j.errors ?? [],
   };
 }

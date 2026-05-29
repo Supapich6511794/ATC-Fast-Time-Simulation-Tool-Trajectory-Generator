@@ -22,6 +22,13 @@ import MapOverlay from "@/components/MapOverlay";
 import NavToolbar, { type NavView } from "@/components/NavToolbar";
 import RouteResultTabs from "@/components/RouteResultTabs";
 import SimControls from "@/components/SimControls";
+import {
+  flightOptions,
+  matchesFlight,
+  matchesRoute,
+  routeOptions,
+} from "@/lib/flightSearch";
+import SearchCombo from "@/components/SearchCombo";
 import { deriveWaypoints, fetchAirways, fetchFir } from "@/lib/geojson";
 import { fetchCsvRouteIdents } from "@/lib/routeCsv";
 import type { Basemap, Theme } from "@/lib/mapPrefs";
@@ -46,6 +53,13 @@ export default function MapApp() {
   /** Live (pre-Generate) route previews — one entry per route the user
    *  has typed/picked/queued, each drawn in a distinct colour. */
   const [previewRoutes, setPreviewRoutes] = useState<PreviewPoint[][]>([]);
+  /** "N / M flights ready" status shown beside the generator title. */
+  const [genStatus, setGenStatus] = useState<string>("");
+  // Two-scope search for the Route Profile "all routes" views: pick a
+  // flight (callsign / ADEP-ADES), then optionally a specific route (empty
+  // route box = every route of that flight).
+  const [profileFlightQuery, setProfileFlightQuery] = useState("");
+  const [profileRouteQuery, setProfileRouteQuery] = useState("");
 
   // Top-level navigation state. `null` = nothing open; the sidebar
   // is hidden entirely so the map fills the viewport on first load.
@@ -203,11 +217,69 @@ export default function MapApp() {
   // The sidebar is mounted only when a nav item is active. The form
   // (GeneratorPanel) stays mounted across visits to keep its inputs.
   const sidebarVisible = nav !== null;
+
+  // Route Profile "all routes" views: stage 1 narrows to the matched
+  // flight(s); stage 2 optionally picks a route within them. Each row keeps
+  // its original index for the R-tag / removal.
+  const profileFlightRows = useMemo(() => {
+    if (nav?.kind !== "all") return [];
+    return trajectories
+      .map((t, i) => ({ t, d: downloads[i], i }))
+      .filter(
+        (row): row is { t: TrajectoryResult; d: DownloadInfo; i: number } =>
+          !!row.d,
+      )
+      .filter(({ t }) =>
+        matchesFlight(profileFlightQuery, {
+          callsign: t.meta.callsign,
+          adep: t.meta.adep,
+          ades: t.meta.ades,
+        }),
+      );
+  }, [nav, trajectories, downloads, profileFlightQuery]);
+
+  const profileRows = useMemo(
+    () =>
+      profileFlightRows.filter(({ d, i }) =>
+        matchesRoute(profileRouteQuery, { route: d.route, index: i }),
+      ),
+    [profileFlightRows, profileRouteQuery],
+  );
+
+  const profileFlightSugg = useMemo(
+    () =>
+      flightOptions(
+        trajectories.map((t) => ({
+          callsign: t.meta.callsign,
+          adep: t.meta.adep,
+          ades: t.meta.ades,
+        })),
+      ),
+    [trajectories],
+  );
+  const profileRouteSugg = useMemo(
+    () =>
+      routeOptions(
+        profileFlightRows.map(({ t, d, i }) => ({
+          route: d.route,
+          index: i,
+          distanceNm: t.stats.distanceNm,
+        })),
+      ),
+    [profileFlightRows],
+  );
+
   const activeRouteLabel = (() => {
     if (nav?.kind === "all") {
-      return trajectories.length === 1
+      const sec =
+        nav.section === "vertical"
+          ? " · Vertical profile"
+          : nav.section === "summary"
+            ? " · Trajectory summary"
+            : "";
+      return trajectories.length === 1 && nav.section === "both"
         ? "R1"
-        : `All routes (${trajectories.length})`;
+        : `All routes${sec} (${trajectories.length})`;
     }
     if (nav?.kind !== "route") return null;
     const i = nav.routeIdx;
@@ -226,6 +298,9 @@ export default function MapApp() {
       >
         <div className="sidebar-header">
           <h1>Flight Trajectory Generator</h1>
+          {nav?.kind === "generator" && genStatus && (
+            <span className="sidebar-ready">{genStatus}</span>
+          )}
           {/* ✕ closes the sidebar entirely so only the floating tool
               menu remains, regardless of viewport size. */}
           <button
@@ -269,8 +344,10 @@ export default function MapApp() {
               // successful generation. Only R1's data is rendered
               // initially; "Show more" reveals the rest one at a time.
               if (list.length > 0) {
-                setNav({ kind: "all" });
+                setNav({ kind: "all", section: "both" });
                 setVisibleCount(1);
+                setProfileFlightQuery("");
+                setProfileRouteQuery("");
                 setSidebarOpen(true);
                 // Reset playback source to R1 so the clock starts on
                 // the newly-generated flight instead of replaying an
@@ -280,6 +357,7 @@ export default function MapApp() {
             }}
             onDownloadsChange={setDownloads}
             onPreviewChange={setPreviewRoutes}
+            onReadyChange={setGenStatus}
             waypointIdents={routeIdents}
           />
         </div>
@@ -301,44 +379,83 @@ export default function MapApp() {
 
         {nav?.kind === "all" && trajectories.length > 0 && (
           <div className="gen-all">
-            {trajectories.slice(0, visibleCount).map((t, i) => {
-              const d = downloads[i];
-              if (!d) return null;
-              return (
-                <RouteResultTabs
-                  key={d.flightKey}
-                  trajectory={t}
-                  download={d}
-                  routeIndex={trajectories.length > 1 ? i + 1 : null}
-                  onRemove={() => removeResultAt(i)}
-                  stacked
-                />
-              );
-            })}
+            {/* Two-scope search: 1) pick a flight (callsign / ADEP-ADES),
+                2) optionally a specific route within it (empty = all). */}
+            <div className="rp-search">
+              <div className="field-row">
+                <label className="field">
+                  <span>1 · Flight</span>
+                  <SearchCombo
+                    value={profileFlightQuery}
+                    onChange={setProfileFlightQuery}
+                    suggestions={profileFlightSugg}
+                    placeholder="VTBS VTSP · THA201 — empty = all flights"
+                  />
+                </label>
+                <label className="field">
+                  <span>2 · Route</span>
+                  <SearchCombo
+                    value={profileRouteQuery}
+                    onChange={setProfileRouteQuery}
+                    suggestions={profileRouteSugg}
+                    placeholder="BKK Y8 PUT · R2 — empty = all routes"
+                  />
+                </label>
+              </div>
+              <p className="rp-search-count">
+                Showing <strong>{profileRows.length}</strong> of{" "}
+                {trajectories.length}{" "}
+                {trajectories.length === 1 ? "route" : "routes"}
+              </p>
+            </div>
 
-            {visibleCount < trajectories.length && (
-              <button
-                type="button"
-                className="gen-show-more"
-                onClick={() =>
-                  setVisibleCount((c) =>
-                    Math.min(c + 1, trajectories.length),
-                  )
-                }
-              >
-                ▾ Show more (
-                {trajectories.length - visibleCount} route
-                {trajectories.length - visibleCount === 1 ? "" : "s"} left)
-              </button>
+            {/* "both" overview paginates (heaviest view); the dedicated
+                Vertical / Trajectory section views show every match. */}
+            {(nav.section === "both"
+              ? profileRows.slice(0, visibleCount)
+              : profileRows
+            ).map(({ t, d, i }) => (
+              <RouteResultTabs
+                key={d.flightKey}
+                trajectory={t}
+                download={d}
+                routeIndex={trajectories.length > 1 ? i + 1 : null}
+                onRemove={() => removeResultAt(i)}
+                forceSection={nav.section === "both" ? undefined : nav.section}
+                stacked={nav.section === "both"}
+              />
+            ))}
+
+            {profileRows.length === 0 && (
+              <p className="rp-search-empty">
+                No routes match this search. Clear the boxes to see all.
+              </p>
             )}
 
-            {visibleCount > 1 && (
+            {nav.section === "both" &&
+              visibleCount < profileRows.length && (
+                <button
+                  type="button"
+                  className="gen-show-more"
+                  onClick={() =>
+                    setVisibleCount((c) =>
+                      Math.min(c + 1, profileRows.length),
+                    )
+                  }
+                >
+                  ▾ Show more (
+                  {profileRows.length - visibleCount} route
+                  {profileRows.length - visibleCount === 1 ? "" : "s"} left)
+                </button>
+              )}
+
+            {nav.section === "both" && visibleCount > 1 && (
               <button
                 type="button"
                 className="gen-show-less"
                 onClick={() => setVisibleCount(1)}
               >
-                ▴ Show only R1
+                ▴ Show fewer
               </button>
             )}
           </div>

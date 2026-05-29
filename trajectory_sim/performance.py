@@ -17,8 +17,10 @@ Units: altitude in feet, rates in ft/min, time in seconds.
 
 from __future__ import annotations
 
+import csv
 import math
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Literal
 
 #: Flight phase along the vertical profile.
@@ -149,15 +151,13 @@ class _Segment:
     rate_fpm: float
 
 
-# BADA-style climb / descent schedules. Climb ROC drops with altitude
-# (engine thrust falls off, induced drag rises). Descent ROD is roughly
-# constant at idle thrust + speed brakes as needed. Numbers are
-# representative published B738 performance and align with the brief's
-# 1500–2500 ft/min envelope below FL300; above FL300 the model lets ROC
-# fall below 1500 fpm because that's what the airframe actually does
-# (the brief's envelope is a planning average, not a physical limit).
-# Brief Phase 2 requires ROC/ROD within 1500-2500 ft/min. Climb tapers
-# with altitude but stays inside that band all the way to FL410.
+# Legacy hand-coded BADA-*style* climb / descent schedules. These are now
+# the FALLBACK only — the real BADA 3.16 PTF dataset is loaded below and
+# takes precedence (see _load_bada_perf_tables). They are kept so the
+# engine still runs if the BADA CSV is ever missing from the package.
+# Climb ROC drops with altitude; descent ROD is roughly constant. Numbers
+# are representative published performance inside the brief's 1500–2500
+# ft/min band.
 _B738_CLIMB: tuple[_Segment, ...] = (
     _Segment(0,     10000, 2400.0),
     _Segment(10000, 20000, 2200.0),
@@ -202,11 +202,100 @@ _B77W_DESCENT: tuple[_Segment, ...] = (
     _Segment(24000, 43000, 2300.0),
 )
 
-_PERF_TABLES: dict[str, tuple[tuple[_Segment, ...], tuple[_Segment, ...]]] = {
+_LEGACY_PERF_TABLES: dict[
+    str, tuple[tuple[_Segment, ...], tuple[_Segment, ...]]
+] = {
     "B738": (_B738_CLIMB, _B738_DESCENT),
     "A320": (_A320_CLIMB, _A320_DESCENT),
     "B77W": (_B77W_CLIMB, _B77W_DESCENT),
 }
+
+
+# ---------------------------------------------------------------------------
+# Real BADA 3.16 performance data (supervisor-provided PTF dataset).
+#
+# Replaces the hand-coded rate tables above. Each row of the CSV gives
+# TAS / ROCD / fuel for one (aircraft, ISA offset, phase, flight level).
+# We use ROCD only — climb/descent rates — and keep the brief's CAS/Mach
+# speed schedule for TAS (project-lead decision). Two project decisions
+# are baked in here:
+#   * Raw BADA rates are used as-is, even where they exceed the brief's
+#     1500–2500 ft/min planning band (that is the airframe's real
+#     performance — the band is a planning average, not a physical limit).
+#   * The ISA+20 variant is used (matches the dataset's metadata note).
+# ---------------------------------------------------------------------------
+
+_BADA_VERSION = "3.16"
+_BADA_ISA_OFFSET = 20
+_BADA_CSV_PATH = Path(__file__).resolve().parent / "data" / "bada_performance.csv"
+
+
+def _segments_from_fl_rates(
+    fl_rates: list[tuple[int, float]],
+) -> tuple[_Segment, ...]:
+    """Build constant-rate altitude bands from (FL, ROCD) sample points.
+
+    Each band spans two consecutive flight levels; its rate is the mean of
+    the two endpoints' ROCD, which smooths the discrete PTF steps. A band
+    whose mean rate is non-positive is dropped — it marks the airframe
+    ceiling (and would divide-by-zero in the time integrators).
+    """
+    pts = sorted(fl_rates)
+    segs: list[_Segment] = []
+    for (fl0, r0), (fl1, r1) in zip(pts, pts[1:]):
+        rate = (r0 + r1) / 2.0
+        if fl1 > fl0 and rate > 1.0:
+            segs.append(_Segment(fl0 * 100.0, fl1 * 100.0, rate))
+    return tuple(segs)
+
+
+def _load_bada_perf_tables(
+    path: Path = _BADA_CSV_PATH,
+    isa_offset: int = _BADA_ISA_OFFSET,
+) -> dict[str, tuple[tuple[_Segment, ...], tuple[_Segment, ...]]]:
+    """Parse the BADA CSV into per-airframe (climb, descent) segment tables.
+
+    Keyed by upper-case ICAO type. Cruise rows (no ROCD) are ignored.
+    Raises on I/O or parse failure so the caller can fall back to the
+    legacy hand-coded tables.
+    """
+    climb: dict[str, list[tuple[int, float]]] = {}
+    descent: dict[str, list[tuple[int, float]]] = {}
+    with path.open(encoding="utf-8", newline="") as fh:
+        for row in csv.DictReader(fh):
+            if int(row["isa_offset"]) != isa_offset:
+                continue
+            rocd = row["rocd_nom"]
+            phase = row["phase"]
+            if phase == "cruise" or not rocd:
+                continue
+            try:
+                fl = int(float(row["fl"]))
+                rate = float(rocd)
+            except (ValueError, KeyError):
+                continue
+            bucket = climb if phase == "climb" else descent
+            bucket.setdefault(row["actype"].upper(), []).append((fl, rate))
+
+    tables: dict[
+        str, tuple[tuple[_Segment, ...], tuple[_Segment, ...]]
+    ] = {}
+    for ac in set(climb) | set(descent):
+        c = _segments_from_fl_rates(climb.get(ac, []))
+        d = _segments_from_fl_rates(descent.get(ac, []))
+        if c and d:
+            tables[ac] = (c, d)
+    return tables
+
+
+try:
+    _PERF_TABLES = _load_bada_perf_tables()
+    if "B738" not in _PERF_TABLES:  # in-scope airframe must be present
+        raise ValueError("BADA dataset missing the B738")
+    PERFORMANCE_SOURCE = f"BADA {_BADA_VERSION} (ISA+{_BADA_ISA_OFFSET})"
+except (OSError, ValueError, KeyError):  # pragma: no cover - fallback path
+    _PERF_TABLES = _LEGACY_PERF_TABLES
+    PERFORMANCE_SOURCE = "built-in BADA-style tables (BADA CSV unavailable)"
 
 
 @dataclass(frozen=True)
@@ -638,9 +727,18 @@ class VerticalProfile:
     ) -> VerticalProfile:
         climb_segs, desc_segs = _segments_for(aircraft_type)
 
-        # Clamp the requested level to the airframe's service ceiling —
-        # an FL above the ceiling is physically unreachable.
-        rfl_ft = min(rfl_ft, service_ceiling_ft(aircraft_type))
+        # Clamp the requested level to the airframe's service ceiling AND to
+        # the top of the loaded climb schedule — an FL above either is
+        # physically unreachable. The BADA climb table can top out below the
+        # published ceiling (e.g. the B77W ends at FL390), so without this a
+        # cruise altitude could be set higher than the climb can actually
+        # reach, leaving a vertical jump at the climb→cruise join.
+        reachable_ft = (
+            climb_segs[-1].alt_hi_ft
+            if climb_segs
+            else service_ceiling_ft(aircraft_type)
+        )
+        rfl_ft = min(rfl_ft, service_ceiling_ft(aircraft_type), reachable_ft)
 
         climb_time = _time_to_climb(climb_segs, dep_elev_ft, rfl_ft)
         descent_time = _time_to_climb(desc_segs, des_elev_ft, rfl_ft)

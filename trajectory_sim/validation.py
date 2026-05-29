@@ -39,16 +39,18 @@ _DEFAULT_REFERENCE_PATH = (
 
 # --- Distance → time model (measured lookup table, interpolated) -----------
 # Simulated total time (minutes) vs great-circle distance (NM) for a B738
-# to RFL350, sampled from build_flight_timeline. A single affine fit
-# overshoots short hops that never reach cruise (e.g. a 51 NM leg tops out
-# ~8 600 ft and takes ~9 min, not the ~14 min an affine predicts) — so we
-# interpolate this measured curve instead. The client mirrors the same
-# table (web/lib/cat62.ts) so its PASS/FAIL prediction matches the server.
+# to RFL350, sampled from build_flight_timeline. Calibrated against the
+# real BADA 3.16 (ISA+20) climb/descent model now driving performance.py,
+# so it must be re-measured if that dataset/offset changes. A single
+# affine fit overshoots short hops that never reach cruise (e.g. a 51 NM
+# leg tops out ~8 600 ft and takes ~9 min, not ~14) — so we interpolate
+# this measured curve instead. The client mirrors the same table
+# (web/lib/cat62.ts) so its PASS/FAIL prediction matches the server.
 _SIM_TIME_TABLE: tuple[tuple[float, float], ...] = (
-    (0, 0.0), (20, 3.7), (40, 7.3), (60, 11.0), (80, 14.4), (100, 17.7),
-    (130, 22.5), (160, 27.1), (200, 32.9), (260, 40.9), (320, 48.9),
-    (400, 59.6), (500, 73.0), (650, 93.0), (800, 113.0), (1000, 139.7),
-    (1300, 179.7),
+    (0, 0.0), (20, 3.7), (40, 7.4), (60, 11.0), (80, 14.6), (100, 18.2),
+    (130, 23.1), (160, 27.9), (200, 34.0), (260, 42.6), (320, 50.6),
+    (400, 61.3), (500, 74.7), (650, 94.7), (800, 114.7), (1000, 141.4),
+    (1300, 181.4),
 )
 
 # Reference estimate (for pairs with no real CAT62 sample) = predicted sim

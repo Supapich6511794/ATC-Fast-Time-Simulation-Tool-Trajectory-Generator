@@ -21,9 +21,12 @@ import type { DownloadInfo } from "@/components/DownloadModal";
 
 export type NavView =
   | { kind: "generator" }
-  /** "All routes" landing view — Vertical + Summary stacked per route,
-   *  with a "Show more" button to reveal additional routes lazily. */
-  | { kind: "all" }
+  /** "All routes" view. `section` chooses what each route card shows:
+   *  "both" = Vertical + Summary stacked (the landing/overview),
+   *  "vertical" = every route's Vertical profile only,
+   *  "summary" = every route's Trajectory summary only. All three are
+   *  searchable by callsign / ADEP-ADES / route. */
+  | { kind: "all"; section: RouteSection | "both" }
   | { kind: "route"; routeIdx: number; section: RouteSection }
   | null;
 
@@ -96,6 +99,13 @@ export default function NavToolbar({
     setMobileOpen(false);
   };
 
+  const handleAllClick = (section: RouteSection | "both") => {
+    onNavChange({ kind: "all", section });
+    onGeneratedOpenChange(false);
+    setExpanded(null);
+    setMobileOpen(false);
+  };
+
   return (
     <nav
       className={`tool-menu${mobileOpen ? " mobile-open" : ""}`}
@@ -141,9 +151,10 @@ export default function NavToolbar({
           className="tool-dd-trigger"
           onClick={() => {
             // Clicking the chip both navigates to the "all routes"
-            // landing view AND toggles the dropdown. The dropdown is
-            // only a shortcut for jumping to a specific route+section.
-            if (generatedCount > 0) onNavChange({ kind: "all" });
+            // overview AND toggles the dropdown. The dropdown is a
+            // shortcut for jumping to an all-routes section or a
+            // specific route+section.
+            if (generatedCount > 0) onNavChange({ kind: "all", section: "both" });
             onGeneratedOpenChange(!generatedOpen);
           }}
           disabled={generatedCount === 0}
@@ -165,7 +176,63 @@ export default function NavToolbar({
 
         {generatedOpen && generatedCount > 0 && (
           <ul className="tm-menu" role="menu">
-            {downloads.map((d, i) => {
+            {/* All-routes section views — every route at once, searchable. */}
+            <li className="tm-allgroup">
+              <span className="tm-allgroup-label">All routes</span>
+              <button
+                type="button"
+                role="menuitem"
+                className={
+                  nav?.kind === "all" && nav.section === "both"
+                    ? "active"
+                    : undefined
+                }
+                onClick={() => handleAllClick("both")}
+              >
+                <span className="tm-dot ov" />
+                <span className="tm-sub-text">
+                  <span className="tm-sub-title">Overview</span>
+                  <span className="tm-sub-meta">vertical + summary</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className={
+                  nav?.kind === "all" && nav.section === "vertical"
+                    ? "active"
+                    : undefined
+                }
+                onClick={() => handleAllClick("vertical")}
+              >
+                <span className="tm-dot vp" />
+                <span className="tm-sub-text">
+                  <span className="tm-sub-title">Vertical profile</span>
+                  <span className="tm-sub-meta">all routes · altitude</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className={
+                  nav?.kind === "all" && nav.section === "summary"
+                    ? "active"
+                    : undefined
+                }
+                onClick={() => handleAllClick("summary")}
+              >
+                <span className="tm-dot ts" />
+                <span className="tm-sub-text">
+                  <span className="tm-sub-title">Trajectory summary</span>
+                  <span className="tm-sub-meta">all routes · stats</span>
+                </span>
+              </button>
+            </li>
+            <li className="tm-allgroup-sep" aria-hidden="true" />
+            {/* Per-route list — capped to ~4 rows; the rest scroll. */}
+            <li className="tm-routes-wrap">
+              <ul className="tm-routes" role="menu">
+                {downloads.map((d, i) => {
               const isCurrent = nav?.kind === "route" && nav.routeIdx === i;
               const isExpanded = expanded === i;
               return (
@@ -244,7 +311,9 @@ export default function NavToolbar({
                   )}
                 </li>
               );
-            })}
+                })}
+              </ul>
+            </li>
           </ul>
         )}
       </div>
