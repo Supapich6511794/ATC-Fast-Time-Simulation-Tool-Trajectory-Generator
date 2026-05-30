@@ -181,12 +181,13 @@ export default function GeneratorPanel({
 
   // Phase-3 speed-schedule tuning (advanced, collapsed by default).
   // Empty string = use the airframe default for that field.
-  const [tuneOpen, setTuneOpen] = useState(false);
-  const [climbCas, setClimbCas] = useState("");
-  const [cruiseMach, setCruiseMach] = useState("");
-  const [descentCas, setDescentCas] = useState("");
-  const [descentMach, setDescentMach] = useState("");
-  const [restrictCas, setRestrictCas] = useState("");
+  // --- DISABLED: speed schedule (advanced) — kept for future use. ---
+  // const [tuneOpen, setTuneOpen] = useState(false);
+  // const [climbCas, setClimbCas] = useState("");
+  // const [cruiseMach, setCruiseMach] = useState("");
+  // const [descentCas, setDescentCas] = useState("");
+  // const [descentMach, setDescentMach] = useState("");
+  // const [restrictCas, setRestrictCas] = useState("");
   const [routeStr, setRouteStr] = useState("");
   const [builtWpts, setBuiltWpts] = useState<string[]>([]);
   /** Extra Item-15 routes to fly together (capped at #possible routes). */
@@ -569,19 +570,20 @@ export default function GeneratorPanel({
   /** Speed-schedule overrides — only the fields the user actually set, so
    *  blanks keep the airframe default server-side. Shared by single +
    *  batch generation. */
-  function buildSpeedOverrides(): Partial<GenerateInput> {
-    const num = (s: string) => {
-      const v = parseFloat(s);
-      return Number.isFinite(v) ? v : undefined;
-    };
-    return {
-      ...(num(climbCas) !== undefined ? { climb_cas_kt: num(climbCas) } : {}),
-      ...(num(cruiseMach) !== undefined ? { cruise_mach: num(cruiseMach) } : {}),
-      ...(num(descentCas) !== undefined ? { descent_cas_kt: num(descentCas) } : {}),
-      ...(num(descentMach) !== undefined ? { descent_mach: num(descentMach) } : {}),
-      ...(num(restrictCas) !== undefined ? { restrict_cas_kt: num(restrictCas) } : {}),
-    };
-  }
+  // --- DISABLED: speed schedule (advanced) — kept for future use. ---
+  // function buildSpeedOverrides(): Partial<GenerateInput> {
+  //   const num = (s: string) => {
+  //     const v = parseFloat(s);
+  //     return Number.isFinite(v) ? v : undefined;
+  //   };
+  //   return {
+  //     ...(num(climbCas) !== undefined ? { climb_cas_kt: num(climbCas) } : {}),
+  //     ...(num(cruiseMach) !== undefined ? { cruise_mach: num(cruiseMach) } : {}),
+  //     ...(num(descentCas) !== undefined ? { descent_cas_kt: num(descentCas) } : {}),
+  //     ...(num(descentMach) !== undefined ? { descent_mach: num(descentMach) } : {}),
+  //     ...(num(restrictCas) !== undefined ? { restrict_cas_kt: num(restrictCas) } : {}),
+  //   };
+  // }
 
   // Stage 1 — narrow to the matched flight(s) by callsign / ADEP-ADES.
   const flightFiltered = useMemo(
@@ -655,7 +657,8 @@ export default function GeneratorPanel({
     try {
       // Reflect any unsaved edits on the active tab.
       const drafts = plans.map((p) => (p.id === activeId ? snapshotActive() : p));
-      const overrides = buildSpeedOverrides();
+      // --- DISABLED: speed schedule (advanced) — kept for future use. ---
+      // const overrides = buildSpeedOverrides();
 
       const built: { input: GenerateInput; label: string }[] = [];
       const skipped: string[] = [];
@@ -684,7 +687,7 @@ export default function GeneratorPanel({
               eobt: d.eobt,
               gs_kt: d.gsKt,
               rfl: d.rfl,
-              ...overrides,
+              // ...overrides, // DISABLED: speed schedule (advanced)
             },
             label: isCsv ? `Airway CSV · ${dp}→${ds}` : r || "(route)",
           });
@@ -794,7 +797,8 @@ export default function GeneratorPanel({
 
       // Speed-schedule overrides — only include fields the user actually
       // set, so empty inputs keep the airframe default server-side.
-      const speedOverrides = buildSpeedOverrides();
+      // --- DISABLED: speed schedule (advanced) — kept for future use. ---
+      // const speedOverrides = buildSpeedOverrides();
 
       const settled = await Promise.all(
         list.map((r, i) =>
@@ -812,7 +816,7 @@ export default function GeneratorPanel({
             eobt,
             gs_kt: gsKt,
             rfl,
-            ...speedOverrides,
+            // ...speedOverrides, // DISABLED: speed schedule (advanced)
             ...(multi ? { flight_index: i } : {}),
           }),
         ),
@@ -999,7 +1003,11 @@ export default function GeneratorPanel({
 
           {/* Advanced: speed-schedule tuning. Collapsed by default; the
               fields override the airframe BADA defaults so the user can
-              tune total flight time toward the CAT62 reference. */}
+              tune total flight time toward the CAT62 reference.
+              --- DISABLED: speed schedule (advanced) — kept for future use.
+              Re-enable by uncommenting this block AND the related state,
+              buildSpeedOverrides(), and the ...overrides / ...speedOverrides
+              spreads above. ---
           <div className="tune">
             <button
               type="button"
@@ -1090,6 +1098,7 @@ export default function GeneratorPanel({
               </div>
             )}
           </div>
+          */}
 
           <div className="field">
             <span>Route string (Item 15)</span>
