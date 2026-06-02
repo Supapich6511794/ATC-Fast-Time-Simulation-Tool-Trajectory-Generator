@@ -5,14 +5,14 @@
   "description": "Web UI for the Flight Trajectory Generator (calls the Python trajectory_sim API).",
   "scripts": {
     "dev": "node ../scripts/dev.mjs",
-    "dev:serve": "concurrently -k -n api,web -c magenta,cyan --restart-tries -1 --restart-after 1500 \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:serve": "concurrently -k -n api,web -c magenta,cyan \"npm:dev:api\" \"npm:dev:web\"",
     "dev:web": "next dev",
-    "dev:api": "cd .. && .venv\\Scripts\\uvicorn.exe api.server:app --reload --port 8000",
+    "dev:api": "node ../scripts/run-api.mjs",
     "dev:all": "npm run dev",
     "vercel-build": "next build",
-    "build": "set NEXT_DIST_DIR=.next-build&& next build",
-    "start": "set NEXT_DIST_DIR=.next-build&& next start",
-    "clean": "rmdir /s /q .next .next-build 2>nul & echo cleaned",
+    "build": "node ../scripts/next.mjs build",
+    "start": "node ../scripts/next.mjs start",
+    "clean": "node -e \"const fs=require('fs');for(const d of ['.next','.next-build'])fs.rmSync(d,{recursive:true,force:true});console.log('cleaned')\"",
     "lint": "next lint"
   },
   "dependencies": {
