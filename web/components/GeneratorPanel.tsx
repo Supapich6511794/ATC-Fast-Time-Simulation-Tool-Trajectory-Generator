@@ -131,6 +131,10 @@ interface Props {
    *  routes plus the one currently being typed/built), so the map can
    *  show each as a faint distinctly-coloured polyline in real time. */
   onPreviewChange?: (routes: PreviewPoint[][]) => void;
+  /** Live preview of just the route currently being typed/built (the
+   *  "section in progress") — emitted as a 0- or 1-element list so the map
+   *  can offer a "Current" preview scope alongside the "Full" one. */
+  onCurrentPreviewChange?: (routes: PreviewPoint[][]) => void;
   /** Emits a short "generated / planned flights" status for the panel
    *  header (shown beside the title, top-right). */
   onReadyChange?: (text: string) => void;
@@ -138,11 +142,28 @@ interface Props {
   waypointIdents: string[];
 }
 
-/** Phase 1 flies the B738 only; others are listed for forward-compat. */
+/** Selectable aircraft types. Each maps to a real BADA 3.16 climb/descent
+ *  rate table plus a per-type speed schedule / ceiling in performance.py;
+ *  any other ICAO type still works (server falls back to the B738 model). */
 const AIRCRAFT = [
   ["B738", "B738 — Boeing 737-800"],
+  ["B739", "B739 — Boeing 737-900"],
+  ["B38M", "B38M — Boeing 737 MAX 8"],
+  ["A319", "A319 — Airbus A319"],
   ["A320", "A320 — Airbus A320"],
+  ["A321", "A321 — Airbus A321"],
+  ["A20N", "A20N — Airbus A320neo"],
+  ["A21N", "A21N — Airbus A321neo"],
+  ["A332", "A332 — Airbus A330-200"],
+  ["A333", "A333 — Airbus A330-300"],
+  ["A359", "A359 — Airbus A350-900"],
+  ["B772", "B772 — Boeing 777-200"],
   ["B77W", "B77W — Boeing 777-300ER"],
+  ["B788", "B788 — Boeing 787-8"],
+  ["B789", "B789 — Boeing 787-9"],
+  ["E190", "E190 — Embraer E190"],
+  ["AT76", "AT76 — ATR 72-600"],
+  ["DH8D", "DH8D — Dash 8 Q400"],
 ] as const;
 
 /** Fallback airport list used only until the AIP airports load (free
@@ -166,6 +187,7 @@ export default function GeneratorPanel({
   onResult,
   onDownloadsChange,
   onPreviewChange,
+  onCurrentPreviewChange,
   onReadyChange,
   waypointIdents,
 }: Props) {
@@ -460,6 +482,30 @@ export default function GeneratorPanel({
     else if (routeMode === "fpl") setRouteStr("");
   };
 
+  /** Drop the active tab's route selection — the queue, the typed Item-15
+   *  string and any picked waypoints. A route is specific to its city pair,
+   *  so changing ADEP/ADES (e.g. after a Duplicate) must clear the routes
+   *  carried over from the previous flight. Called only from the airport
+   *  comboboxes' onChange (a user action) — never from loadDraft, so
+   *  switching tabs / importing still restores each plan's own routes. */
+  const clearRouteSelection = () => {
+    setRoutes([]);
+    setRouteStr("");
+    setBuiltWpts([]);
+  };
+  const handleAdepChange = (v: string) => {
+    if (v.trim().toUpperCase() !== adep.trim().toUpperCase()) {
+      clearRouteSelection();
+    }
+    setAdep(v);
+  };
+  const handleAdesChange = (v: string) => {
+    if (v.trim().toUpperCase() !== ades.trim().toUpperCase()) {
+      clearRouteSelection();
+    }
+    setAdes(v);
+  };
+
   // What the FPL route portion resolves to (for the live preview).
   const previewRoute =
     routeMode === "csv"
@@ -473,44 +519,26 @@ export default function GeneratorPanel({
       ? `${callsign} ${actype} ${adep} ${ades} ${previewRoute}`.trim()
       : "";
 
-  // Live route preview — resolve every route the user has in flight to
-  // a list of (ident, lat, lon) so the map can highlight each one in a
-  // distinct colour the moment the first complete waypoint name is
-  // recognised. Includes every queued route plus the one currently
-  // being typed/built; emitted upward via onPreviewChange.
-  const previewRoutes = useMemo<PreviewPoint[][]>(() => {
+  // The single route the user is editing *right now* — the "section in
+  // progress". Skipped if the edit string is already queued, to avoid
+  // drawing it twice. Folded into both preview scopes below.
+  const inProgressPreview = useMemo<PreviewPoint[]>(() => {
     if (allFixes.length === 0) return [];
-    const out: PreviewPoint[][] = [];
-
-    // Queued routes (always typed/built — never CSV, since the Add
-    // Route button is hidden in CSV mode).
-    for (const r of routes) {
-      const pts = resolveRoutePreview(r, allFixes, airwaysMap);
-      if (pts.length > 0) out.push(pts);
-    }
-
-    // Whatever the user is editing right now (separate from the queue
-    // so it can be tweaked live without re-adding). Skip if the edit
-    // string is already in the queue to avoid drawing it twice.
-    let current: PreviewPoint[] = [];
     if (routeMode === "build") {
       const trimmed = builtRoute.trim();
-      if (trimmed && !routes.includes(trimmed)) {
-        current = resolvePreviewFromIdents(builtWpts, allFixes);
-      }
-    } else if (routeMode === "csv") {
-      current = isY8Corridor
+      return trimmed && !routes.includes(trimmed)
+        ? resolvePreviewFromIdents(builtWpts, allFixes)
+        : [];
+    }
+    if (routeMode === "csv") {
+      return isY8Corridor
         ? resolvePreviewFullY8(allFixes, airwaysMap, dep)
         : [];
-    } else {
-      const trimmed = routeStr.trim();
-      if (trimmed && !routes.includes(trimmed)) {
-        current = resolveRoutePreview(trimmed, allFixes, airwaysMap);
-      }
     }
-    if (current.length > 0) out.push(current);
-
-    return out;
+    const trimmed = routeStr.trim();
+    return trimmed && !routes.includes(trimmed)
+      ? resolveRoutePreview(trimmed, allFixes, airwaysMap)
+      : [];
   }, [
     routeMode,
     routeStr,
@@ -523,9 +551,54 @@ export default function GeneratorPanel({
     isY8Corridor,
   ]);
 
+  // "Current" preview scope — the active tab's flight only: its queued
+  // routes plus the route being typed/built. This is the flight the user
+  // is composing right now (every queued route, not just the edit box).
+  const currentPreview = useMemo<PreviewPoint[][]>(() => {
+    if (allFixes.length === 0) return [];
+    const out: PreviewPoint[][] = [];
+    for (const r of routes) {
+      const pts = resolveRoutePreview(r, allFixes, airwaysMap);
+      if (pts.length > 0) out.push(pts);
+    }
+    if (inProgressPreview.length > 0) out.push(inProgressPreview);
+    return out;
+  }, [routes, allFixes, airwaysMap, inProgressPreview]);
+
+  // "Full" preview scope — every route across EVERY plan/tab, not just the
+  // active one, so a duplicated/previous flight's routes stay previewed
+  // while a new tab is edited. The active tab uses the live queue (`routes`)
+  // + the in-progress section; other tabs use their stored route list.
+  const previewRoutes = useMemo<PreviewPoint[][]>(() => {
+    if (allFixes.length === 0) return [];
+    const out: PreviewPoint[][] = [];
+    const resolveAll = (strs: string[]) => {
+      for (const r of strs) {
+        const s = r.trim();
+        if (!s) continue;
+        const pts = resolveRoutePreview(s, allFixes, airwaysMap);
+        if (pts.length > 0) out.push(pts);
+      }
+    };
+    for (const p of plans) {
+      // Active tab: only its queued routes here — the route being typed is
+      // appended once below (avoids a double-draw).
+      if (p.id === activeId) resolveAll(routes);
+      else resolveAll(draftRouteList(p));
+    }
+    if (inProgressPreview.length > 0) out.push(inProgressPreview);
+    return out;
+  }, [plans, activeId, routes, allFixes, airwaysMap, inProgressPreview]);
+
   useEffect(() => {
     onPreviewChange?.(previewRoutes);
   }, [previewRoutes, onPreviewChange]);
+
+  // Emit the active tab's flight on its own so the map's "Current" scope
+  // can draw just this flight (queue + in-progress) and not the others.
+  useEffect(() => {
+    onCurrentPreviewChange?.(currentPreview);
+  }, [currentPreview, onCurrentPreviewChange]);
 
   /** Turn a parsed flight row into a full PlanDraft. */
   function recordToPlan(r: FlightRecord): PlanDraft {
@@ -536,7 +609,10 @@ export default function GeneratorPanel({
     if (r.ades) p.ades = r.ades;
     if (r.eobt) p.eobt = r.eobt;
     if (r.rfl != null) p.rfl = r.rfl;
-    if (r.route) p.routeStr = r.route;
+    // A multi-route flight rebuilds as ONE plan with a route queue; a
+    // single-route flight fills the Item-15 box.
+    if (r.routes && r.routes.length > 0) p.routes = r.routes;
+    else if (r.route) p.routeStr = r.route;
     return p;
   }
 
@@ -682,6 +758,7 @@ export default function GeneratorPanel({
               vtsp_to_vtbs: dp === "VTSP",
               adep: dp,
               ades: ds,
+              actype: d.actype,
               route: isCsv ? "" : r,
               callsign: d.callsign || "FLT",
               eobt: d.eobt,
@@ -807,6 +884,7 @@ export default function GeneratorPanel({
             vtsp_to_vtbs: vtspToVtbs,
             adep: dep,
             ades: des,
+            actype,
             route: r,
             // Callsign stays exactly what the user typed (or "FLT" as
             // the default for an unfilled field). Multi-route requests
@@ -952,7 +1030,7 @@ export default function GeneratorPanel({
               <span>ADEP</span>
               <IdentCombobox
                 value={adep}
-                onChange={setAdep}
+                onChange={handleAdepChange}
                 options={airportOptions}
                 placeholder="Departure"
               />
@@ -961,7 +1039,7 @@ export default function GeneratorPanel({
               <span>ADES</span>
               <IdentCombobox
                 value={ades}
-                onChange={setAdes}
+                onChange={handleAdesChange}
                 options={airportOptions}
                 placeholder="Destination"
               />

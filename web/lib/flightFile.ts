@@ -11,6 +11,15 @@
  *   JSON     one object, or an array of objects, with those keys
  *   GeoJSON  FeatureCollection — ordered waypoint idents are read from
  *            feature properties and joined into an Item-15 string
+ *
+ * It also round-trips the files THIS tool exports, so a downloaded
+ * trajectory can be re-imported as an editable plan:
+ *   CSV      the ATC-style export (ROUTE/DEP/DEST/ACTYPE/FL/ATD header +
+ *            the Timestamp,UTC,Callsign,… table). The combined export
+ *            (several stacked blocks) yields one plan per block.
+ *   GeoJSON  the per-point trajectory export — callsign/actype/adep/ades
+ *            are recovered from the point properties (the route string
+ *            can't be rebuilt from sampled points; re-type it if needed).
  */
 
 export interface FlightRecord {
@@ -24,6 +33,11 @@ export interface FlightRecord {
   rfl?: number;
   /** Item-15 style route string. */
   route?: string;
+  /** Several Item-15 routes flown by ONE flight (the multi-route export).
+   *  Set instead of `route` when a flight has more than one route, so the
+   *  re-import rebuilds a single plan with a route queue rather than one
+   *  tab per route. */
+  routes?: string[];
 }
 
 /** Normalise an EOBT to the datetime-local input format. */
@@ -53,7 +67,7 @@ function fromObject(o: Record<string, unknown>): FlightRecord {
   };
   return {
     callsign: get("callsign", "acid", "flight")?.toUpperCase(),
-    actype: get("actype", "aircraft", "type")?.toUpperCase(),
+    actype: get("actype", "aircraft_type", "aircraft", "type")?.toUpperCase(),
     adep: get("adep", "dep", "origin")?.toUpperCase(),
     ades: get("ades", "des", "dest", "destination")?.toUpperCase(),
     eobt: normEobt(get("eobt", "etd", "departure_time")),
@@ -83,29 +97,212 @@ function parseCsv(text: string): FlightRecord[] {
   });
 }
 
-/** GeoJSON: pull ordered idents from feature properties → Item-15 string. */
-function parseGeojson(obj: unknown): FlightRecord[] {
-  const fc = obj as {
-    features?: { properties?: Record<string, unknown> }[];
-    properties?: Record<string, unknown>;
+/**
+ * Parse the tool's own ATC-style trajectory CSV export back into plan(s).
+ *
+ * Each flight is a header block —
+ *   ROUTE: …   DEP: …   DEST: …   ACTYPE: …   FL: F###   ATD: <ts>
+ * — followed by a `Timestamp,UTC,Callsign,Lat,Lon,…` data table. The
+ * combined export stacks several such blocks (each behind a `=== FLIGHT n
+ * ===` banner); we split on the `ROUTE:` marker so single- and multi-flight
+ * exports both yield one record per block.
+ */
+function parseTrajectoryCsv(text: string): FlightRecord[] {
+  const norm = text.replace(/\r/g, "");
+  const starts: number[] = [];
+  const re = /^ROUTE:/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(norm)) !== null) starts.push(m.index);
+  if (starts.length === 0) return [];
+  const blocks = starts
+    .map((s, i) =>
+      norm.slice(s, i + 1 < starts.length ? starts[i + 1] : norm.length),
+    )
+    .map(parseTrajectoryBlock)
+    .filter((r): r is FlightRecord => r != null);
+  return mergeSameFlightRoutes(blocks);
+}
+
+/**
+ * Collapse blocks belonging to the SAME flight into one record carrying
+ * every route. The multi-route export writes one block per route (all with
+ * the same callsign / EOBT / city pair); without this, re-import would open
+ * a separate tab per route even though it's a single flight. Identity is
+ * (callsign, EOBT, ADEP, ADES, ACTYPE, RFL); a group with >1 distinct route
+ * yields `routes`, otherwise a plain `route`. Group order is preserved.
+ */
+function mergeSameFlightRoutes(records: FlightRecord[]): FlightRecord[] {
+  const groups = new Map<string, FlightRecord[]>();
+  const order: string[] = [];
+  for (const r of records) {
+    const key = [r.callsign, r.eobt, r.adep, r.ades, r.actype, r.rfl]
+      .map((x) => x ?? "")
+      .join("|");
+    if (!groups.has(key)) {
+      groups.set(key, []);
+      order.push(key);
+    }
+    groups.get(key)!.push(r);
+  }
+  return order.map((key) => {
+    const g = groups.get(key)!;
+    const routes = Array.from(
+      new Set(
+        g.map((r) => r.route?.trim()).filter((x): x is string => !!x),
+      ),
+    );
+    return routes.length > 1
+      ? { ...g[0], route: undefined, routes }
+      : { ...g[0], route: routes[0] ?? g[0].route };
+  });
+}
+
+/** Parse one header block of the trajectory CSV into a FlightRecord. */
+function parseTrajectoryBlock(block: string): FlightRecord | null {
+  const field = (label: string) => {
+    const m = block.match(new RegExp(`^${label}:\\s*(.*)$`, "m"));
+    return m ? m[1].trim() : undefined;
   };
-  if (!Array.isArray(fc.features)) return [];
+  const route = field("ROUTE");
+  const adep = field("DEP")?.toUpperCase();
+  const ades = field("DEST")?.toUpperCase();
+  const actype = field("ACTYPE")?.toUpperCase();
+  const fl = field("FL"); // "F330"
+  const rfl = fl ? numOrUndef(fl.replace(/^F/i, "")) : undefined;
+  const eobt = normEobt(field("ATD"));
+
+  // Callsign lives in column 3 of the first data row under the table header.
+  let callsign: string | undefined;
+  const hdr = block.search(/^Timestamp,UTC,Callsign/m);
+  if (hdr !== -1) {
+    const firstData = block
+      .slice(hdr)
+      .split("\n")
+      .slice(1)
+      .find((l) => l.includes(","));
+    const cells = firstData?.split(",");
+    if (cells && cells[2]?.trim()) callsign = cells[2].trim().toUpperCase();
+  }
+
+  // Skip a block that yielded nothing identifiable.
+  if (!route && !adep && !ades && !actype) return null;
+  return { callsign, actype, adep, ades, eobt, rfl, route };
+}
+
+/** True when the text is one of the tool's trajectory CSV exports rather
+ *  than a plain `callsign,actype,…` plan table. */
+function isTrajectoryCsv(text: string): boolean {
+  return /^ROUTE:/m.test(text) || /^Timestamp,UTC,Callsign/m.test(text);
+}
+
+/**
+ * GeoJSON → plan. Three shapes are handled, in priority order:
+ *   1. This tool's enriched trajectory export — a `route` LineString
+ *      feature (and a top-level `route` member) carries the exact Item-15
+ *      string + plan metadata, so the selected route round-trips intact.
+ *   2. Plain navdata GeoJSON — ordered waypoint idents in feature
+ *      properties are joined into a `DCT … DCT` route.
+ *   3. The legacy point-only export — only metadata is recoverable; the
+ *      route stays blank (it can't be rebuilt from sampled points).
+ */
+type GeoFeature = {
+  properties?: Record<string, unknown>;
+  geometry?: { type?: string };
+};
+
+/** Recover one FlightRecord from the features of a single flight. */
+function recordFromFeatures(
+  features: GeoFeature[],
+  base: FlightRecord,
+  fallbackRoute: string | undefined,
+): FlightRecord {
+  let explicitRoute = fallbackRoute;
+  let routeProps: Record<string, unknown> | undefined;
+  let firstPointProps: Record<string, unknown> | undefined;
   const idents: string[] = [];
-  for (const f of fc.features) {
+
+  for (const f of features) {
     const p = f.properties ?? {};
+    // (1) The embedded route feature — most reliable source.
+    if (
+      (p["feature_type"] === "route" || f.geometry?.type === "LineString") &&
+      typeof p["route"] === "string" &&
+      String(p["route"]).trim()
+    ) {
+      if (!explicitRoute) explicitRoute = String(p["route"]).trim();
+      routeProps = p;
+      continue;
+    }
+    // (2) Ordered waypoint idents (plain navdata geojson).
     const id =
       p["waypoint_identifier"] ??
       p["ident"] ??
       p["name"] ??
       p["id"] ??
       p["fix"];
-    if (id != null && String(id).trim()) idents.push(String(id).trim());
+    if (id != null && String(id).trim()) {
+      idents.push(String(id).trim());
+    } else if (!firstPointProps) {
+      firstPointProps = p; // (3) trajectory sample → metadata fallback
+    }
   }
+
+  const metaProps = routeProps ?? firstPointProps;
+  const meta = metaProps ? fromObject(metaProps) : {};
+  if (!meta.eobt && metaProps?.["epoch_ts"] != null) {
+    meta.eobt = normEobt(metaProps["epoch_ts"]);
+  }
+
+  const route =
+    explicitRoute ??
+    (idents.length ? `DCT ${idents.join(" DCT ")} DCT` : undefined) ??
+    base.route ??
+    meta.route;
+
+  return { ...meta, ...base, route };
+}
+
+function parseGeojson(obj: unknown): FlightRecord[] {
+  const fc = obj as {
+    features?: GeoFeature[];
+    properties?: Record<string, unknown>;
+    route?: unknown;
+  };
+  if (!Array.isArray(fc.features)) return [];
+
+  // Split features by flight_key so a combined multi-flight export rebuilds
+  // one record per flight (matching the CSV round-trip). Features with no
+  // flight_key share a single group (single-flight / plain navdata geojson).
+  const groups = new Map<string, GeoFeature[]>();
+  const order: string[] = [];
+  const SINGLE = "__single__";
+  for (const f of fc.features) {
+    const fkRaw = f.properties?.["flight_key"];
+    const fk = fkRaw != null && String(fkRaw).trim() ? String(fkRaw) : SINGLE;
+    if (!groups.has(fk)) {
+      groups.set(fk, []);
+      order.push(fk);
+    }
+    groups.get(fk)!.push(f);
+  }
+
   const base = fc.properties ? fromObject(fc.properties) : {};
-  const route = idents.length
-    ? `DCT ${idents.join(" DCT ")} DCT`
-    : base.route;
-  return [{ ...base, route }];
+  // The top-level `route` member only applies to a single-flight file.
+  const topRoute =
+    typeof fc.route === "string" && fc.route.trim()
+      ? fc.route.trim()
+      : undefined;
+
+  const records = order.map((fk) =>
+    recordFromFeatures(
+      groups.get(fk)!,
+      base,
+      fk === SINGLE ? topRoute : undefined,
+    ),
+  );
+  // Fold a flight's several routes (R1/R2/…) back into one plan, exactly
+  // as the multi-route CSV import does.
+  return mergeSameFlightRoutes(records);
 }
 
 /**
@@ -116,7 +313,9 @@ export async function parseFlightFile(file: File): Promise<FlightRecord[]> {
   const text = await file.text();
   const name = file.name.toLowerCase();
 
-  if (name.endsWith(".csv")) return parseCsv(text);
+  if (name.endsWith(".csv")) {
+    return isTrajectoryCsv(text) ? parseTrajectoryCsv(text) : parseCsv(text);
+  }
 
   let json: unknown;
   try {

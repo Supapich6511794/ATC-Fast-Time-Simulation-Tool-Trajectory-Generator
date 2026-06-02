@@ -240,6 +240,7 @@ def write_csv(
     Layout::
 
         ROUTE: <route_str>
+        DEP: <adep>
         DEST: <ades>
         ACTYPE: <aircraft_type>
         FL: F<rfl>
@@ -268,6 +269,7 @@ def write_csv(
 
     # Metadata pulled from the gdf's constant columns. These are the
     # same for every row (the gdf is one flight).
+    adep = str(gdf["adep"].iloc[0])
     ades = str(gdf["ades"].iloc[0])
     actype = str(gdf["aircraft_type"].iloc[0])
     callsign = str(gdf["callsign"].iloc[0])
@@ -282,6 +284,7 @@ def write_csv(
 
     with out_path.open("w", encoding="utf-8", newline="") as f:
         f.write(f"ROUTE: {route_str}\n")
+        f.write(f"DEP: {adep}\n")
         f.write(f"DEST: {ades}\n")
         f.write(f"ACTYPE: {actype}\n")
         if rfl is not None:

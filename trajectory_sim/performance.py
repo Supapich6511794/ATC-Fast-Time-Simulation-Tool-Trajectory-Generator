@@ -325,40 +325,140 @@ class SpeedSchedule:
 # Per-airframe speed schedules — published nominal values, not the
 # licensed BADA APF dataset. Mirror the shape of BADA's airline-procedure
 # file (APF) so a real APF can drop in later without API change.
+#
+# Grouped by family — the 737/A320 narrow-bodies share a ~290 kt / M0.78
+# profile, the A330/777/787 wide-bodies a faster ~300-310 kt / M0.80-0.85
+# one, and the ATR/Dash-8 turboprops a much slower CAS-only profile that
+# never reaches the jet Mach regime. Any ICAO type not listed falls back
+# to the B738 schedule (see :func:`aircraft_speeds`).
+_NARROWBODY_JET = SpeedSchedule(
+    climb_cas_kt=290.0, climb_mach=0.78,
+    cruise_mach=0.78,
+    descent_mach=0.78, descent_cas_kt=290.0,
+)
+_NARROWBODY_NEO = SpeedSchedule(  # A320neo / 737 MAX — slightly higher Mach
+    climb_cas_kt=290.0, climb_mach=0.79,
+    cruise_mach=0.79,
+    descent_mach=0.79, descent_cas_kt=290.0,
+)
+_WIDEBODY_A330 = SpeedSchedule(
+    climb_cas_kt=300.0, climb_mach=0.81,
+    cruise_mach=0.82,
+    descent_mach=0.81, descent_cas_kt=300.0,
+)
+_WIDEBODY_TWIN = SpeedSchedule(  # 777 / 787 / A350 long-haul
+    climb_cas_kt=310.0, climb_mach=0.84,
+    cruise_mach=0.85,
+    descent_mach=0.84, descent_cas_kt=300.0,
+)
+_REGIONAL_JET = SpeedSchedule(  # E-Jets
+    climb_cas_kt=290.0, climb_mach=0.77,
+    cruise_mach=0.78,
+    descent_mach=0.77, descent_cas_kt=290.0,
+)
+_TURBOPROP = SpeedSchedule(  # ATR / Dash-8 — CAS-only; Mach is a cap, never hit
+    climb_cas_kt=170.0, climb_mach=0.55,
+    cruise_mach=0.44,
+    descent_mach=0.44, descent_cas_kt=235.0,
+)
+
 _SPEED_SCHEDULES: dict[str, SpeedSchedule] = {
-    "B738": SpeedSchedule(
-        climb_cas_kt=290.0, climb_mach=0.78,
-        cruise_mach=0.78,
-        descent_mach=0.78, descent_cas_kt=290.0,
-    ),
-    "A320": SpeedSchedule(
-        climb_cas_kt=290.0, climb_mach=0.78,
-        cruise_mach=0.78,
-        descent_mach=0.78, descent_cas_kt=290.0,
-    ),
-    "B77W": SpeedSchedule(
-        climb_cas_kt=310.0, climb_mach=0.84,
-        cruise_mach=0.84,
-        descent_mach=0.84, descent_cas_kt=300.0,
-    ),
+    # 737 family
+    "B738": _NARROWBODY_JET,
+    "B739": _NARROWBODY_JET,
+    "B737": _NARROWBODY_JET,
+    "B38M": _NARROWBODY_NEO,
+    "B39M": _NARROWBODY_NEO,
+    # A320 family
+    "A319": _NARROWBODY_JET,
+    "A320": _NARROWBODY_JET,
+    "A321": _NARROWBODY_JET,
+    "A20N": _NARROWBODY_NEO,
+    "A21N": _NARROWBODY_NEO,
+    # A330 wide-body
+    "A332": _WIDEBODY_A330,
+    "A333": _WIDEBODY_A330,
+    # 777 / 787 / A350 long-haul twins
+    "B772": _WIDEBODY_TWIN,
+    "B77W": _WIDEBODY_TWIN,
+    "B77L": _WIDEBODY_TWIN,
+    "B788": _WIDEBODY_TWIN,
+    "B789": _WIDEBODY_TWIN,
+    "A359": _WIDEBODY_TWIN,
+    # Regional jets
+    "E190": _REGIONAL_JET,
+    "E290": _REGIONAL_JET,
+    # Turboprops
+    "AT75": _TURBOPROP,
+    "AT76": _TURBOPROP,
+    "DH8D": _TURBOPROP,
 }
 
 # Manufacturer-published service ceilings (feet). The segmented climb
 # tables above stop at these altitudes; an aircraft asked to climb past
 # its ceiling is clipped there.
 _SERVICE_CEILING_FT: dict[str, float] = {
+    # 737 family
     "B738": 41000.0,
+    "B739": 41000.0,
+    "B737": 41000.0,
+    "B38M": 41000.0,
+    "B39M": 41000.0,
+    # A320 family
+    "A319": 41000.0,
     "A320": 41000.0,
+    "A321": 39800.0,
+    "A20N": 41000.0,
+    "A21N": 41000.0,
+    # A330 wide-body
+    "A332": 41100.0,
+    "A333": 41100.0,
+    # 777 / 787 / A350 long-haul twins
+    "B772": 43100.0,
     "B77W": 43100.0,
+    "B77L": 43100.0,
+    "B788": 43000.0,
+    "B789": 43000.0,
+    "A359": 43100.0,
+    # Regional jets
+    "E190": 41000.0,
+    "E290": 41000.0,
+    # Turboprops
+    "AT75": 25000.0,
+    "AT76": 25000.0,
+    "DH8D": 25000.0,
 }
 
 # CAS → Mach crossover altitude per airframe (BADA convention). Below
 # this altitude the climb / descent flies a constant CAS; above it,
 # constant Mach. Typical narrow-body crossover sits around FL280–300.
 _CROSSOVER_FT: dict[str, float] = {
+    # 737 / A320 narrow-bodies cross over around FL280.
     "B738": 28000.0,
+    "B739": 28000.0,
+    "B737": 28000.0,
+    "B38M": 30000.0,
+    "B39M": 30000.0,
+    "A319": 28000.0,
     "A320": 28000.0,
+    "A321": 28000.0,
+    "A20N": 30000.0,
+    "A21N": 30000.0,
+    # Wide-body twins cross over higher (~FL300).
+    "A332": 30000.0,
+    "A333": 30000.0,
+    "B772": 30000.0,
     "B77W": 30000.0,
+    "B77L": 30000.0,
+    "B788": 30000.0,
+    "B789": 30000.0,
+    "A359": 30000.0,
+    "E190": 28000.0,
+    "E290": 28000.0,
+    # Turboprops effectively never reach the Mach regime; keep at ceiling.
+    "AT75": 25000.0,
+    "AT76": 25000.0,
+    "DH8D": 25000.0,
 }
 
 # ATC speed restriction below FL100 (10 000 ft). 250 kt CAS is the

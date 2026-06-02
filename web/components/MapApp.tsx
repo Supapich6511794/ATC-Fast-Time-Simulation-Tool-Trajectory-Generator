@@ -53,6 +53,22 @@ export default function MapApp() {
   /** Live (pre-Generate) route previews — one entry per route the user
    *  has typed/picked/queued, each drawn in a distinct colour. */
   const [previewRoutes, setPreviewRoutes] = useState<PreviewPoint[][]>([]);
+  /** Just the route currently being typed/built in the Generator (the
+   *  "section in progress"), for the "Current" preview scope. */
+  const [currentPreview, setCurrentPreview] = useState<PreviewPoint[][]>([]);
+  /** Whether the live route preview is hidden on the map. Controlled by a
+   *  standalone floating button (not tied to the Generator form), so the
+   *  user can toggle the preview on/off at any time. Auto-hidden right
+   *  after a Generate (the real trajectory takes over) and auto-shown
+   *  again the moment the user edits a route. */
+  const [previewHidden, setPreviewHidden] = useState(false);
+  /** Which routes the preview draws while composing: every route in flight
+   *  ("full") or only the section currently being filled in ("current"). */
+  const [previewScope, setPreviewScope] = useState<"full" | "current">("full");
+  // Editing routes (a new preview set arrives) brings the preview back.
+  useEffect(() => {
+    setPreviewHidden(false);
+  }, [previewRoutes]);
   /** "N / M flights ready" status shown beside the generator title. */
   const [genStatus, setGenStatus] = useState<string>("");
   // Two-scope search for the Route Profile "all routes" views: pick a
@@ -76,6 +92,33 @@ export default function MapApp() {
   // longest route's timeline (legacy behaviour). The engine itself
   // stays single-instance — only the source changes.
   const [playbackIdx, setPlaybackIdx] = useState<number | "all">(0);
+
+  // Per-route line visibility, keyed by flightKey (stable across removals,
+  // unlike an index). A key in the set = that route is hidden on the map.
+  // Lets the user declutter the map mid-simulation without deleting routes.
+  const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set());
+  const toggleRouteHidden = useCallback((flightKey: string) => {
+    setHiddenKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(flightKey)) next.delete(flightKey);
+      else next.add(flightKey);
+      return next;
+    });
+  }, []);
+  // Master toggle: hide every route line at once (show all if all hidden).
+  const toggleAllRoutesHidden = useCallback(() => {
+    setHiddenKeys((prev) => {
+      const allHidden =
+        trajectories.length > 0 &&
+        trajectories.every((t) => prev.has(t.meta.flightKey));
+      return allHidden
+        ? new Set<string>()
+        : new Set(trajectories.map((t) => t.meta.flightKey));
+    });
+  }, [trajectories]);
+  const allRoutesHidden =
+    trajectories.length > 0 &&
+    trajectories.every((t) => hiddenKeys.has(t.meta.flightKey));
 
   // Leaflet map instance, captured via MapRefBridge inside LeafletMap.
   // Used to drive the custom +/− zoom buttons in MapOverlay (the
@@ -193,9 +236,19 @@ export default function MapApp() {
   // Remove one finished route by index — clears it from the map AND
   // from the toolbar / modal selections.
   function removeResultAt(i: number) {
+    const removedKey = trajectories[i]?.meta.flightKey;
     const next = trajectories.filter((_, k) => k !== i);
     setTrajectories(next);
     setDownloads((xs) => xs.filter((_, k) => k !== i));
+    // Drop the removed route's visibility entry so the set can't grow stale.
+    if (removedKey) {
+      setHiddenKeys((prev) => {
+        if (!prev.has(removedKey)) return prev;
+        const n = new Set(prev);
+        n.delete(removedKey);
+        return n;
+      });
+    }
     // Keep the "all routes" pagination in range when a route is removed.
     setVisibleCount((c) => Math.max(1, Math.min(c, next.length)));
     // And keep the playback source pointing at a still-existing route.
@@ -356,6 +409,12 @@ export default function MapApp() {
                 setProfileFlightQuery("");
                 setProfileRouteQuery("");
                 setSidebarOpen(true);
+                // Fresh generation: every new route starts visible.
+                setHiddenKeys(new Set());
+                // Hide the faint live preview now the real trajectory is
+                // drawn (it sat under the generated line). The standalone
+                // preview button can bring it back.
+                setPreviewHidden(true);
                 // Reset playback source to R1 so the clock starts on
                 // the newly-generated flight instead of replaying an
                 // older route's timeline.
@@ -364,6 +423,7 @@ export default function MapApp() {
             }}
             onDownloadsChange={setDownloads}
             onPreviewChange={setPreviewRoutes}
+            onCurrentPreviewChange={setCurrentPreview}
             onReadyChange={setGenStatus}
             waypointIdents={routeIdents}
           />
@@ -524,16 +584,74 @@ export default function MapApp() {
               waypoints={showWaypoints ? waypoints : null}
               fir={firOn ? fir : null}
               trajectories={trajectories}
-              previewRoutes={previewRoutes}
+              hiddenKeys={hiddenKeys}
+              previewRoutes={
+                previewHidden
+                  ? []
+                  : previewScope === "current"
+                    ? currentPreview
+                    : previewRoutes
+              }
               simT={sim.simT}
               playbackIdx={safePlaybackIdx}
               onMapReady={onMapReady}
             />
+            {previewRoutes.length > 0 && (
+              <div className={`preview-fab${previewHidden ? " off" : ""}`}>
+                <button
+                  type="button"
+                  className="preview-fab-toggle"
+                  onClick={() => setPreviewHidden((v) => !v)}
+                  aria-pressed={!previewHidden}
+                  title={
+                    previewHidden
+                      ? "Show the live route preview"
+                      : "Hide the live route preview"
+                  }
+                >
+                  <span className="preview-fab-ico" aria-hidden>
+                    {previewHidden ? "🚫" : "👁"}
+                  </span>
+                  {previewHidden ? "Show preview" : "Preview"}
+                </button>
+                {!previewHidden && (
+                  <div
+                    className="preview-fab-scope"
+                    role="group"
+                    aria-label="Preview scope"
+                  >
+                    <button
+                      type="button"
+                      className={previewScope === "full" ? "active" : undefined}
+                      onClick={() => setPreviewScope("full")}
+                      title="Preview every route (queued + the one being edited)"
+                    >
+                      Full ({previewRoutes.length})
+                    </button>
+                    <button
+                      type="button"
+                      className={
+                        previewScope === "current" ? "active" : undefined
+                      }
+                      onClick={() => setPreviewScope("current")}
+                      disabled={currentPreview.length === 0}
+                      title="Preview only the current flight (this tab's routes)"
+                    >
+                      Current
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
             <SimControls
               sim={sim}
               trajectories={trajectories}
               playbackIdx={safePlaybackIdx}
               onPlaybackIdxChange={setPlaybackIdx}
+              hiddenKeys={hiddenKeys}
+              onToggleRouteHidden={toggleRouteHidden}
+              allRoutesHidden={allRoutesHidden}
+              onToggleAllRoutes={toggleAllRoutesHidden}
             />
             {trajectories.length > 0 && <AltitudeLegend />}
           </>

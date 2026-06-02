@@ -137,10 +137,16 @@ function RouteSourcePicker({
   trajectories,
   playbackIdx,
   onChange,
+  hiddenKeys,
+  onToggleHidden,
 }: {
   trajectories: TrajectoryResult[];
   playbackIdx: PlaybackSource;
   onChange: (next: PlaybackSource) => void;
+  /** flightKeys currently hidden on the map. */
+  hiddenKeys?: Set<string>;
+  /** Toggle a route's map visibility by flightKey. */
+  onToggleHidden?: (flightKey: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -178,25 +184,49 @@ function RouteSourcePicker({
       </button>
       {open && (
         <ul className="sim-route-menu" role="listbox">
-          {trajectories.map((t, i) => (
-            <li key={t.meta.flightKey} role="option" aria-selected={playbackIdx === i}>
-              <button
-                type="button"
-                className={playbackIdx === i ? "active" : undefined}
-                onClick={() => {
-                  onChange(i);
-                  setOpen(false);
-                }}
-                title={t.meta.flightKey}
+          {trajectories.map((t, i) => {
+            const hidden = hiddenKeys?.has(t.meta.flightKey) ?? false;
+            return (
+              <li
+                key={t.meta.flightKey}
+                role="option"
+                aria-selected={playbackIdx === i}
+                className="sim-route-row"
               >
-                <span className="sim-route-tag">R{i + 1}</span>
-                <span className="sim-route-key">{t.meta.callsign}</span>
-                <span className="sim-route-meta">
-                  {t.stats.timeMinutes} min
-                </span>
-              </button>
-            </li>
-          ))}
+                <button
+                  type="button"
+                  className={`sim-route-pick${playbackIdx === i ? " active" : ""}${
+                    hidden ? " route-hidden" : ""
+                  }`}
+                  onClick={() => {
+                    onChange(i);
+                    setOpen(false);
+                  }}
+                  title={t.meta.flightKey}
+                >
+                  <span className="sim-route-tag">R{i + 1}</span>
+                  <span className="sim-route-key">{t.meta.callsign}</span>
+                  <span className="sim-route-meta">
+                    {t.stats.timeMinutes} min
+                  </span>
+                </button>
+                {onToggleHidden && (
+                  <button
+                    type="button"
+                    className={`sim-route-eye${hidden ? " hidden" : ""}`}
+                    aria-pressed={!hidden}
+                    title={hidden ? "Show route on map" : "Hide route on map"}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleHidden(t.meta.flightKey);
+                    }}
+                  >
+                    {hidden ? "🚫" : "👁"}
+                  </button>
+                )}
+              </li>
+            );
+          })}
           <li role="option" aria-selected={playbackIdx === "all"}>
             <button
               type="button"
@@ -222,6 +252,14 @@ interface SimControlsProps {
   trajectories?: TrajectoryResult[];
   playbackIdx?: PlaybackSource;
   onPlaybackIdxChange?: (next: PlaybackSource) => void;
+  /** flightKeys currently hidden on the map. */
+  hiddenKeys?: Set<string>;
+  /** Toggle a route's map visibility by flightKey. */
+  onToggleRouteHidden?: (flightKey: string) => void;
+  /** True when every route line is currently hidden. */
+  allRoutesHidden?: boolean;
+  /** Master toggle — hide/show every route line at once. */
+  onToggleAllRoutes?: () => void;
 }
 
 export default function SimControls({
@@ -229,6 +267,10 @@ export default function SimControls({
   trajectories = [],
   playbackIdx = 0,
   onPlaybackIdxChange,
+  hiddenKeys,
+  onToggleRouteHidden,
+  allRoutesHidden = false,
+  onToggleAllRoutes,
 }: SimControlsProps) {
   if (!sim.ready) return null;
   const ac = sim.aircraft;
@@ -241,11 +283,31 @@ export default function SimControls({
 
   return (
     <div className="sim">
+      {/* Master visibility toggle — hides every route line at once while the
+          aircraft icons stay on the map. Shown whenever a route exists. */}
+      {onToggleAllRoutes && trajectories.length >= 1 && (
+        <button
+          type="button"
+          className={`sim-btn sim-routes-eye${allRoutesHidden ? " off" : ""}`}
+          onClick={onToggleAllRoutes}
+          aria-pressed={!allRoutesHidden}
+          title={
+            allRoutesHidden
+              ? "Show all route lines"
+              : "Hide all route lines (aircraft stay visible)"
+          }
+        >
+          {allRoutesHidden ? "🚫" : "👁"}
+        </button>
+      )}
+
       {onPlaybackIdxChange && trajectories.length >= 2 && (
         <RouteSourcePicker
           trajectories={trajectories}
           playbackIdx={playbackIdx}
           onChange={onPlaybackIdxChange}
+          hiddenKeys={hiddenKeys}
+          onToggleHidden={onToggleRouteHidden}
         />
       )}
 

@@ -26,6 +26,10 @@ export interface GenerateInput {
   ades: string;
   route: string;
   callsign: string;
+  /** ICAO aircraft type (e.g. "B738", "A333"). Selects the BADA
+   *  climb/descent rates, speed schedule and ceiling server-side.
+   *  Optional — the server defaults to B738 when omitted. */
+  actype?: string;
   /** ISO local string from the datetime-local input (treated as UTC). */
   eobt: string;
   gs_kt: number;

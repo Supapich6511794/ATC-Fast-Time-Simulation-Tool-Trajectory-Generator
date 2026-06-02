@@ -220,6 +220,7 @@ def test_write_csv_has_metadata_header(tmp_path: Path) -> None:
 
     text = out.read_text()
     assert "ROUTE: BKK Y8 PUT" in text
+    assert "DEP: VTBS" in text
     assert "DEST: VTSP" in text
     assert "ACTYPE: B738" in text
     assert "FL: F330" in text

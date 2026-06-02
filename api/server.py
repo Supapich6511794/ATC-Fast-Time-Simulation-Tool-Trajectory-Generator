@@ -94,6 +94,11 @@ class GenerateRequest(BaseModel):
     # and the written meta (previously hardcoded for fpl mode).
     adep: str = "VTBS"
     ades: str = "VTSP"
+    # ICAO aircraft type designator (e.g. "B738", "A333"). Drives the BADA
+    # climb/descent rate table, speed schedule, service ceiling and
+    # crossover altitude. Unknown types fall back to the B738 model inside
+    # trajectory_sim.performance, so any value is accepted.
+    actype: str = "B738"
     # FPL mode: raw Item-15 route string.
     route: str = "DCT MOTNA DCT SABIS DCT VANKO DCT"
     callsign: str = "SIM738"
@@ -135,8 +140,10 @@ try:
 except Exception:  # noqa: BLE001
     _CAT62_REF = CAT62Reference({})
 
-# The only airframe the sim flies; speed-tuning snapshots target it.
-_ACTYPE = "B738"
+# Default airframe when a request omits the type. The actual type flown is
+# read per-request from GenerateRequest.actype; speed-tuning snapshots
+# target whatever type the flight uses.
+_DEFAULT_ACTYPE = "B738"
 
 
 @lru_cache(maxsize=1)
@@ -306,6 +313,7 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
     # --- Validate the city pair (any Thai aerodrome pair is allowed) ---
     adep = req.adep.strip().upper()
     ades = req.ades.strip().upper()
+    actype = req.actype.strip().upper() or _DEFAULT_ACTYPE
     if not adep or not ades:
         raise HTTPException(400, "ADEP and ADES are required.")
     if adep == ades:
@@ -375,7 +383,7 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
     try:
         fpl = FlightPlan(
             callsign=req.callsign or "FLT",
-            aircraft_type="B738",
+            aircraft_type=actype,
             adep=adep,
             ades=ades,
             eobt=eobt,
@@ -438,12 +446,12 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
     # trajectory_sim.performance, so we snapshot → apply → build →
     # restore under a lock to keep requests isolated.
     with _GEN_LOCK:
-        orig_sched = aircraft_speeds(_ACTYPE)
+        orig_sched = aircraft_speeds(actype)
         orig_restrict = get_speed_restriction()
         try:
             if _has_sched_override:
                 tune_speed_schedule(
-                    _ACTYPE,
+                    actype,
                     climb_cas_kt=req.climb_cas_kt,
                     climb_mach=req.climb_mach,
                     cruise_mach=req.cruise_mach,
@@ -470,14 +478,14 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
             # Snapshot the schedule actually flown *before* restore, so the
             # reported speed_schedule reflects this flight's overrides (not
             # the baseline the globals get reset to in `finally`).
-            applied_sched = aircraft_speeds(_ACTYPE)
-            applied_crossover_ft = crossover_altitude_ft(_ACTYPE)
+            applied_sched = aircraft_speeds(actype)
+            applied_crossover_ft = crossover_altitude_ft(actype)
             applied_restrict_kt = get_speed_restriction()[0]
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
         finally:
             # Always restore the baseline schedule + restriction.
-            set_speed_schedule(_ACTYPE, orig_sched)
+            set_speed_schedule(actype, orig_sched)
             set_speed_restriction(
                 cas_kt=orig_restrict[0], below_alt_ft=orig_restrict[1]
             )
@@ -613,12 +621,44 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
     # gdf is no longer read after this — mutate in place instead of copying.
     gdf["epoch_ts"] = gdf["epoch_ts"].astype(str)
     gdf.to_file(geojson_path, driver="GeoJSON")
+    # Enrich the GeoJSON so it SHOWS the selected route (not only the
+    # sampled points) and can be re-imported as an editable plan: prepend a
+    # LineString feature of the route waypoints carrying the Item-15 string
+    # + plan metadata, and stamp the route as a top-level member. Best
+    # effort — a failure here must never sink a successful generation.
+    try:
+        fc = json.loads(geojson_path.read_text(encoding="utf-8"))
+        route_feature = {
+            "type": "Feature",
+            "properties": {
+                "feature_type": "route",
+                "flight_key": flight_key,
+                "route": route_for_header,
+                "callsign": req.callsign,
+                "aircraft_type": "B738",
+                "adep": adep,
+                "ades": ades,
+                "rfl": int(req.rfl),
+                "eobt": eobt.isoformat(),
+                "idents": [p[0] for p in route_pts],
+            },
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[lon, lat] for _, lat, lon in route_pts],
+            },
+        }
+        fc.setdefault("features", [])
+        fc["features"].insert(0, route_feature)
+        fc["route"] = route_for_header  # foreign member; handy on re-import
+        geojson_path.write_text(json.dumps(fc), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
 
     return {
         "flight_key": flight_key,
         "meta": {
             "callsign": req.callsign,
-            "aircraft_type": "B738",
+            "aircraft_type": actype,
             "adep": adep,
             "ades": ades,
             "eobt": eobt.isoformat(),
@@ -878,6 +918,36 @@ def _combined_csv_from_files(flight_keys: list[str]) -> bytes:
     return ("\n\n\n".join(blocks) + "\n").encode("utf-8")
 
 
+def _combined_geojson_from_files(flight_keys: list[str]) -> bytes:
+    """Merge each flight's own .geojson into ONE FeatureCollection.
+
+    Unlike the GeoPackage/GeoJSON gdf merge (points only), this reuses the
+    per-flight ``.geojson`` files, which each already carry a ``route``
+    LineString feature (with ``flight_key`` + the Item-15 string) plus the
+    sample points. Concatenating their features keeps every flight's route
+    intact and tagged by ``flight_key``, so a multi-flight download
+    round-trips: the importer splits the features back by ``flight_key``,
+    one editable plan per flight.
+    """
+    features: list[dict[str, object]] = []
+    for fk in flight_keys:
+        if not _safe_key(fk):
+            continue
+        path = _OUT_DIR / f"{fk}.geojson"
+        if not path.is_file():
+            continue
+        try:
+            fc = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        features.extend(fc.get("features", []))
+    if not features:
+        raise HTTPException(404, "None of the requested routes were found.")
+    return json.dumps(
+        {"type": "FeatureCollection", "features": features}
+    ).encode("utf-8")
+
+
 @app.post("/api/download_combined")
 def download_combined(req: CombineRequest) -> StreamingResponse:
     flight_keys = [fk for fk in req.flight_keys if _safe_key(fk)]
@@ -887,10 +957,11 @@ def download_combined(req: CombineRequest) -> StreamingResponse:
     if not formats:
         raise HTTPException(400, "No formats requested.")
 
-    # The merged GeoDataFrame is only needed for the data formats
-    # (GeoPackage / GeoJSON). The CSV stays human-readable by stacking
-    # each route's own CSV block, so it doesn't go through the gdf.
-    need_gdf = any(f in ("gpkg", "geojson") for f in formats)
+    # Only the GeoPackage needs the merged GeoDataFrame now. The CSV stacks
+    # each route's own human-readable block, and the GeoJSON merges each
+    # flight's own .geojson (route feature + points) so it round-trips per
+    # flight — neither goes through the gdf.
+    need_gdf = "gpkg" in formats
     combined = _load_combined_gdf(flight_keys) if need_gdf else None
     if need_gdf and (combined is None or len(combined) == 0):
         raise HTTPException(404, "None of the requested routes were found.")
@@ -898,6 +969,8 @@ def download_combined(req: CombineRequest) -> StreamingResponse:
     def bytes_for(ext: str) -> bytes:
         if ext == "csv":
             return _combined_csv_from_files(flight_keys)
+        if ext == "geojson":
+            return _combined_geojson_from_files(flight_keys)
         return _combined_bytes(combined, ext)  # type: ignore[arg-type]
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

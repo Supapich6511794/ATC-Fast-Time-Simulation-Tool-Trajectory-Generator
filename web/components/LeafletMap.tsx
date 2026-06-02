@@ -47,6 +47,10 @@ interface Props {
   fir: FirCollection | null;
   /** One or more generated routes, all shown/animated together. */
   trajectories: TrajectoryResult[];
+  /** flightKeys whose route *line* is hidden on the map. The aircraft icon
+   *  stays visible, so the user can declutter the lines mid-simulation while
+   *  still tracking each flight. */
+  hiddenKeys?: Set<string>;
   /** Live (pre-Generate) route previews from the GeneratorPanel — one
    *  entry per route the user has typed/picked/queued. Each is drawn as
    *  a faint dashed line in a distinct colour, with permanent ident
@@ -271,6 +275,7 @@ export default function LeafletMap({
   waypoints,
   fir,
   trajectories,
+  hiddenKeys,
   previewRoutes,
   simT,
   playbackIdx,
@@ -414,6 +419,7 @@ export default function LeafletMap({
     () =>
       trajectories.map((trajectory, ti) => {
         if (trajectory.points.length < 2) return null;
+        if (hiddenKeys?.has(trajectory.meta.flightKey)) return null;
         const pts = trajectory.points;
         const line: L.LatLngExpression[] = pts.map((p) => [p.lat, p.lon]);
         const { route, meta } = trajectory;
@@ -558,7 +564,7 @@ export default function LeafletMap({
           </Fragment>
         );
       }),
-    [trajectories, multiRoute],
+    [trajectories, multiRoute, hiddenKeys],
   );
 
   return (
@@ -589,6 +595,8 @@ export default function LeafletMap({
         if (playbackIdx !== undefined && playbackIdx !== "all" && playbackIdx !== ti) {
           return null;
         }
+        // NB: a hidden route hides only its line (see trajectoryLayer) — the
+        // aircraft icon stays visible so the flight can still be tracked.
         const ac = aircraftAt(samplesByRoute[ti] ?? [], simT);
         if (!ac) return null;
         return (
