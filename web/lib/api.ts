@@ -283,13 +283,14 @@ export interface BatchResponse {
  */
 export async function generateBatch(
   flights: GenerateInput[],
+  indexOffset = 0,
 ): Promise<BatchResponse> {
   let res: Response;
   try {
     res = await fetch(`${API_BASE}/api/generate_batch`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ flights }),
+      body: JSON.stringify({ flights, index_offset: indexOffset }),
     });
   } catch {
     throw new Error(

@@ -736,6 +736,11 @@ class BatchRequest(BaseModel):
     """POST body for /api/generate_batch — a list of flight specs."""
 
     flights: list[GenerateRequest] = Field(default_factory=list)
+    # Global index of this chunk's first flight. The client splits a big
+    # "Generate all" into smaller chunks (so one huge request can't time out
+    # or exhaust a small host); the offset keeps each route's flight_index —
+    # and therefore its flight_key/R-suffix — globally unique across chunks.
+    index_offset: int = 0
 
 
 @app.post("/api/generate_batch")
@@ -754,7 +759,7 @@ def generate_batch(req: BatchRequest) -> dict[str, object]:
     results: list[dict[str, object]] = []
     errors: list[dict[str, object]] = []
     for i, f in enumerate(req.flights):
-        spec = f.model_copy(update={"flight_index": i})
+        spec = f.model_copy(update={"flight_index": req.index_offset + i})
         try:
             results.append(_generate_one(spec))
         except HTTPException as e:

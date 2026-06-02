@@ -249,6 +249,9 @@ function GeneratorPanel({
   const [warnings, setWarnings] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Live progress text for "Generate all" while it streams the batch in
+  // chunks (e.g. "Generating 80/242…").
+  const [genProgress, setGenProgress] = useState("");
 
   // RouteBuilder selection → an Item-15 style string.
   const builtRoute = useMemo(
@@ -781,47 +784,78 @@ function GeneratorPanel({
         );
       }
 
-      const { results: batch, errors } = await generateBatch(
-        built.map((b) => b.input),
-      );
+      // Send the batch in chunks rather than one giant request. A 200+
+      // route "Generate all" in a single POST can exceed a small/free API
+      // host's request timeout or memory and drop the connection (which the
+      // browser then reports as "Cannot reach the API"). Chunking keeps each
+      // request small, lets the host free memory between chunks, gives live
+      // progress, and lets one bad chunk fail without sinking the rest. The
+      // global `start` offset keeps every route's flight_key unique.
+      const CHUNK = 40;
+      const allTraj: TrajectoryResult[] = [];
+      const allDownloads: DownloadInfo[] = [];
+      const notes: string[] = [...skipped];
 
-      // The server keeps successes + failures in submission order, so the
-      // k-th success aligns to the k-th non-failed spec — recover the route
-      // label that way.
-      const failed = new Set(errors.map((e) => e.index));
-      const succeededLabels = built
-        .filter((_, i) => !failed.has(i))
-        .map((b) => b.label);
-
-      const trajectories = batch.map((s) => s.result);
-      const newDownloads: DownloadInfo[] = batch.map((s, i) => ({
-        callsign: s.result.meta.callsign,
-        flightKey: s.result.meta.flightKey,
-        route: succeededLabels[i] ?? "(route)",
-        gpkg: s.downloads.gpkg,
-        csv: s.downloads.csv,
-        geojson: s.downloads.geojson,
-      }));
-
-      const notes = [
-        ...batch.flatMap((s) => s.warnings),
-        ...errors.map((e) => `${e.callsign} ${e.adep}→${e.ades}: ${e.detail}`),
-        ...skipped,
-      ];
+      for (let start = 0; start < built.length; start += CHUNK) {
+        const chunk = built.slice(start, start + CHUNK);
+        const done = Math.min(start + chunk.length, built.length);
+        setGenProgress(`Generating ${done}/${built.length}…`);
+        try {
+          const { results: batch, errors } = await generateBatch(
+            chunk.map((b) => b.input),
+            start,
+          );
+          // Within a chunk the k-th success aligns to the k-th non-failed
+          // spec — recover the route label that way.
+          const failed = new Set(errors.map((e) => e.index));
+          const okLabels = chunk
+            .filter((_, i) => !failed.has(i))
+            .map((b) => b.label);
+          batch.forEach((s, i) => {
+            allTraj.push(s.result);
+            allDownloads.push({
+              callsign: s.result.meta.callsign,
+              flightKey: s.result.meta.flightKey,
+              route: okLabels[i] ?? "(route)",
+              gpkg: s.downloads.gpkg,
+              csv: s.downloads.csv,
+              geojson: s.downloads.geojson,
+            });
+          });
+          notes.push(...batch.flatMap((s) => s.warnings));
+          notes.push(
+            ...errors.map(
+              (e) => `${e.callsign} ${e.adep}→${e.ades}: ${e.detail}`,
+            ),
+          );
+        } catch (chunkErr) {
+          // A whole chunk failed (e.g. a cold-start timeout). Record it and
+          // keep going — later chunks usually succeed once the host is warm.
+          notes.push(
+            `Routes ${start + 1}-${done} failed: ` +
+              (chunkErr instanceof Error ? chunkErr.message : "request failed"),
+          );
+        }
+      }
 
       setFlightQuery("");
       setRouteQuery("");
-      setResults(trajectories);
-      setDlList(newDownloads);
+      setResults(allTraj);
+      setDlList(allDownloads);
       setWarnings(notes);
-      if (trajectories.length === 0) {
-        setError("All flights failed — see the messages below.");
+      if (allTraj.length === 0) {
+        setError(
+          "All flights failed — see the messages below. If this says " +
+            "'Cannot reach the API', the server may be waking up; wait ~30s " +
+            "and try again.",
+        );
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Batch generation failed.");
       setResults([]);
       setDlList([]);
     } finally {
+      setGenProgress("");
       setBusy(false);
     }
   }
@@ -960,7 +994,7 @@ function GeneratorPanel({
           disabled={busy}
           title="Generate every plan's routes in one batch"
         >
-          {busy ? "Generating…" : "▶ Generate all"}
+          {busy ? genProgress || "Generating…" : "▶ Generate all"}
         </button>
       </div>
 
