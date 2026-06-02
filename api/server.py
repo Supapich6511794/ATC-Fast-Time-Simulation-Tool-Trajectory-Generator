@@ -23,6 +23,7 @@ import re
 import tempfile
 import threading
 import zipfile
+from collections import OrderedDict
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -132,6 +133,38 @@ class GenerateRequest(BaseModel):
 # requests (FastAPI runs sync endpoints in a threadpool) can't see each
 # other's overrides mid-build. Generation is fast, so a lock is cheap.
 _GEN_LOCK = threading.Lock()
+
+# Lazy export cache. Generation used to write three files per route (a
+# GeoPackage + GeoJSON via slow GDAL drivers, plus a CSV) eagerly — ~3×
+# the routes in disk writes on every "Generate all", even though the UI
+# only needs the JSON it returns. The download/zip/combined endpoints are
+# the only file consumers, so we now defer writing: generation stashes the
+# GeoDataFrame + the bits needed to render each format here, and a file is
+# materialised on first download (see `_materialise`). Keyed by flight_key,
+# bounded so a long session can't grow without limit; an evicted entry just
+# means its file is rebuilt only if still cached (else treated as "never
+# generated", same as before).
+_EXPORT_CACHE: "OrderedDict[str, dict[str, object]]" = OrderedDict()
+_EXPORT_CACHE_MAX = 4000  # headroom for the multi-thousand-flight network case
+
+
+def _cache_export(
+    flight_key: str,
+    gdf: object,
+    route_str: str,
+    rfl: float,
+    route_feature: dict[str, object],
+) -> None:
+    """Stash everything needed to write this route's files on demand."""
+    _EXPORT_CACHE[flight_key] = {
+        "gdf": gdf,
+        "route_str": route_str,
+        "rfl": rfl,
+        "route_feature": route_feature,
+    }
+    _EXPORT_CACHE.move_to_end(flight_key)
+    while len(_EXPORT_CACHE) > _EXPORT_CACHE_MAX:
+        _EXPORT_CACHE.popitem(last=False)
 
 # CAT62 reference times, loaded once. Falls back to an empty table if the
 # bundled file is somehow missing, so the endpoint never hard-fails.
@@ -601,12 +634,6 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
         },
     }
 
-    gpkg_path = _OUT_DIR / f"{flight_key}.gpkg"
-    csv_path = _OUT_DIR / f"{flight_key}.csv"
-    geojson_path = _OUT_DIR / f"{flight_key}.geojson"
-    if gpkg_path.exists():
-        gpkg_path.unlink()  # GPKG driver appends; ensure a clean layer
-    write_geopackage(gdf, gpkg_path)
     # ROUTE header carries the raw Item-15 string for fpl/build mode; in
     # CSV mode the route is the full Y8, so render it as "BKK Y8 PUT"
     # (or its reverse) for consistency with the live preview.
@@ -617,42 +644,35 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
         )
     else:
         route_for_header = req.route
-    write_csv(gdf, csv_path, route_str=route_for_header, rfl=req.rfl)
-    # gdf is no longer read after this — mutate in place instead of copying.
-    gdf["epoch_ts"] = gdf["epoch_ts"].astype(str)
-    gdf.to_file(geojson_path, driver="GeoJSON")
-    # Enrich the GeoJSON so it SHOWS the selected route (not only the
-    # sampled points) and can be re-imported as an editable plan: prepend a
-    # LineString feature of the route waypoints carrying the Item-15 string
-    # + plan metadata, and stamp the route as a top-level member. Best
-    # effort — a failure here must never sink a successful generation.
-    try:
-        fc = json.loads(geojson_path.read_text(encoding="utf-8"))
-        route_feature = {
-            "type": "Feature",
-            "properties": {
-                "feature_type": "route",
-                "flight_key": flight_key,
-                "route": route_for_header,
-                "callsign": req.callsign,
-                "aircraft_type": "B738",
-                "adep": adep,
-                "ades": ades,
-                "rfl": int(req.rfl),
-                "eobt": eobt.isoformat(),
-                "idents": [p[0] for p in route_pts],
-            },
-            "geometry": {
-                "type": "LineString",
-                "coordinates": [[lon, lat] for _, lat, lon in route_pts],
-            },
-        }
-        fc.setdefault("features", [])
-        fc["features"].insert(0, route_feature)
-        fc["route"] = route_for_header  # foreign member; handy on re-import
-        geojson_path.write_text(json.dumps(fc), encoding="utf-8")
-    except Exception:  # noqa: BLE001
-        pass
+
+    # Route LineString prepended to the GeoJSON so it SHOWS the selected
+    # route (not only the sampled points) and re-imports as an editable plan:
+    # it carries the Item-15 string + plan metadata, and is stamped as a
+    # top-level "route" member by `_materialise`.
+    route_feature = {
+        "type": "Feature",
+        "properties": {
+            "feature_type": "route",
+            "flight_key": flight_key,
+            "route": route_for_header,
+            "callsign": req.callsign,
+            "aircraft_type": "B738",
+            "adep": adep,
+            "ades": ades,
+            "rfl": int(req.rfl),
+            "eobt": eobt.isoformat(),
+            "idents": [p[0] for p in route_pts],
+        },
+        "geometry": {
+            "type": "LineString",
+            "coordinates": [[lon, lat] for _, lat, lon in route_pts],
+        },
+    }
+    # Defer all disk I/O: stash the GeoDataFrame + render inputs and let the
+    # download endpoints write each format on demand (see `_materialise`).
+    # This is what makes "Generate all" fast — no GDAL writes during
+    # generation, only the JSON response below.
+    _cache_export(flight_key, gdf, route_for_header, float(req.rfl), route_feature)
 
     return {
         "flight_key": flight_key,
@@ -745,6 +765,51 @@ _MEDIA = {
 }
 
 
+def _materialise(flight_key: str, ext: str) -> "Path | None":
+    """Ensure ``<flight_key>.<ext>`` exists on disk, writing it on demand
+    from the lazy export cache. Returns the path, or None when neither the
+    file nor its cached build data exist (treated as "never generated", the
+    same outcome the eager path produced for an unknown key).
+
+    Generation no longer writes files, so this is where the GeoPackage /
+    CSV / GeoJSON are actually produced — once, the first time a route is
+    downloaded (single, zip, or combined). Subsequent requests hit the
+    file on disk.
+    """
+    if not _safe_key(flight_key) or ext not in _MEDIA:
+        return None
+    path = _OUT_DIR / f"{flight_key}.{ext}"
+    if path.is_file():
+        return path
+    bundle = _EXPORT_CACHE.get(flight_key)
+    if bundle is None:
+        return None
+    gdf = bundle["gdf"]
+    if ext == "gpkg":
+        if path.exists():
+            path.unlink()  # GPKG driver appends; ensure a clean layer
+        write_geopackage(gdf, path)
+    elif ext == "csv":
+        write_csv(
+            gdf,
+            path,
+            route_str=str(bundle["route_str"]),
+            rfl=bundle["rfl"],  # type: ignore[arg-type]
+        )
+    elif ext == "geojson":
+        # Build the FeatureCollection straight from the GeoDataFrame (no slow
+        # Fiona round-trip), then prepend the route LineString feature and
+        # stamp the top-level "route" member, matching the old output.
+        g = gdf.copy()  # type: ignore[union-attr]
+        g["epoch_ts"] = g["epoch_ts"].astype(str)
+        fc = json.loads(g.to_json())
+        fc.setdefault("features", [])
+        fc["features"].insert(0, bundle["route_feature"])
+        fc["route"] = bundle["route_str"]  # foreign member; handy on re-import
+        path.write_text(json.dumps(fc), encoding="utf-8")
+    return path
+
+
 @app.get("/api/download/{flight_key}.{ext}")
 def download(flight_key: str, ext: str) -> FileResponse:
     if ext not in _MEDIA:
@@ -752,8 +817,8 @@ def download(flight_key: str, ext: str) -> FileResponse:
     # flight_key is generated server-side; reject any path trickery.
     if "/" in flight_key or "\\" in flight_key or ".." in flight_key:
         raise HTTPException(400, "Invalid flight key.")
-    path = _OUT_DIR / f"{flight_key}.{ext}"
-    if not path.is_file():
+    path = _materialise(flight_key, ext)
+    if path is None:
         raise HTTPException(404, "File not found — generate it first.")
     return FileResponse(
         path, media_type=_MEDIA[ext], filename=f"{flight_key}.{ext}"
@@ -798,8 +863,8 @@ def download_zip(req: ZipRequest) -> StreamingResponse:
                 continue
             if "/" in flight_key or "\\" in flight_key or ".." in flight_key:
                 continue
-            path = _OUT_DIR / f"{flight_key}.{ext}"
-            if path.is_file():
+            path = _materialise(flight_key, ext)
+            if path is not None:
                 zf.write(path, arcname=f"{flight_key}.{ext}")
                 added += 1
 
@@ -850,8 +915,8 @@ def _load_combined_gdf(flight_keys: list[str]) -> "gpd.GeoDataFrame":
     for fk in flight_keys:
         if not _safe_key(fk):
             continue
-        path = _OUT_DIR / f"{fk}.gpkg"
-        if path.is_file():
+        path = _materialise(fk, "gpkg")
+        if path is not None:
             frames.append(gpd.read_file(path))
     if not frames:
         return None  # type: ignore[return-value]
@@ -901,8 +966,8 @@ def _combined_csv_from_files(flight_keys: list[str]) -> bytes:
     for n, fk in enumerate(flight_keys, start=1):
         if not _safe_key(fk):
             continue
-        path = _OUT_DIR / f"{fk}.csv"
-        if not path.is_file():
+        path = _materialise(fk, "csv")
+        if path is None:
             continue
         # Plain-ASCII divider — em-dashes mojibake in Excel/Notepad under
         # the cp874 Thai-Windows default (same reason write_csv avoids them).
@@ -933,8 +998,8 @@ def _combined_geojson_from_files(flight_keys: list[str]) -> bytes:
     for fk in flight_keys:
         if not _safe_key(fk):
             continue
-        path = _OUT_DIR / f"{fk}.geojson"
-        if not path.is_file():
+        path = _materialise(fk, "geojson")
+        if path is None:
             continue
         try:
             fc = json.loads(path.read_text(encoding="utf-8"))
