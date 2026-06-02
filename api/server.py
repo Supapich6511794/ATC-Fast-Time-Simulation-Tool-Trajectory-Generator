@@ -71,18 +71,30 @@ app = FastAPI(title="Flight Trajectory Generator API", version="1.0")
 
 # Allowed browser origins:
 #   - any localhost port  (dev server falls back to :3001/:3002… if busy)
-#   - any *.vercel.app    (the deployed Next.js front-end)
-#   - an explicit origin from $WEB_ORIGIN  (custom domain, if set)
-# $WEB_ORIGIN lets a custom production domain be whitelisted without a
-# code change on the API host.
-_extra_origin = os.environ.get("WEB_ORIGIN", "").strip()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[_extra_origin] if _extra_origin else [],
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+|https://[\w-]+\.vercel\.app",
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+#   - any *.vercel.app    (the deployed Next.js front-end, incl. previews)
+#   - explicit origins from $WEB_ORIGIN  (comma-separated; custom domains)
+# $WEB_ORIGIN whitelists production/custom domains without a code change on
+# the API host. Set WEB_ORIGIN="*" to allow every origin (handy for a quick
+# deploy of this non-sensitive tool — it sends no cookies/credentials).
+_web_origin_env = os.environ.get("WEB_ORIGIN", "").strip()
+_extra_origins = [o.strip() for o in _web_origin_env.split(",") if o.strip()]
+if "*" in _extra_origins:
+    # Wildcard: allow any origin. Safe here because the API uses no
+    # credentials; allow_credentials stays False so "*" is permitted.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_extra_origins,
+        allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+|https://[\w-]+\.vercel\.app",
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 class GenerateRequest(BaseModel):
