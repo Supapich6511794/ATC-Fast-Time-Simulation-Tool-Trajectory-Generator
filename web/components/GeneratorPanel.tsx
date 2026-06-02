@@ -14,7 +14,7 @@
  *                       RouteBuilder, or the pre-resolved airway CSV.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 
 import IdentCombobox, { type ComboOption } from "@/components/IdentCombobox";
 import RouteBuilder from "@/components/RouteBuilder";
@@ -183,7 +183,11 @@ function tidyAirportName(name: string): string {
     .replace(/\bInternational\b/i, "Intl");
 }
 
-export default function GeneratorPanel({
+// Memoised: this panel stays mounted (hidden via display:none) while the
+// map aircraft animates, so MapApp re-renders it ~60×/sec. Its props are
+// referentially stable (state setters + a useCallback'd onResult), so memo
+// lets React skip reconciling this large tree on every animation frame.
+function GeneratorPanel({
   onResult,
   onDownloadsChange,
   onPreviewChange,
@@ -1476,4 +1480,6 @@ export default function GeneratorPanel({
     </section>
   );
 }
+
+export default memo(GeneratorPanel);
      

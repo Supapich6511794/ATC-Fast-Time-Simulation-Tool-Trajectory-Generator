@@ -103,47 +103,75 @@ def alt_speed(f, rfl_ft, dep_elev, des_elev):
     return rfl_ft, 460, "cruise"  # cruise
 
 
-def airway_options(adep_ll, ades_ll, top_k):
-    """Rank AIP airways by how well an (entry, exit) fix pair brackets the
-    city pair. Returns up to top_k (desig, entry, exit) tuples, best first.
+def nearest_fix(ll):
+    """Ident of the AIP waypoint closest to a lat/lon — used to anchor the
+    route to the terminal fix off each aerodrome (e.g. PUT off VTSP)."""
+    return min(WAYPOINTS, key=lambda k: _dist2(WAYPOINTS[k], ll))
 
-    For each airway we take the on-airway fix nearest ADEP as the entry and
-    the nearest (distinct) fix to ADES as the exit, then score by the summed
-    distance so the leg actually heads from origin toward destination.
+
+def airway_options(dep_ll, arr_ll, top_k):
+    """Rank AIP airways by how well an (entry, exit) fix pair brackets the
+    terminal fixes off ADEP/ADES. Returns up to top_k (desig, entry, exit)
+    tuples, best first.
+
+    For each airway we take the on-airway fix nearest the departure terminal
+    fix as the entry and the nearest (distinct) fix to the arrival terminal
+    fix as the exit, then score by the summed distance so the leg heads from
+    origin toward destination.
     """
     scored = []
     for desig, seq in AIRWAYS.items():
         fixes = [f for f in seq if f in WAYPOINTS]
         if len(fixes) < 2:
             continue
-        entry = min(fixes, key=lambda f: _dist2(WAYPOINTS[f], adep_ll))
+        entry = min(fixes, key=lambda f: _dist2(WAYPOINTS[f], dep_ll))
         exit_ = min(
             (f for f in fixes if f != entry),
-            key=lambda f: _dist2(WAYPOINTS[f], ades_ll),
+            key=lambda f: _dist2(WAYPOINTS[f], arr_ll),
         )
-        score = _dist2(WAYPOINTS[entry], adep_ll) + _dist2(WAYPOINTS[exit_], ades_ll)
+        score = _dist2(WAYPOINTS[entry], dep_ll) + _dist2(WAYPOINTS[exit_], arr_ll)
         scored.append((score, desig, entry, exit_))
     scored.sort(key=lambda t: t[0])
     return [(d, e, x) for _, d, e, x in scored[:top_k]]
 
 
-def build_airway_route(adep, ades, desig, entry, exit_):
-    """(route_str, route_pts) for one airway leg between two aerodromes.
+def build_airway_route(adep, ades, dep_fix, arr_fix, desig, entry, exit_):
+    """(route_str, route_pts) for one airway leg, anchored to terminal fixes.
 
-    route_str is the Item-15 enroute portion `<entry> <AIRWAY> <exit>` — no
-    aerodrome codes, since those are Item 13/16 and the resolver would flag
-    them as not-in-navdata. route_pts is the full drawn polyline (ADEP ->
-    on-airway fixes -> ADES) used for the map line and cosmetic samples.
+    The route runs `dep_fix [DCT entry] <AIRWAY> exit [DCT arr_fix]`, where
+    dep_fix/arr_fix are the AIP fixes nearest ADEP/ADES. Anchoring the END
+    at arr_fix keeps the route's last fix within ~30 NM of the destination,
+    so the server no longer warns that the route "does not reach" ADES and
+    appends a long direct leg. route_pts is the full drawn polyline (ADEP ->
+    terminal/airway fixes -> ADES) for the map line and cosmetic samples.
     """
     fixes = [f for f in AIRWAYS[desig] if f in WAYPOINTS]
     ia, ib = fixes.index(entry), fixes.index(exit_)
     leg = fixes[ia:ib + 1] if ia <= ib else list(reversed(fixes[ib:ia + 1]))
+
+    # Item-15 tokens: only emit a DCT anchor when the terminal fix isn't
+    # already the airway endpoint (avoids zero-length DCT hops). The
+    # `entry <AIRWAY> exit` triple is what the server's airway expander
+    # splices the intermediate fixes into.
+    tokens: list[str] = []
+    if dep_fix != entry:
+        tokens += [dep_fix, "DCT"]
+    tokens += [entry, desig, exit_]
+    if arr_fix != exit_:
+        tokens += ["DCT", arr_fix]
+    route_str = " ".join(tokens)
+
+    # Drawn polyline: ADEP -> dep_fix -> airway leg -> arr_fix -> ADES, with
+    # consecutive duplicate idents collapsed.
+    chain: list[str] = []
+    for f in [dep_fix, *leg, arr_fix]:
+        if not chain or chain[-1] != f:
+            chain.append(f)
     la1, lo1, _ = AIRPORTS[adep]
     la2, lo2, _ = AIRPORTS[ades]
-    route_str = f"{entry} {desig} {exit_}"
     route_pts = (
         [(adep, la1, lo1)]
-        + [(f, WAYPOINTS[f][0], WAYPOINTS[f][1]) for f in leg]
+        + [(f, WAYPOINTS[f][0], WAYPOINTS[f][1]) for f in chain]
         + [(ades, la2, lo2)]
     )
     return route_str, route_pts
@@ -226,9 +254,13 @@ def main() -> None:
         eobt = base_eobt + timedelta(minutes=rng.randint(0, 1439))
         stamp = eobt.strftime("%Y%m%dT%H%MZ")
         n_routes = rng.choice([2, 2, 3])  # 2+ alternate routes per flight
-        # Pick distinct real airways near the city pair so the alternates
-        # visibly differ; fall back to reuse only if the AIP is tiny.
-        options = airway_options(AIRPORTS[adep][:2], AIRPORTS[ades][:2], top_k=8)
+        # Anchor the route to the terminal fixes off each aerodrome so it
+        # starts/ends near the airports (no "does not reach ADES" warning).
+        dep_fix = nearest_fix(AIRPORTS[adep][:2])
+        arr_fix = nearest_fix(AIRPORTS[ades][:2])
+        # Pick distinct real airways near the pair so the alternates visibly
+        # differ; fall back to reuse only if the AIP is tiny.
+        options = airway_options(WAYPOINTS[dep_fix], WAYPOINTS[arr_fix], top_k=8)
         pool = options[: max(6, n_routes)] or options
         if len(pool) >= n_routes:
             sel = rng.sample(pool, n_routes)
@@ -236,7 +268,9 @@ def main() -> None:
             sel = [pool[i % len(pool)] for i in range(n_routes)]
         routes = []
         for r, (desig, entry, exit_) in enumerate(sel, start=1):
-            route_str, route_pts = build_airway_route(adep, ades, desig, entry, exit_)
+            route_str, route_pts = build_airway_route(
+                adep, ades, dep_fix, arr_fix, desig, entry, exit_
+            )
             samples = sample_points(
                 route_pts, eobt, rfl * 100.0,
                 AIRPORTS[adep][2], AIRPORTS[ades][2],

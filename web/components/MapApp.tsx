@@ -93,6 +93,29 @@ export default function MapApp() {
   // stays single-instance — only the source changes.
   const [playbackIdx, setPlaybackIdx] = useState<number | "all">(0);
 
+  // Top-center aircraft-type filter. When non-empty, the map shows only
+  // flights whose type matches (case-insensitive substring) — every other
+  // route line and aircraft icon is hidden. Empty = show all.
+  const [acTypeQuery, setAcTypeQuery] = useState("");
+  // Distinct aircraft types currently generated, for the search datalist.
+  const aircraftTypes = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          trajectories.map((t) => t.meta.aircraftType).filter(Boolean),
+        ),
+      ).sort(),
+    [trajectories],
+  );
+  // How many flights match the active filter (for the inline count hint).
+  const acMatchCount = useMemo(() => {
+    const q = acTypeQuery.trim().toUpperCase();
+    if (!q) return trajectories.length;
+    return trajectories.filter((t) =>
+      (t.meta.aircraftType ?? "").toUpperCase().includes(q),
+    ).length;
+  }, [trajectories, acTypeQuery]);
+
   // Per-route line visibility, keyed by flightKey (stable across removals,
   // unlike an index). A key in the set = that route is hidden on the map.
   // Lets the user declutter the map mid-simulation without deleting routes.
@@ -133,6 +156,44 @@ export default function MapApp() {
     () => mapInstance?.zoomOut(),
     [mapInstance],
   );
+
+  // Stable callbacks for the memoised, animation-independent children
+  // (GeneratorPanel / NavToolbar / MapOverlay / DownloadModal). Keeping
+  // these referentially constant lets React.memo skip those subtrees on
+  // every aircraft-animation frame. All state setters are stable, so the
+  // dependency lists are empty.
+  const handleResult = useCallback(
+    (rs: TrajectoryResult[] | null) => {
+      const list = rs ?? [];
+      setTrajectories(list);
+      // Auto-redirect to the "Generated" landing view on a successful
+      // generation. Only R1's data is rendered initially; "Show more"
+      // reveals the rest one at a time.
+      if (list.length > 0) {
+        setNav({ kind: "all", section: "both" });
+        setVisibleCount(1);
+        setProfileFlightQuery("");
+        setProfileRouteQuery("");
+        setSidebarOpen(true);
+        // Fresh generation: every new route starts visible.
+        setHiddenKeys(new Set());
+        // Hide the faint live preview now the real trajectory is drawn (it
+        // sat under the generated line). The standalone button brings it back.
+        setPreviewHidden(true);
+        // Reset playback source to R1 so the clock starts on the newly
+        // generated flight instead of replaying an older route's timeline.
+        setPlaybackIdx(0);
+      }
+    },
+    [],
+  );
+  const handleNavChange = useCallback((n: NavView) => {
+    setNav(n);
+    if (n !== null) setSidebarOpen(true);
+  }, []);
+  const openDownload = useCallback(() => setDownloadOpen(true), []);
+  const closeDownload = useCallback(() => setDownloadOpen(false), []);
+  const toggleSidebar = useCallback(() => setSidebarOpen((v) => !v), []);
 
   // UI prefs.
   const [theme, setTheme] = useState<Theme>("dark");
@@ -179,6 +240,30 @@ export default function MapApp() {
   const activeTrajectory =
     safePlaybackIdx === "all" ? longest : trajectories[safePlaybackIdx] ?? null;
   const sim = useSimPlayback(activeTrajectory?.points);
+
+  // Spacebar toggles play/pause (like a media player), except while typing
+  // in a form field or focusing a button, so the generator inputs, the
+  // aircraft-type search, and clickable controls still behave normally.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "Space" && e.key !== " ") return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName;
+      if (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        tag === "BUTTON" ||
+        el?.isContentEditable
+      ) {
+        return;
+      }
+      e.preventDefault(); // stop the page from scrolling on Space
+      sim.toggle();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sim.toggle]);
 
   // The sim clock for a given route's altitude chart: the live `simT` when
   // that route is the one being animated on the map ("all" animates every
@@ -397,30 +482,7 @@ export default function MapApp() {
           }}
         >
           <GeneratorPanel
-            onResult={(rs) => {
-              const list = rs ?? [];
-              setTrajectories(list);
-              // Auto-redirect to the "Generated" landing view on a
-              // successful generation. Only R1's data is rendered
-              // initially; "Show more" reveals the rest one at a time.
-              if (list.length > 0) {
-                setNav({ kind: "all", section: "both" });
-                setVisibleCount(1);
-                setProfileFlightQuery("");
-                setProfileRouteQuery("");
-                setSidebarOpen(true);
-                // Fresh generation: every new route starts visible.
-                setHiddenKeys(new Set());
-                // Hide the faint live preview now the real trajectory is
-                // drawn (it sat under the generated line). The standalone
-                // preview button can bring it back.
-                setPreviewHidden(true);
-                // Reset playback source to R1 so the clock starts on
-                // the newly-generated flight instead of replaying an
-                // older route's timeline.
-                setPlaybackIdx(0);
-              }
-            }}
+            onResult={handleResult}
             onDownloadsChange={setDownloads}
             onPreviewChange={setPreviewRoutes}
             onCurrentPreviewChange={setCurrentPreview}
@@ -546,19 +608,55 @@ export default function MapApp() {
           <>
             <NavToolbar
               nav={nav}
-              onNavChange={(n) => {
-                setNav(n);
-                if (n !== null) setSidebarOpen(true);
-              }}
+              onNavChange={handleNavChange}
               results={trajectories}
               downloads={downloads}
               generatedOpen={generatedOpen}
               onGeneratedOpenChange={setGeneratedOpen}
-              onOpenDownload={() => setDownloadOpen(true)}
+              onOpenDownload={openDownload}
             />
+            {/* Top-center search: filter the map to a specific aircraft
+                type. Only shown once at least one flight is generated. */}
+            {trajectories.length > 0 && (
+              <div className="actype-search">
+                <span className="actype-search-ico" aria-hidden>
+                  🔎
+                </span>
+                <input
+                  type="text"
+                  className="actype-search-input"
+                  list="actype-options"
+                  value={acTypeQuery}
+                  onChange={(e) => setAcTypeQuery(e.target.value)}
+                  placeholder="Filter by aircraft type — e.g. A320, B789"
+                  aria-label="Filter map by aircraft type"
+                />
+                <datalist id="actype-options">
+                  {aircraftTypes.map((t) => (
+                    <option key={t} value={t} />
+                  ))}
+                </datalist>
+                {acTypeQuery.trim() !== "" && (
+                  <>
+                    <span className="actype-search-count">
+                      {acMatchCount} of {trajectories.length}
+                    </span>
+                    <button
+                      type="button"
+                      className="actype-search-clear"
+                      onClick={() => setAcTypeQuery("")}
+                      aria-label="Clear aircraft-type filter"
+                      title="Clear filter"
+                    >
+                      ×
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
             <DownloadModal
               open={downloadOpen}
-              onClose={() => setDownloadOpen(false)}
+              onClose={closeDownload}
               results={trajectories}
               downloads={downloads}
             />
@@ -574,7 +672,7 @@ export default function MapApp() {
               firOn={firOn}
               onFir={setFirOn}
               firLoading={firLoading}
-              onToggleSidebar={() => setSidebarOpen((v) => !v)}
+              onToggleSidebar={toggleSidebar}
               onZoomIn={handleZoomIn}
               onZoomOut={handleZoomOut}
             />
@@ -585,6 +683,7 @@ export default function MapApp() {
               fir={firOn ? fir : null}
               trajectories={trajectories}
               hiddenKeys={hiddenKeys}
+              typeFilter={acTypeQuery}
               previewRoutes={
                 previewHidden
                   ? []

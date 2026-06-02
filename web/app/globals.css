@@ -3044,6 +3044,65 @@ body {
   gap: 8px;
 }
 
+/* Top-center aircraft-type filter search. Sits between the top-left menu
+ * and the top-right layer tools. */
+.actype-search {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(440px, 56vw);
+  padding: 6px 10px;
+  background: var(--panel);
+  border: 1px solid #33415588;
+  border-radius: 12px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+.actype-search-ico {
+  font-size: 13px;
+  opacity: 0.7;
+  line-height: 1;
+}
+
+.actype-search-input {
+  width: 240px;
+  max-width: 44vw;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.actype-search-input::placeholder {
+  color: var(--muted);
+}
+
+.actype-search-count {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.actype-search-clear {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.actype-search-clear:hover {
+  color: var(--text);
+}
+
 .ov-group {
   display: flex;
   gap: 6px;

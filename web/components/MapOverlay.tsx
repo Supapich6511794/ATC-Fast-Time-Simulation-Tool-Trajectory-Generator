@@ -8,7 +8,7 @@
  *   - Airspace panel with a FIR layer toggle (styled after the reference UI)
  */
 
-import { useState } from "react";
+import { memo, useState } from "react";
 
 import type { Basemap, Theme } from "@/lib/mapPrefs";
 
@@ -31,7 +31,9 @@ interface Props {
   onZoomOut?: () => void;
 }
 
-export default function MapOverlay({
+// Memoised: stays mounted while the aircraft animates (MapApp re-renders
+// ~60×/sec); its props are stable so React can skip it on those frames.
+function MapOverlay({
   theme,
   onTheme,
   basemap,
@@ -168,3 +170,5 @@ export default function MapOverlay({
     </>
   );
 }
+
+export default memo(MapOverlay);

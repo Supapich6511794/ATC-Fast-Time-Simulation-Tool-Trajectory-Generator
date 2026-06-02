@@ -8,7 +8,7 @@
  * panel. Closes on backdrop click, ✕ button or Escape.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 
 import { API_BASE } from "@/lib/api";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
@@ -84,7 +84,9 @@ function fireDownload(url: string): void {
   }, 30000);
 }
 
-export default function DownloadModal({
+// Memoised: stays mounted while the aircraft animates (MapApp re-renders
+// ~60×/sec); its props are stable so React can skip it on those frames.
+function DownloadModal({
   open,
   onClose,
   results,
@@ -683,3 +685,5 @@ export default function DownloadModal({
     </div>
   );
 }
+
+export default memo(DownloadModal);

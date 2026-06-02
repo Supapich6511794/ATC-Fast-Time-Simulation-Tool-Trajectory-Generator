@@ -7,6 +7,8 @@
  * during route building.
  */
 
+import { memo } from "react";
+
 const STOPS = [
   { ft: 40000, label: "FL400+" },
   { ft: 30000, label: "FL300" },
@@ -24,7 +26,9 @@ function altitudeColor(altFt: number): string {
   return `hsl(${hue.toFixed(0)}, 92%, ${light.toFixed(0)}%)`;
 }
 
-export default function AltitudeLegend() {
+// Memoised: it takes no props, so it never needs to re-render with the
+// parent (MapApp re-renders ~60×/sec while the aircraft animation plays).
+function AltitudeLegend() {
   // Build a vertical gradient that matches altitudeColor() sampled at 12
   // stops — visually identical to what the polylines render.
   const gradient = Array.from({ length: 12 }, (_, i) => {
@@ -50,3 +54,5 @@ export default function AltitudeLegend() {
     </div>
   );
 }
+
+export default memo(AltitudeLegend);

@@ -12,7 +12,7 @@
  * fly out to the right of the parent item).
  */
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 
 import type { RouteSection } from "@/components/RouteResultTabs";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
@@ -40,7 +40,9 @@ interface Props {
   onOpenDownload: () => void;
 }
 
-export default function NavToolbar({
+// Memoised: stays mounted while the aircraft animates (MapApp re-renders
+// ~60×/sec); its props are stable so React can skip it on those frames.
+function NavToolbar({
   nav,
   onNavChange,
   results,
@@ -338,3 +340,5 @@ export default function NavToolbar({
     </nav>
   );
 }
+
+export default memo(NavToolbar);

@@ -57,6 +57,10 @@ interface Props {
    *  labels so the user can see what they're about to fly while still
    *  editing. */
   previewRoutes?: PreviewPoint[][];
+  /** Top-center aircraft-type filter (case-insensitive substring). When
+   *  set, only matching flights are drawn — both their route line and the
+   *  aircraft icon. Empty string shows every flight. */
+  typeFilter?: string;
   /** Shared sim clock (seconds); each aircraft is interpolated at it. */
   simT: number;
   /** Which route is currently driving the playback clock — a numeric
@@ -135,15 +139,67 @@ function FitBounds({
   return null;
 }
 
-/** A small SVG plane icon, rotated to the current heading. */
-function planeIcon(track: number): L.DivIcon {
+/** Aircraft-type → icon fill colour, so each type flies a distinct colour.
+ *  Common Thai-fleet types get hand-picked hues; any other type falls back
+ *  to a deterministic hash so it still gets a stable, distinct colour. */
+const AIRCRAFT_COLORS: Record<string, string> = {
+  // Boeing
+  B737: "#22d3ee",
+  B738: "#22d3ee",
+  B739: "#0ea5e9",
+  B763: "#34d399",
+  B77W: "#fb7185",
+  B772: "#f43f5e",
+  B789: "#38bdf8",
+  B788: "#60a5fa",
+  // Airbus
+  A319: "#fde047",
+  A320: "#f472b6",
+  A321: "#a3e635",
+  A332: "#fb923c",
+  A333: "#fbbf24",
+  A359: "#c084fc",
+  A35K: "#a855f7",
+  A388: "#f87171",
+  // Turboprops / regional
+  AT72: "#2dd4bf",
+  AT76: "#2dd4bf",
+  DH8D: "#86efac",
+};
+
+function aircraftColor(type: string | undefined): string {
+  const t = (type ?? "").toUpperCase().trim();
+  if (AIRCRAFT_COLORS[t]) return AIRCRAFT_COLORS[t];
+  if (!t) return "#22d3ee";
+  // Deterministic fallback: hash the type code → a stable hue so unknown
+  // types are still visually separable (and consistent across frames).
+  let h = 0;
+  for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) % 360;
+  return `hsl(${h}, 85%, 62%)`;
+}
+
+/** Case-insensitive substring match of an aircraft type against the
+ *  top-center filter query. An empty query matches everything (so "A32"
+ *  matches A320/A321, "B789" matches just the 789). */
+function matchesAcType(
+  query: string | undefined,
+  type: string | undefined,
+): boolean {
+  const q = (query ?? "").trim().toUpperCase();
+  if (!q) return true;
+  return (type ?? "").toUpperCase().includes(q);
+}
+
+/** A small SVG plane icon, rotated to the current heading and tinted by
+ *  aircraft type. */
+function planeIcon(track: number, color: string): L.DivIcon {
   return L.divIcon({
     className: "aircraft-icon",
-    iconSize: [32, 32],
-    iconAnchor: [16, 16],
+    iconSize: [20, 20],
+    iconAnchor: [10, 10],
     html: `<div style="transform: rotate(${track}deg)">
-      <svg viewBox="0 0 24 24" width="32" height="32" fill="#22d3ee"
-           stroke="#0f172a" stroke-width="1">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="${color}"
+           stroke="#0f172a" stroke-width="1.2">
         <path d="M12 2 L14 10 L22 14 L22 16 L14 13 L13 20 L16 22 L16 23
                  L12 22 L8 23 L8 22 L11 20 L10 13 L2 16 L2 14 L10 10 Z"/>
       </svg></div>`,
@@ -277,6 +333,7 @@ export default function LeafletMap({
   trajectories,
   hiddenKeys,
   previewRoutes,
+  typeFilter,
   simT,
   playbackIdx,
   onMapReady,
@@ -420,52 +477,59 @@ export default function LeafletMap({
       trajectories.map((trajectory, ti) => {
         if (trajectory.points.length < 2) return null;
         if (hiddenKeys?.has(trajectory.meta.flightKey)) return null;
+        // Top-center aircraft-type filter: skip non-matching flights' lines.
+        if (!matchesAcType(typeFilter, trajectory.meta.aircraftType)) return null;
         const pts = trajectory.points;
-        const line: L.LatLngExpression[] = pts.map((p) => [p.lat, p.lon]);
         const { route, meta } = trajectory;
         const color = ROUTE_COLORS[ti % ROUTE_COLORS.length];
         const kp = meta.flightKey;
 
-        // Colour the polyline by altitude: each interpolated 4-second
-        // sample is split into a handful of sub-segments with the colour
-        // interpolated linearly between the two altitudes, and segments
-        // use round line caps so they overlap and visually blend at
-        // joints instead of stair-stepping. Same scale on every route.
-        const SUB = 5;
+        // Decimate the *drawn* line so a long route (points are sampled
+        // every 4 s ⇒ ~750 pts for a 50-min leg) doesn't explode into
+        // thousands of Leaflet layers. With many routes on screen at once
+        // the unbounded version exhausted browser memory ("Aw, Snap! Out
+        // of Memory"). We cap each route to ~MAX_SEG colour segments;
+        // short routes keep full resolution. The animation is unaffected —
+        // it interpolates the full-resolution `samplesByRoute` table.
+        const MAX_SEG = 120;
+        const step = Math.max(1, Math.ceil((pts.length - 1) / MAX_SEG));
+        const drawIdx: number[] = [];
+        for (let i = 0; i < pts.length; i += step) drawIdx.push(i);
+        if (drawIdx[drawIdx.length - 1] !== pts.length - 1) {
+          drawIdx.push(pts.length - 1);
+        }
+        const line: L.LatLngExpression[] = drawIdx.map((i) => [
+          pts[i].lat,
+          pts[i].lon,
+        ]);
+
+        // Colour the line by altitude: one Polyline per decimated segment,
+        // tinted by the segment's mean altitude. Round line caps overlap at
+        // the joints so the colour steps blend instead of stair-stepping —
+        // which is why no extra per-segment sub-splitting is needed. Same
+        // scale on every route.
         const altSegments: ReactNode[] = [];
-        for (let i = 0; i < pts.length - 1; i++) {
-          const a = pts[i];
-          const b = pts[i + 1];
-          const altA = a.altitude_ft ?? 0;
-          const altB = b.altitude_ft ?? 0;
-          for (let k = 0; k < SUB; k++) {
-            const t1 = k / SUB;
-            const t2 = (k + 1) / SUB;
-            const lat1 = a.lat + (b.lat - a.lat) * t1;
-            const lon1 = a.lon + (b.lon - a.lon) * t1;
-            const lat2 = a.lat + (b.lat - a.lat) * t2;
-            const lon2 = a.lon + (b.lon - a.lon) * t2;
-            const altMid = altA + (altB - altA) * ((t1 + t2) / 2);
-            altSegments.push(
-              <Polyline
-                key={`${kp}-alt-${i}-${k}`}
-                positions={[
-                  [lat1, lon1],
-                  [lat2, lon2],
-                ]}
-                interactive={false}
-                pathOptions={{
-                  color: altitudeColor(altMid),
-                  weight: 5,
-                  opacity: 0.95,
-                  // Round caps overlap at sub-segment joints so the
-                  // colour transitions blend instead of stair-stepping.
-                  lineCap: "round",
-                  lineJoin: "round",
-                }}
-              />,
-            );
-          }
+        for (let s = 0; s < drawIdx.length - 1; s++) {
+          const a = pts[drawIdx[s]];
+          const b = pts[drawIdx[s + 1]];
+          const altMid = ((a.altitude_ft ?? 0) + (b.altitude_ft ?? 0)) / 2;
+          altSegments.push(
+            <Polyline
+              key={`${kp}-alt-${s}`}
+              positions={[
+                [a.lat, a.lon],
+                [b.lat, b.lon],
+              ]}
+              interactive={false}
+              pathOptions={{
+                color: altitudeColor(altMid),
+                weight: 3,
+                opacity: 0.95,
+                lineCap: "round",
+                lineJoin: "round",
+              }}
+            />,
+          );
         }
 
         return (
@@ -477,7 +541,7 @@ export default function LeafletMap({
               interactive={false}
               pathOptions={{
                 color: "#0f172a",
-                weight: 8,
+                weight: 5,
                 opacity: 0.45,
                 lineCap: "round",
                 lineJoin: "round",
@@ -564,7 +628,7 @@ export default function LeafletMap({
           </Fragment>
         );
       }),
-    [trajectories, multiRoute, hiddenKeys],
+    [trajectories, multiRoute, hiddenKeys, typeFilter],
   );
 
   return (
@@ -595,6 +659,9 @@ export default function LeafletMap({
         if (playbackIdx !== undefined && playbackIdx !== "all" && playbackIdx !== ti) {
           return null;
         }
+        // Top-center aircraft-type filter hides the icon too, so a filtered
+        // map shows only the searched type (line + plane).
+        if (!matchesAcType(typeFilter, t.meta.aircraftType)) return null;
         // NB: a hidden route hides only its line (see trajectoryLayer) — the
         // aircraft icon stays visible so the flight can still be tracked.
         const ac = aircraftAt(samplesByRoute[ti] ?? [], simT);
@@ -603,10 +670,11 @@ export default function LeafletMap({
           <Marker
             key={`ac-${t.meta.flightKey}`}
             position={[ac.lat, ac.lon]}
-            icon={planeIcon(Math.round(ac.track))}
+            icon={planeIcon(Math.round(ac.track), aircraftColor(t.meta.aircraftType))}
           >
             <Tooltip direction="top" offset={[0, -14]}>
-              {t.meta.callsign} ·{" "}
+              {t.meta.callsign}
+              {t.meta.aircraftType ? ` · ${t.meta.aircraftType}` : ""} ·{" "}
               {ac.altitudeFt != null
                 ? `${Math.round(ac.altitudeFt)} ft`
                 : "cruise"}{" "}
