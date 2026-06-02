@@ -3365,8 +3365,10 @@ body {
    section being filled in) independently of the Generator form. */
 .preview-fab {
   position: absolute;
-  left: 16px;
-  bottom: 16px;
+  /* Top-right, tucked just under the .ov-top toolbar row so it no longer
+     collides with the bottom-left altitude legend. */
+  right: 12px;
+  top: 64px;
   z-index: 1000;
   display: flex;
   align-items: center;
