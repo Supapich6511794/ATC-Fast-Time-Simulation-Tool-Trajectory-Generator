@@ -61,6 +61,9 @@ interface Props {
    *  set, only matching flights are drawn — both their route line and the
    *  aircraft icon. Empty string shows every flight. */
   typeFilter?: string;
+  /** Which fields the aircraft tag (the label beside each plane) shows,
+   *  controlled by the Flight Tags menu. Updates the labels in real time. */
+  tagFields?: { callsign: boolean; fl: boolean; ias: boolean; hdg: boolean };
   /** Shared sim clock (seconds); each aircraft is interpolated at it. */
   simT: number;
   /** Which route is currently driving the playback clock — a numeric
@@ -334,6 +337,7 @@ export default function LeafletMap({
   hiddenKeys,
   previewRoutes,
   typeFilter,
+  tagFields,
   simT,
   playbackIdx,
   onMapReady,
@@ -666,20 +670,34 @@ export default function LeafletMap({
         // aircraft icon stays visible so the flight can still be tracked.
         const ac = aircraftAt(samplesByRoute[ti] ?? [], simT);
         if (!ac) return null;
+        // Configurable flight tag — only the fields enabled in the Flight
+        // Tags menu, in screenshot order: callsign · FL · IAS · HDG. Updates
+        // live as the checkboxes toggle (re-rendered every frame anyway).
+        const tf =
+          tagFields ?? { callsign: true, fl: true, ias: true, hdg: true };
+        const tagParts: string[] = [];
+        if (tf.callsign) tagParts.push(t.meta.callsign);
+        if (tf.fl && ac.altitudeFt != null)
+          tagParts.push(`FL${Math.round(ac.altitudeFt / 100)}`);
+        if (tf.ias) tagParts.push(`${Math.round(ac.gsKt)}kt`);
+        if (tf.hdg) tagParts.push(`${Math.round(ac.track)}°`);
+        const tagText = tagParts.join(" ");
         return (
           <Marker
             key={`ac-${t.meta.flightKey}`}
             position={[ac.lat, ac.lon]}
             icon={planeIcon(Math.round(ac.track), aircraftColor(t.meta.aircraftType))}
           >
-            <Tooltip direction="top" offset={[0, -14]}>
-              {t.meta.callsign}
-              {t.meta.aircraftType ? ` · ${t.meta.aircraftType}` : ""} ·{" "}
-              {ac.altitudeFt != null
-                ? `${Math.round(ac.altitudeFt)} ft`
-                : "cruise"}{" "}
-              · {Math.round(ac.gsKt)} kt
-            </Tooltip>
+            {tagText && (
+              <Tooltip
+                permanent
+                direction="right"
+                offset={[10, 0]}
+                className="aircraft-tag"
+              >
+                {tagText}
+              </Tooltip>
+            )}
           </Marker>
         );
       })}

@@ -3044,14 +3044,22 @@ body {
   gap: 8px;
 }
 
-/* Top-center aircraft-type filter search. Sits between the top-left menu
- * and the top-right layer tools. */
-.actype-search {
+/* Top-center toolbar: the Flight Tags menu + the aircraft-type search,
+ * laid out side by side and centered between the top-left menu and the
+ * top-right layer tools. */
+.map-topbar {
   position: absolute;
   top: 12px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Aircraft-type filter search (a flex child of .map-topbar). */
+.actype-search {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -3101,6 +3109,86 @@ body {
 
 .actype-search-clear:hover {
   color: var(--text);
+}
+
+/* Flight Tags menu — button + checkbox dropdown that controls which fields
+ * appear in each aircraft's map label. A flex child of .map-topbar (left of
+ * the search); position:relative anchors its dropdown panel. */
+.flight-tags {
+  position: relative;
+}
+
+.flight-tags-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid #33415588;
+  border-radius: 10px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.flight-tags-btn:hover,
+.flight-tags-btn.open {
+  border-color: var(--accent);
+}
+
+.flight-tags-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 170px;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid #33415588;
+  border-radius: 10px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.flight-tags-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.flight-tags-row:hover {
+  background: #ffffff12;
+}
+
+.flight-tags-row input {
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+/* The rectangular aircraft label ("THA123 FL350 280kt 225°") drawn beside
+ * each plane — a clean dark pill with no Leaflet arrow. */
+.leaflet-tooltip.aircraft-tag {
+  background: #0b1220ee;
+  color: #e2e8f0;
+  border: 1px solid #475569;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font: 600 11px/1.2 ui-monospace, "SFMono-Regular", Menlo, monospace;
+  white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+.leaflet-tooltip.aircraft-tag::before {
+  display: none; /* hide the tooltip pointer triangle for a flat rectangle */
 }
 
 .ov-group {

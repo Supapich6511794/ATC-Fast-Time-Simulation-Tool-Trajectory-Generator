@@ -184,6 +184,20 @@ function RouteSourcePicker({
       </button>
       {open && (
         <ul className="sim-route-menu" role="listbox">
+          <li role="option" aria-selected={playbackIdx === "all"}>
+            <button
+              type="button"
+              className={playbackIdx === "all" ? "active" : undefined}
+              onClick={() => {
+                onChange("all");
+                setOpen(false);
+              }}
+              title="Play every route together on the longest timeline"
+            >
+              <span className="sim-route-tag all">∗</span>
+              <span className="sim-route-key">All routes</span>
+            </button>
+          </li>
           {trajectories.map((t, i) => {
             const hidden = hiddenKeys?.has(t.meta.flightKey) ?? false;
             return (
@@ -227,20 +241,6 @@ function RouteSourcePicker({
               </li>
             );
           })}
-          <li role="option" aria-selected={playbackIdx === "all"}>
-            <button
-              type="button"
-              className={playbackIdx === "all" ? "active" : undefined}
-              onClick={() => {
-                onChange("all");
-                setOpen(false);
-              }}
-              title="Play every route together on the longest timeline"
-            >
-              <span className="sim-route-tag all">∗</span>
-              <span className="sim-route-key">All routes</span>
-            </button>
-          </li>
         </ul>
       )}
     </div>

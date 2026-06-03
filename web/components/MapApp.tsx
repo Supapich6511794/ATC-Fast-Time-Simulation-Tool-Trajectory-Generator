@@ -17,6 +17,7 @@ import AltitudeLegend from "@/components/AltitudeLegend";
 import DownloadModal, {
   type DownloadInfo,
 } from "@/components/DownloadModal";
+import FlightTagsMenu, { type TagFields } from "@/components/FlightTagsMenu";
 import GeneratorPanel from "@/components/GeneratorPanel";
 import MapOverlay from "@/components/MapOverlay";
 import NavToolbar, { type NavView } from "@/components/NavToolbar";
@@ -92,6 +93,15 @@ export default function MapApp() {
   // longest route's timeline (legacy behaviour). The engine itself
   // stays single-instance — only the source changes.
   const [playbackIdx, setPlaybackIdx] = useState<number | "all">(0);
+
+  // Which fields show in each aircraft's map label, toggled by the Flight
+  // Tags menu. Defaults to all on (matching the reference design).
+  const [tagFields, setTagFields] = useState<TagFields>({
+    callsign: true,
+    fl: true,
+    ias: true,
+    hdg: true,
+  });
 
   // Top-center aircraft-type filter. When non-empty, the map shows only
   // flights whose type matches (case-insensitive substring) — every other
@@ -615,43 +625,46 @@ export default function MapApp() {
               onGeneratedOpenChange={setGeneratedOpen}
               onOpenDownload={openDownload}
             />
-            {/* Top-center search: filter the map to a specific aircraft
-                type. Only shown once at least one flight is generated. */}
+            {/* Top-center toolbar: Flight Tags menu (left) + aircraft-type
+                search (right). Shown once at least one flight is generated. */}
             {trajectories.length > 0 && (
-              <div className="actype-search">
-                <span className="actype-search-ico" aria-hidden>
-                  🔎
-                </span>
-                <input
-                  type="text"
-                  className="actype-search-input"
-                  list="actype-options"
-                  value={acTypeQuery}
-                  onChange={(e) => setAcTypeQuery(e.target.value)}
-                  placeholder="Filter by aircraft type — e.g. A320, B789"
-                  aria-label="Filter map by aircraft type"
-                />
-                <datalist id="actype-options">
-                  {aircraftTypes.map((t) => (
-                    <option key={t} value={t} />
-                  ))}
-                </datalist>
-                {acTypeQuery.trim() !== "" && (
-                  <>
-                    <span className="actype-search-count">
-                      {acMatchCount} of {trajectories.length}
-                    </span>
-                    <button
-                      type="button"
-                      className="actype-search-clear"
-                      onClick={() => setAcTypeQuery("")}
-                      aria-label="Clear aircraft-type filter"
-                      title="Clear filter"
-                    >
-                      ×
-                    </button>
-                  </>
-                )}
+              <div className="map-topbar">
+                <FlightTagsMenu fields={tagFields} onChange={setTagFields} />
+                <div className="actype-search">
+                  <span className="actype-search-ico" aria-hidden>
+                    🔎
+                  </span>
+                  <input
+                    type="text"
+                    className="actype-search-input"
+                    list="actype-options"
+                    value={acTypeQuery}
+                    onChange={(e) => setAcTypeQuery(e.target.value)}
+                    placeholder="Filter by aircraft type — e.g. A320, B789"
+                    aria-label="Filter map by aircraft type"
+                  />
+                  <datalist id="actype-options">
+                    {aircraftTypes.map((t) => (
+                      <option key={t} value={t} />
+                    ))}
+                  </datalist>
+                  {acTypeQuery.trim() !== "" && (
+                    <>
+                      <span className="actype-search-count">
+                        {acMatchCount} of {trajectories.length}
+                      </span>
+                      <button
+                        type="button"
+                        className="actype-search-clear"
+                        onClick={() => setAcTypeQuery("")}
+                        aria-label="Clear aircraft-type filter"
+                        title="Clear filter"
+                      >
+                        ×
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
             )}
             <DownloadModal
@@ -684,6 +697,7 @@ export default function MapApp() {
               trajectories={trajectories}
               hiddenKeys={hiddenKeys}
               typeFilter={acTypeQuery}
+              tagFields={tagFields}
               previewRoutes={
                 previewHidden
                   ? []
