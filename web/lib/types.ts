@@ -10,6 +10,7 @@
 import type {
   FeatureCollection,
   LineString,
+  MultiLineString,
   MultiPolygon,
   Polygon,
 } from "geojson";
@@ -56,6 +57,24 @@ export interface FirProperties {
 export type FirCollection = FeatureCollection<
   Polygon | MultiPolygon,
   FirProperties
+>;
+
+/** Properties on each SID/STAR procedure line feature (DFD line export). */
+export interface ProcedureLineProperties {
+  fid: number;
+  area_code?: string;
+  /** Aerodrome ICAO the procedure serves, e.g. "VTBS". */
+  airport_identifier: string;
+  /** Procedure name, e.g. "BIDA2A". */
+  procedure_identifier: string;
+  /** Runway/enroute transition this line belongs to, e.g. "RW19L". */
+  transition_identifier?: string | null;
+}
+
+/** `sid_line_thai.geojson` / `star_line.geojson` — drawn procedure tracks. */
+export type ProcedureLineCollection = FeatureCollection<
+  LineString | MultiLineString,
+  ProcedureLineProperties
 >;
 
 /**

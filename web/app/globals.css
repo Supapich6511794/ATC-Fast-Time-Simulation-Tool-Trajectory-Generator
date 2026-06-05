@@ -3295,6 +3295,99 @@ body {
   font-weight: 600;
 }
 
+/* Colour swatch next to the SID/STAR layer toggles. */
+.ov-swatch {
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+  flex: none;
+}
+.ov-swatch-sid {
+  background: #34d399;
+}
+.ov-swatch-star {
+  background: #f472b6;
+}
+
+/* Procedure inspector panel — legs + constraints for a clicked SID/STAR. */
+.proc-panel {
+  position: absolute;
+  top: 64px;
+  left: 12px;
+  z-index: 1000;
+  width: 280px;
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid #33415588;
+  border-radius: 12px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+.proc-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #33415588;
+  font-size: 13px;
+  color: var(--text);
+}
+.proc-panel-close {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.proc-panel-close:hover {
+  color: var(--text);
+}
+.proc-panel-status {
+  padding: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.proc-panel-status.error {
+  color: #fca5a5;
+}
+.proc-panel-sub {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.proc-leg-list {
+  margin: 0;
+  padding: 0 6px 8px;
+  list-style: none;
+  overflow-y: auto;
+}
+.proc-leg {
+  display: grid;
+  grid-template-columns: 30px 64px 1fr;
+  gap: 6px;
+  align-items: baseline;
+  padding: 3px 4px;
+  font-size: 12px;
+  border-bottom: 1px solid #1e293b;
+}
+.proc-leg-term {
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
+.proc-leg-ident {
+  color: var(--text);
+  font-weight: 600;
+}
+.proc-leg-con {
+  color: #93c5fd;
+  text-align: right;
+}
+
 .ov-loading {
   font-size: 11px;
   color: var(--accent);

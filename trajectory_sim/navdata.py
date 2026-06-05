@@ -9,7 +9,9 @@ coordinates are returned as (latitude_deg, longitude_deg) in WGS-84
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 import geopandas as gpd
@@ -36,22 +38,59 @@ class NavData:
     WGS-84 degrees.
     """
 
-    def __init__(self, gpkg_path: str | Path) -> None:
-        """Load and index the waypoints layer from a GeoPackage.
+    def __init__(
+        self,
+        gpkg_path: str | Path | None = None,
+        *,
+        sid_source: str | Path | None = None,
+        star_source: str | Path | None = None,
+        procedure_schema: "SidStarSchema | None" = None,
+    ) -> None:
+        """Load the waypoints layer and/or SID/STAR procedure sources.
 
         Args:
             gpkg_path: Filesystem path to the BearCat navdata GeoPackage
-                (e.g. "bearcat_navdata.gpkg"). The file must contain a
-                "waypoints" layer with column `ident` (str) and POINT
-                geometry in EPSG:4326.
+                (e.g. "bearcat_navdata.gpkg") containing a "waypoints"
+                layer with column `ident` (str) and POINT geometry in
+                EPSG:4326. Optional — omit it to build a procedures-only
+                accessor (the procedure legs carry their own coordinates).
+            sid_source / star_source: Explicit path to a SID / STAR source
+                that GeoPandas can read (e.g. the DFD
+                ``sid_waypoint_thai.geojson`` / ``star_waypoint.geojson``).
+                When given, these override the GeoPackage layers. When
+                omitted, procedures are read from the GeoPackage's
+                ``sids``/``stars`` layers if a ``gpkg_path`` is set.
+            procedure_schema: Overrides the layer/column names used to read
+                the SID/STAR data (defaults to the ARINC 424 "DFD" schema —
+                see :data:`DEFAULT_SIDSTAR_SCHEMA`).
+
+        Procedures load lazily on the first ``lookup_procedure`` /
+        ``list_procedures`` call; a missing source is not an error.
         """
-        self._gpkg_path = Path(gpkg_path)
-        self._wpt_gdf: gpd.GeoDataFrame = gpd.read_file(
-            self._gpkg_path, layer=_WAYPOINTS_LAYER
+        self._gpkg_path = Path(gpkg_path) if gpkg_path is not None else None
+        if self._gpkg_path is not None:
+            self._wpt_gdf: gpd.GeoDataFrame | None = gpd.read_file(
+                self._gpkg_path, layer=_WAYPOINTS_LAYER
+            )
+            self._index: dict[str, tuple[float, float]] = self._build_index(
+                self._wpt_gdf
+            )
+        else:
+            self._wpt_gdf = None
+            self._index = {}
+        # SID/STAR state — loaded lazily so a waypoints-only source (or a
+        # procedures-only accessor) still constructs without all layers.
+        self._proc_schema: SidStarSchema = (
+            procedure_schema or DEFAULT_SIDSTAR_SCHEMA
         )
-        self._index: dict[str, tuple[float, float]] = self._build_index(
-            self._wpt_gdf
-        )
+        self._sid_source = Path(sid_source) if sid_source else None
+        self._star_source = Path(star_source) if star_source else None
+        self._proc_loaded = False
+        # (airport, ProcedureType, procedure_name) -> list[_RawLeg], ordered
+        # by seqno. Built on first procedure lookup.
+        self._proc_index: dict[
+            tuple[str, "ProcedureType", str], list["_RawLeg"]
+        ] = {}
 
     @staticmethod
     def _build_index(
@@ -108,6 +147,284 @@ class NavData:
             WaypointNotFoundError: on the first missing ident.
         """
         return {ident: self.lookup_waypoint(ident) for ident in idents}
+
+    # --- SID/STAR procedures ---------------------------------------------
+
+    def list_procedures(
+        self, airport: str, proc_type: "ProcedureType | None" = None
+    ) -> list[str]:
+        """Procedure names published at an aerodrome (optionally one type).
+
+        Returns an empty list if the GeoPackage has no procedure layers or
+        none for that aerodrome.
+        """
+        self._load_procedures()
+        airport_u = airport.strip().upper()
+        return sorted(
+            {
+                n
+                for (a, t, n) in self._proc_index
+                if a == airport_u and (proc_type is None or t == proc_type)
+            }
+        )
+
+    def lookup_procedure(
+        self,
+        airport: str,
+        name: str,
+        *,
+        proc_type: "ProcedureType | None" = None,
+        runway: str | None = None,
+        transition: str | None = None,
+    ) -> "Procedure":
+        """Resolve a SID/STAR to ordered legs carrying alt/speed constraints.
+
+        Args:
+            airport: Aerodrome ICAO, e.g. "VTBS".
+            name: Procedure identifier, e.g. "BIDA2A".
+            proc_type: Restrict to SID or STAR. If omitted and the name
+                exists as both, :class:`AmbiguousProcedureError` is raised.
+            runway: Runway designator for the runway-transition legs, e.g.
+                "RW19L" or "19L". Required only when the procedure has
+                runway-specific legs for more than one runway.
+            transition: Enroute transition name (a fix). Required only when
+                the procedure publishes more than one enroute transition.
+
+        Returns:
+            A :class:`Procedure` whose ``legs`` are ordered for the selected
+            runway/transition (SID: runway -> common -> transition;
+            STAR: transition -> common -> runway).
+
+        Raises:
+            ProcedureNotFoundError: no procedure matches (or the requested
+                runway/transition is absent).
+            AmbiguousProcedureError: the name resolves to both a SID and a
+                STAR, or a runway/transition must be chosen but wasn't.
+        """
+        self._load_procedures()
+        airport_u = airport.strip().upper()
+        name_u = name.strip().upper()
+
+        types = [proc_type] if proc_type is not None else list(ProcedureType)
+        matches = [
+            t for t in types if (airport_u, t, name_u) in self._proc_index
+        ]
+        if not matches:
+            avail = sorted(
+                {n for (a, _t, n) in self._proc_index if a == airport_u}
+            )
+            raise ProcedureNotFoundError(airport_u, name_u, available=avail)
+        if len(matches) > 1:
+            raise AmbiguousProcedureError(
+                airport_u, name_u, [t.value for t in matches], "procedure type"
+            )
+
+        resolved_type = matches[0]
+        raw_legs = self._proc_index[(airport_u, resolved_type, name_u)]
+        return self._assemble_procedure(
+            airport_u, name_u, resolved_type, raw_legs, runway, transition
+        )
+
+    def _read_proc_source(
+        self, proc_type: "ProcedureType"
+    ) -> "gpd.GeoDataFrame | None":
+        """Read one procedure source — an explicit file path if given, else
+        the matching layer of the GeoPackage. None if neither is available."""
+        s = self._proc_schema
+        explicit = (
+            self._sid_source
+            if proc_type is ProcedureType.SID
+            else self._star_source
+        )
+        layer = (
+            s.sid_layer if proc_type is ProcedureType.SID else s.star_layer
+        )
+        try:
+            if explicit is not None:
+                return gpd.read_file(explicit)
+            if self._gpkg_path is not None:
+                return gpd.read_file(self._gpkg_path, layer=layer)
+        except Exception as exc:  # noqa: BLE001 — fiona raises various types
+            logger.info(
+                "Procedure source for %s not available: %s",
+                proc_type.value,
+                exc,
+            )
+        return None
+
+    def _load_procedures(self) -> None:
+        """Lazily read + index the SID and STAR sources (once)."""
+        if self._proc_loaded:
+            return
+        self._proc_loaded = True
+        for proc_type in ProcedureType:
+            gdf = self._read_proc_source(proc_type)
+            if gdf is None or len(gdf) == 0:
+                continue
+            self._index_proc_layer(proc_type, gdf)
+        # Each procedure's legs must be in published sequence order.
+        for legs in self._proc_index.values():
+            legs.sort(key=lambda lg: lg.seqno)
+
+    def _index_proc_layer(
+        self, proc_type: "ProcedureType", gdf: "pd.DataFrame"
+    ) -> None:
+        """Fold one SID/STAR layer into ``self._proc_index`` as _RawLegs."""
+        s = self._proc_schema
+        required = (s.airport, s.procedure, s.seqno)
+        missing = [c for c in required if c not in gdf.columns]
+        if missing:
+            logger.warning(
+                "%s layer missing required columns %s — skipped",
+                proc_type.value,
+                missing,
+            )
+            return
+        for _, row in gdf.iterrows():
+            get = row.get
+            airport = _clean_str(get(s.airport)).upper()
+            name = _clean_str(get(s.procedure)).upper()
+            if not airport or not name:
+                continue
+            ident = _clean_str(get(s.waypoint_ident)) or None
+            lat = _to_float(get(s.latitude))
+            lon = _to_float(get(s.longitude))
+            if ident is None or lat is None or lon is None:
+                # Fixless leg (e.g. CA/VA/FM) or a data gap: keep the leg and
+                # its constraints, but it carries no resolvable waypoint.
+                ident, lat, lon = ident, None, None
+            seqno = _to_float(get(s.seqno))
+            leg = _RawLeg(
+                seqno=int(seqno) if seqno is not None else 0,
+                route_type=_clean_str(get(s.route_type)),
+                transition=_clean_str(get(s.transition)),
+                path_terminator=_clean_str(get(s.path_termination)).upper(),
+                ident=ident,
+                lat=lat,
+                lon=lon,
+                altitude=parse_altitude_constraint(
+                    get(s.altitude_description),
+                    get(s.altitude1),
+                    get(s.altitude2),
+                ),
+                speed=parse_speed_constraint(
+                    get(s.speed_limit_description), get(s.speed_limit)
+                ),
+                turn_direction=_clean_str(get(s.turn_direction)) or None,
+            )
+            self._proc_index.setdefault(
+                (airport, proc_type, name), []
+            ).append(leg)
+
+    def _assemble_procedure(
+        self,
+        airport: str,
+        name: str,
+        proc_type: "ProcedureType",
+        raw_legs: "list[_RawLeg]",
+        runway: str | None,
+        transition: str | None,
+    ) -> "Procedure":
+        """Concatenate runway/common/transition leg groups in flight order."""
+        runway_groups: dict[str, list[_RawLeg]] = {}
+        trans_groups: dict[str, list[_RawLeg]] = {}
+        common: list[_RawLeg] = []
+        for leg in raw_legs:
+            seg = _segment_of(proc_type, leg)
+            if seg == "runway":
+                runway_groups.setdefault(leg.transition.upper(), []).append(leg)
+            elif seg == "transition":
+                trans_groups.setdefault(leg.transition.upper(), []).append(leg)
+            else:
+                common.append(leg)
+
+        chosen_runway = self._select_group(
+            airport, name, runway_groups, runway, "runway"
+        )
+        chosen_trans = self._select_group(
+            airport, name, trans_groups, transition, "transition"
+        )
+        rwy_legs = (
+            runway_groups.get(chosen_runway, [])
+            if chosen_runway is not None
+            else []
+        )
+        trn_legs = (
+            trans_groups.get(chosen_trans, [])
+            if chosen_trans is not None
+            else []
+        )
+
+        if proc_type is ProcedureType.SID:
+            ordered = [*rwy_legs, *common, *trn_legs]
+        else:  # STAR flies transition -> common -> runway
+            ordered = [*trn_legs, *common, *rwy_legs]
+
+        legs = tuple(
+            ProcedureLeg(
+                seqno=r.seqno,
+                path_terminator=r.path_terminator,
+                ident=r.ident,
+                lat=r.lat,
+                lon=r.lon,
+                altitude=r.altitude,
+                speed=r.speed,
+                transition=r.transition or None,
+                turn_direction=r.turn_direction,
+            )
+            for r in ordered
+        )
+
+        def _label(key: str | None) -> str | None:
+            return None if key in (None, "", "ALL") else key
+
+        return Procedure(
+            airport=airport,
+            name=name,
+            proc_type=proc_type,
+            runway=_label(chosen_runway),
+            transition=_label(chosen_trans),
+            legs=legs,
+        )
+
+    @staticmethod
+    def _select_group(
+        airport: str,
+        name: str,
+        groups: "dict[str, list[_RawLeg]]",
+        requested: str | None,
+        kind: str,
+    ) -> str | None:
+        """Pick the runway/transition group key; handle missing/ambiguous.
+
+        A group keyed "" or "ALL" applies to every selection (it is the
+        common case for procedures with a single runway/transition).
+        """
+        if not groups:
+            return None  # procedure has no legs of this kind
+        keys = set(groups)
+        wildcard = next((k for k in keys if k in ("", "ALL")), None)
+        if requested is not None:
+            req = requested.strip().upper()
+            # Accept "19L" as a match for "RW19L" on runway selection.
+            candidates = {req, f"RW{req}"} if kind == "runway" else {req}
+            for k in keys:
+                if k in candidates:
+                    return k
+            if wildcard is not None:
+                return wildcard
+            raise ProcedureNotFoundError(
+                airport,
+                name,
+                detail=f"no {kind} {requested!r}",
+                available=[k for k in keys if k not in ("", "ALL")],
+            )
+        real = [k for k in keys if k not in ("", "ALL")]
+        if not real:
+            return wildcard  # only a common/ALL group exists
+        if len(real) == 1:
+            return real[0]
+        raise AmbiguousProcedureError(airport, name, real, kind)
 
 
 @dataclass(frozen=True)
@@ -226,3 +543,329 @@ def load_route_csv(
         route[-1].ident if route else "?",
     )
     return route
+
+
+# ===========================================================================
+# SID/STAR terminal procedures (ARINC 424 "DFD" schema)
+# ===========================================================================
+#
+# SUBTASK 5 — source schema. Coded terminal procedures are NOT in the CAAT
+# eAIP (it publishes them only as charts), so they come from the ARINC 424
+# navdata GeoPackage. We target the Navigraph "DFD" layout — the schema the
+# repo's existing column names (waypoint_identifier / waypoint_latitude /
+# seqno) already follow — but every layer and column name is overridable via
+# :class:`SidStarSchema`, so pointing this at a differently-named GeoPackage
+# (or the real bearcat_navdata.gpkg when it lands) is a one-line change.
+#
+# Each row in a `sids`/`stars` layer is ONE leg of a procedure. A full
+# procedure for a chosen runway + enroute transition is assembled by
+# concatenating three leg groups, split by ``route_type``:
+#   SID : runway-transition legs -> common legs -> enroute-transition legs
+#   STAR: enroute-transition legs -> common legs -> runway-transition legs
+# Legs are ordered within each group by ``seqno``.
+
+
+@dataclass(frozen=True)
+class SidStarSchema:
+    """Layer + column names for the SID/STAR procedure layers.
+
+    Defaults match the ARINC 424 "DFD" GeoPackage. Override any field to
+    adapt to a GeoPackage that names things differently.
+    """
+
+    sid_layer: str = "sids"
+    star_layer: str = "stars"
+    airport: str = "airport_identifier"
+    procedure: str = "procedure_identifier"
+    route_type: str = "route_type"
+    transition: str = "transition_identifier"
+    seqno: str = "seqno"
+    waypoint_ident: str = "waypoint_identifier"
+    latitude: str = "waypoint_latitude"
+    longitude: str = "waypoint_longitude"
+    path_termination: str = "path_termination"
+    altitude_description: str = "altitude_description"
+    altitude1: str = "altitude1"
+    altitude2: str = "altitude2"
+    speed_limit: str = "speed_limit"
+    speed_limit_description: str = "speed_limit_description"
+    turn_direction: str = "turn_direction"
+
+
+DEFAULT_SIDSTAR_SCHEMA = SidStarSchema()
+
+
+class ProcedureType(str, Enum):
+    """Kind of terminal procedure."""
+
+    SID = "SID"
+    STAR = "STAR"
+
+
+class AltitudeConstraintType(str, Enum):
+    """How a leg's altitude(s) constrain the crossing altitude."""
+
+    NONE = "NONE"
+    AT = "AT"
+    AT_OR_ABOVE = "AT_OR_ABOVE"
+    AT_OR_BELOW = "AT_OR_BELOW"
+    BETWEEN = "BETWEEN"  # alt1 = upper bound, alt2 = lower bound
+
+
+class SpeedConstraintType(str, Enum):
+    """How a leg's speed limit constrains the crossing speed."""
+
+    NONE = "NONE"
+    AT = "AT"
+    AT_OR_ABOVE = "AT_OR_ABOVE"
+    AT_OR_BELOW = "AT_OR_BELOW"
+
+
+@dataclass(frozen=True)
+class AltitudeConstraint:
+    """A crossing-altitude constraint (feet)."""
+
+    type: AltitudeConstraintType = AltitudeConstraintType.NONE
+    alt1_ft: float | None = None
+    alt2_ft: float | None = None  # only meaningful for BETWEEN (lower bound)
+
+    @property
+    def is_constrained(self) -> bool:
+        return self.type is not AltitudeConstraintType.NONE
+
+
+@dataclass(frozen=True)
+class SpeedConstraint:
+    """A crossing-speed constraint (knots)."""
+
+    type: SpeedConstraintType = SpeedConstraintType.NONE
+    speed_kt: float | None = None
+
+    @property
+    def is_constrained(self) -> bool:
+        return self.type is not SpeedConstraintType.NONE
+
+
+@dataclass(frozen=True)
+class ProcedureLeg:
+    """One leg of a terminal procedure, in published sequence order.
+
+    A leg may be "fixless": ARINC path/terminators such as CA (Course to
+    Altitude), VA (Heading to Altitude) or FM/VM (manual termination) end on
+    an altitude/heading rather than a named fix. Such legs still carry their
+    constraints but have ``ident``/``lat``/``lon`` = None and are skipped by
+    :meth:`Procedure.waypoints`.
+    """
+
+    seqno: int
+    path_terminator: str  # ARINC 424 leg type, e.g. "IF", "TF", "CF", "CA"
+    ident: str | None
+    lat: float | None
+    lon: float | None
+    altitude: AltitudeConstraint
+    speed: SpeedConstraint
+    transition: str | None = None
+    turn_direction: str | None = None
+
+    @property
+    def has_fix(self) -> bool:
+        return (
+            self.ident is not None
+            and self.lat is not None
+            and self.lon is not None
+        )
+
+
+@dataclass(frozen=True)
+class Procedure:
+    """A resolved SID or STAR for a specific runway + transition selection."""
+
+    airport: str
+    name: str
+    proc_type: ProcedureType
+    runway: str | None
+    transition: str | None
+    legs: tuple[ProcedureLeg, ...]
+
+    def waypoints(self) -> list[RouteWaypoint]:
+        """Ordered fix waypoints (fixless legs dropped, dup idents collapsed)."""
+        out: list[RouteWaypoint] = []
+        for leg in self.legs:
+            if not leg.has_fix:
+                continue
+            if out and out[-1].ident == leg.ident:
+                continue
+            out.append(
+                RouteWaypoint(
+                    ident=leg.ident,  # type: ignore[arg-type]
+                    lat=leg.lat,  # type: ignore[arg-type]
+                    lon=leg.lon,  # type: ignore[arg-type]
+                )
+            )
+        return out
+
+
+class ProcedureNotFoundError(LookupError):
+    """Raised when no procedure matches the requested key."""
+
+    def __init__(
+        self,
+        airport: str,
+        name: str,
+        *,
+        detail: str = "",
+        available: list[str] | None = None,
+    ) -> None:
+        self.airport = airport
+        self.name = name
+        self.available = available or []
+        msg = f"Procedure {name!r} not found at {airport!r}"
+        if detail:
+            msg += f": {detail}"
+        if self.available:
+            msg += f" (available: {', '.join(sorted(self.available))})"
+        super().__init__(msg)
+
+
+class AmbiguousProcedureError(LookupError):
+    """Raised when a lookup matches several procedures/runways/transitions."""
+
+    def __init__(
+        self, airport: str, name: str, candidates: list[str], kind: str
+    ) -> None:
+        self.airport = airport
+        self.name = name
+        self.candidates = candidates
+        self.kind = kind
+        super().__init__(
+            f"Ambiguous {kind} for procedure {name!r} at {airport!r}: "
+            f"specify one of {', '.join(sorted(candidates))}"
+        )
+
+
+@dataclass(frozen=True)
+class _RawLeg:
+    """Untyped leg row (post-schema-mapping) used during assembly."""
+
+    seqno: int
+    route_type: str
+    transition: str
+    path_terminator: str
+    ident: str | None
+    lat: float | None
+    lon: float | None
+    altitude: AltitudeConstraint
+    speed: SpeedConstraint
+    turn_direction: str | None
+
+
+def _clean_str(value: object) -> str:
+    """NaN/None-safe string, surrounding whitespace stripped."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    return str(value).strip()
+
+
+def _to_float(value: object) -> float | None:
+    """Best-effort float; returns None for blank/NaN/non-numeric input."""
+    s = _clean_str(value)
+    if not s:
+        return None
+    try:
+        f = float(s)
+    except ValueError:
+        return None
+    return None if math.isnan(f) else f
+
+
+def parse_altitude_constraint(
+    description: object, altitude1: object, altitude2: object
+) -> AltitudeConstraint:
+    """Map ARINC ``altitude_description`` + altitude1/2 to a typed constraint.
+
+    Description codes (ARINC 424 5.29):
+        "@"/blank -> AT       "+" -> AT_OR_ABOVE      "-" -> AT_OR_BELOW
+        "B"       -> BETWEEN  (altitude1 = upper bound, altitude2 = lower)
+    Other codes (G/H/I/J/V/X/Y — glideslope/step-down variants) collapse to
+    AT on altitude1, a safe over-constraint for a fast-time sim.
+    """
+    a1 = _to_float(altitude1)
+    a2 = _to_float(altitude2)
+    desc = _clean_str(description)
+    if a1 is None and a2 is None:
+        return AltitudeConstraint(AltitudeConstraintType.NONE)
+    if desc == "+":
+        return AltitudeConstraint(AltitudeConstraintType.AT_OR_ABOVE, a1)
+    if desc == "-":
+        return AltitudeConstraint(AltitudeConstraintType.AT_OR_BELOW, a1)
+    if desc == "B":
+        return AltitudeConstraint(AltitudeConstraintType.BETWEEN, a1, a2)
+    # "@", blank, or an unhandled code: a hard AT on the primary altitude.
+    return AltitudeConstraint(AltitudeConstraintType.AT, a1)
+
+
+def parse_speed_constraint(
+    description: object, speed_limit: object
+) -> SpeedConstraint:
+    """Map ARINC ``speed_limit`` + description to a typed speed constraint.
+
+    A SID/STAR speed limit is conventionally a maximum; DFD encodes the
+    sense in ``speed_limit_description``:
+        blank/"-" -> AT_OR_BELOW      "+" -> AT_OR_ABOVE      "@" -> AT
+    A zero/blank ``speed_limit`` means no constraint.
+    """
+    spd = _to_float(speed_limit)
+    if spd is None or spd <= 0:
+        return SpeedConstraint(SpeedConstraintType.NONE)
+    desc = _clean_str(description)
+    if desc == "+":
+        return SpeedConstraint(SpeedConstraintType.AT_OR_ABOVE, spd)
+    if desc == "@":
+        return SpeedConstraint(SpeedConstraintType.AT, spd)
+    # blank or "-": the usual "at or below" terminal speed restriction.
+    return SpeedConstraint(SpeedConstraintType.AT_OR_BELOW, spd)
+
+
+# route_type segmentation. ARINC 424 5.7 route types group a procedure's
+# legs; the exact code letters vary between source datasets, so we classify
+# into three buckets and fall back to the transition_identifier shape when a
+# code is unrecognised.
+_SID_RUNWAY_TYPES = frozenset({"0", "1", "4", "F", "T"})
+_SID_COMMON_TYPES = frozenset({"2", "5", "M", "S"})
+_SID_TRANS_TYPES = frozenset({"3", "6", "V"})
+_STAR_TRANS_TYPES = frozenset({"1", "4", "7", "F"})
+_STAR_COMMON_TYPES = frozenset({"2", "5", "8", "M", "S"})
+_STAR_RUNWAY_TYPES = frozenset({"3", "6", "9", "R"})
+
+
+def _is_runway_transition(name: str) -> bool:
+    """True if a transition_identifier names a runway (e.g. RW19L, RW27)."""
+    return name.upper().startswith("RW")
+
+
+def _segment_of(proc_type: ProcedureType, raw: _RawLeg) -> str:
+    """Classify a leg into 'runway' | 'common' | 'transition'."""
+    rt = raw.route_type.upper()
+    if proc_type is ProcedureType.SID:
+        if rt in _SID_RUNWAY_TYPES:
+            return "runway"
+        if rt in _SID_TRANS_TYPES:
+            return "transition"
+        if rt in _SID_COMMON_TYPES:
+            return "common"
+    else:
+        if rt in _STAR_RUNWAY_TYPES:
+            return "runway"
+        if rt in _STAR_TRANS_TYPES:
+            return "transition"
+        if rt in _STAR_COMMON_TYPES:
+            return "common"
+    # Unknown route_type code: infer from the transition_identifier shape.
+    tr = raw.transition
+    if not tr or tr.upper() == "ALL":
+        return "common"
+    if _is_runway_transition(tr):
+        return "runway"
+    return "transition"

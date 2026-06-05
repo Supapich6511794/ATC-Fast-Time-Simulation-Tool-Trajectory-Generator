@@ -36,6 +36,12 @@ from pydantic import BaseModel, Field
 
 from trajectory_sim.fpl import FlightPlan, parse_eobt, parse_route
 from trajectory_sim.geodesy import route_distance_nm
+from trajectory_sim.navdata import (
+    AmbiguousProcedureError,
+    NavData,
+    ProcedureNotFoundError,
+    ProcedureType,
+)
 from trajectory_sim.output import (
     build_trajectory_gdf,
     write_csv,
@@ -348,6 +354,141 @@ def cat62_reference() -> dict[str, object]:
         "threshold_min": _CAT62_REF.threshold_min,
         "routes": _CAT62_REF.table(),
     }
+
+
+# --- SID/STAR procedures ----------------------------------------------------
+# Coded terminal procedures come from the DFD GeoJSON exports under
+# web/public/data/{sid,star}/. NavData reads + indexes them on first use.
+_SID_SOURCE = _DATA / "sid" / "sid_waypoint_thai.geojson"
+_STAR_SOURCE = _DATA / "star" / "star_waypoint.geojson"
+
+
+@lru_cache(maxsize=1)
+def _navdata() -> NavData:
+    """Procedures-only NavData accessor over the DFD SID/STAR GeoJSON."""
+    return NavData(
+        sid_source=_SID_SOURCE if _SID_SOURCE.is_file() else None,
+        star_source=_STAR_SOURCE if _STAR_SOURCE.is_file() else None,
+    )
+
+
+def _constraint_json(con: object) -> dict[str, object]:
+    """Serialise an Altitude/Speed constraint dataclass to a plain dict."""
+    return {
+        "type": con.type.value,  # type: ignore[attr-defined]
+        **{
+            k: getattr(con, k)
+            for k in ("alt1_ft", "alt2_ft", "speed_kt")
+            if hasattr(con, k)
+        },
+    }
+
+
+@app.get("/api/procedures/{airport}")
+def list_procedures(airport: str, type: str | None = None) -> dict[str, object]:
+    """List SID/STAR names published at an aerodrome.
+
+    ``type`` (optional) restricts to "SID" or "STAR".
+    """
+    nav = _navdata()
+    proc_type = _parse_proc_type(type)
+    if proc_type is not None:
+        names = nav.list_procedures(airport, proc_type)
+        return {"airport": airport.upper(), type.upper(): names}  # type: ignore[union-attr]
+    return {
+        "airport": airport.upper(),
+        "SID": nav.list_procedures(airport, ProcedureType.SID),
+        "STAR": nav.list_procedures(airport, ProcedureType.STAR),
+    }
+
+
+@app.get("/api/procedures/{airport}/{name}")
+def get_procedure(
+    airport: str,
+    name: str,
+    type: str | None = None,
+    runway: str | None = None,
+    transition: str | None = None,
+    auto: bool = True,
+) -> dict[str, object]:
+    """Resolve a SID/STAR to ordered legs carrying altitude/speed constraints.
+
+    When ``auto`` is true (the default, used by the map's click-to-load), any
+    runway/transition ambiguity is resolved by picking the first candidate and
+    reporting it in ``assumptions`` — so a single click always yields legs.
+    Set ``auto=false`` to get a 409 listing the choices instead.
+    """
+    nav = _navdata()
+    proc_type = _parse_proc_type(type)
+    assumptions: list[dict[str, str]] = []
+    rwy, trn, pt = runway, transition, proc_type
+    while True:
+        try:
+            proc = nav.lookup_procedure(
+                airport, name, proc_type=pt, runway=rwy, transition=trn
+            )
+            break
+        except ProcedureNotFoundError as e:
+            raise HTTPException(
+                404,
+                {"detail": str(e), "available": e.available},  # type: ignore[arg-type]
+            ) from None
+        except AmbiguousProcedureError as e:
+            if not auto:
+                raise HTTPException(
+                    409,
+                    {  # type: ignore[arg-type]
+                        "detail": str(e),
+                        "kind": e.kind,
+                        "candidates": sorted(e.candidates),
+                    },
+                ) from None
+            pick = sorted(e.candidates)[0]
+            assumptions.append({e.kind: pick})
+            if e.kind == "runway":
+                rwy = pick
+            elif e.kind == "transition":
+                trn = pick
+            else:  # procedure type
+                pt = ProcedureType(pick)
+
+    return {
+        "airport": proc.airport,
+        "name": proc.name,
+        "type": proc.proc_type.value,
+        "runway": proc.runway,
+        "transition": proc.transition,
+        "assumptions": assumptions,
+        "legs": [
+            {
+                "seqno": lg.seqno,
+                "path_terminator": lg.path_terminator,
+                "ident": lg.ident,
+                "lat": lg.lat,
+                "lon": lg.lon,
+                "turn": lg.turn_direction,
+                "altitude": _constraint_json(lg.altitude),
+                "speed": _constraint_json(lg.speed),
+            }
+            for lg in proc.legs
+        ],
+        "waypoints": [
+            {"ident": w.ident, "lat": w.lat, "lon": w.lon}
+            for w in proc.waypoints()
+        ],
+    }
+
+
+def _parse_proc_type(value: str | None) -> "ProcedureType | None":
+    """Map a 'SID'/'STAR' query value to ProcedureType, or None if absent."""
+    if not value:
+        return None
+    try:
+        return ProcedureType(value.strip().upper())
+    except ValueError:
+        raise HTTPException(
+            400, f"type must be SID or STAR, got {value!r}"
+        ) from None
 
 
 def _generate_one(req: GenerateRequest) -> dict[str, object]:

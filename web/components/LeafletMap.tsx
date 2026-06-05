@@ -36,6 +36,7 @@ import { aircraftAt, toSamples } from "@/lib/useSimPlayback";
 import type {
   AirwayCollection,
   FirCollection,
+  ProcedureLineCollection,
   Waypoint,
 } from "@/lib/types";
 
@@ -45,6 +46,13 @@ interface Props {
   /** Reference waypoint layer (all fixes), or null to hide. */
   waypoints: Waypoint[] | null;
   fir: FirCollection | null;
+  /** Drawn SID (departure) procedure tracks, or null to hide. */
+  sidLines?: ProcedureLineCollection | null;
+  /** Drawn STAR (arrival) procedure tracks, or null to hide. */
+  starLines?: ProcedureLineCollection | null;
+  /** Fired when a SID/STAR track is clicked — the parent fetches that
+   *  procedure's coded legs + constraints from the procedures API. */
+  onProcedureClick?: (sel: ProcedureSelection) => void;
   /** One or more generated routes, all shown/animated together. */
   trajectories: TrajectoryResult[];
   /** flightKeys whose route *line* is hidden on the map. The aircraft icon
@@ -115,6 +123,50 @@ const PREVIEW_COLORS = [
 
 const DEFAULT_CENTER: L.LatLngExpression = [11.0, 99.5];
 const DEFAULT_ZOOM = 6;
+
+/** SID = green (climbing out), STAR = magenta (arriving). */
+const SID_COLOR = "#34d399";
+const STAR_COLOR = "#f472b6";
+
+/** A SID/STAR track the user clicked, for the parent to resolve via the API. */
+export interface ProcedureSelection {
+  airport: string;
+  name: string;
+  transition: string | null;
+  type: "SID" | "STAR";
+}
+
+/** Tooltip/popup + click wiring for one SID/STAR procedure line feature. */
+function bindProcedureFeature(
+  feature: GeoJSON.Feature,
+  layer: L.Layer,
+  type: "SID" | "STAR",
+  onClick?: (sel: ProcedureSelection) => void,
+): void {
+  const p = (feature.properties ?? {}) as {
+    airport_identifier?: string;
+    procedure_identifier?: string;
+    transition_identifier?: string | null;
+  };
+  const name = p.procedure_identifier ?? "?";
+  const trans = p.transition_identifier ?? null;
+  layer.bindTooltip(`${type} · ${name}`, { sticky: true });
+  layer.bindPopup(
+    `<strong>${name}</strong> · ${type}<br/>${p.airport_identifier ?? ""}` +
+      (trans ? ` · ${trans}` : "") +
+      (onClick ? "<br/><em>click to load legs</em>" : ""),
+  );
+  if (onClick) {
+    layer.on("click", () =>
+      onClick({
+        airport: p.airport_identifier ?? "",
+        name,
+        transition: trans,
+        type,
+      }),
+    );
+  }
+}
 
 /** Fit to the generated routes if any, otherwise the airway network. */
 function FitBounds({
@@ -333,10 +385,13 @@ export default function LeafletMap({
   airways,
   waypoints,
   fir,
+  sidLines,
+  starLines,
   trajectories,
   hiddenKeys,
   previewRoutes,
   typeFilter,
+  onProcedureClick,
   tagFields,
   simT,
   playbackIdx,
@@ -381,6 +436,39 @@ export default function LeafletMap({
         />
       ),
     [airways],
+  );
+
+  // SID/STAR procedure tracks. Each feature is one procedure (per runway /
+  // transition); hovering shows its name, clicking bubbles a selection up so
+  // the parent can fetch its coded legs + constraints from the API.
+  const sidLayer = useMemo(
+    () =>
+      sidLines && (
+        <GeoJSON
+          key={`sid-${sidLines.features.length}`}
+          data={sidLines}
+          style={() => ({ color: SID_COLOR, weight: 2, opacity: 0.65 })}
+          onEachFeature={(f, layer) =>
+            bindProcedureFeature(f, layer, "SID", onProcedureClick)
+          }
+        />
+      ),
+    [sidLines, onProcedureClick],
+  );
+
+  const starLayer = useMemo(
+    () =>
+      starLines && (
+        <GeoJSON
+          key={`star-${starLines.features.length}`}
+          data={starLines}
+          style={() => ({ color: STAR_COLOR, weight: 2, opacity: 0.65 })}
+          onEachFeature={(f, layer) =>
+            bindProcedureFeature(f, layer, "STAR", onProcedureClick)
+          }
+        />
+      ),
+    [starLines, onProcedureClick],
   );
 
   const waypointLayer = useMemo(
@@ -652,6 +740,8 @@ export default function LeafletMap({
 
       {firLayer}
       {airwayLayer}
+      {sidLayer}
+      {starLayer}
       {waypointLayer}
       {previewLayer}
       {trajectoryLayer}

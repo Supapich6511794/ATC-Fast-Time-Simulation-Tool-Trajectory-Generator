@@ -319,3 +319,64 @@ export async function generateBatch(
     errors: j.errors ?? [],
   };
 }
+
+// --- SID/STAR procedures ---------------------------------------------------
+
+export interface ProcedureLegDto {
+  seqno: number;
+  path_terminator: string;
+  ident: string | null;
+  lat: number | null;
+  lon: number | null;
+  turn: string | null;
+  altitude: { type: string; alt1_ft?: number | null; alt2_ft?: number | null };
+  speed: { type: string; speed_kt?: number | null };
+}
+
+export interface ProcedureDto {
+  airport: string;
+  name: string;
+  type: string;
+  runway: string | null;
+  transition: string | null;
+  /** Runway/transition the server auto-picked to resolve ambiguity. */
+  assumptions: Record<string, string>[];
+  legs: ProcedureLegDto[];
+  waypoints: { ident: string; lat: number; lon: number }[];
+}
+
+/**
+ * Resolve a SID/STAR's coded legs + altitude/speed constraints from the
+ * procedures API. ``auto`` (default) lets the server pick a runway/transition
+ * when the choice is ambiguous, so a single map click always returns legs.
+ */
+export async function fetchProcedure(
+  airport: string,
+  name: string,
+  opts: { type?: string; runway?: string; transition?: string } = {},
+): Promise<ProcedureDto> {
+  const q = new URLSearchParams();
+  if (opts.type) q.set("type", opts.type);
+  if (opts.runway) q.set("runway", opts.runway);
+  if (opts.transition) q.set("transition", opts.transition);
+  const url = `${API_BASE}/api/procedures/${encodeURIComponent(
+    airport,
+  )}/${encodeURIComponent(name)}?${q.toString()}`;
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch {
+    throw new Error(`Cannot reach the Python API at ${API_BASE}.`);
+  }
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const j = await res.json();
+      if (j?.detail) detail = typeof j.detail === "string" ? j.detail : detail;
+    } catch {
+      /* keep status text */
+    }
+    throw new Error(detail);
+  }
+  return (await res.json()) as ProcedureDto;
+}

@@ -30,18 +30,65 @@ import {
   routeOptions,
 } from "@/lib/flightSearch";
 import SearchCombo from "@/components/SearchCombo";
-import { deriveWaypoints, fetchAirways, fetchFir } from "@/lib/geojson";
+import {
+  deriveWaypoints,
+  fetchAirways,
+  fetchFir,
+  fetchSidLines,
+  fetchStarLines,
+} from "@/lib/geojson";
+import { fetchProcedure, type ProcedureDto } from "@/lib/api";
+import type { ProcedureSelection } from "@/components/LeafletMap";
 import { fetchCsvRouteIdents } from "@/lib/routeCsv";
 import type { Basemap, Theme } from "@/lib/mapPrefs";
 import type { PreviewPoint } from "@/lib/routePreview";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
-import type { AirwayCollection, FirCollection, Waypoint } from "@/lib/types";
+import type {
+  AirwayCollection,
+  FirCollection,
+  ProcedureLineCollection,
+  Waypoint,
+} from "@/lib/types";
 import { useSimPlayback } from "@/lib/useSimPlayback";
 
 const LeafletMap = dynamic(() => import("@/components/LeafletMap"), {
   ssr: false,
   loading: () => <div className="status">Loading map…</div>,
 });
+
+/** Format an altitude constraint DTO as a compact label (e.g. "≤18000ft"). */
+function fmtAlt(c: { type: string; alt1_ft?: number | null; alt2_ft?: number | null }): string {
+  const a1 = c.alt1_ft ?? null;
+  const a2 = c.alt2_ft ?? null;
+  switch (c.type) {
+    case "AT":
+      return a1 != null ? `${a1}ft` : "";
+    case "AT_OR_ABOVE":
+      return a1 != null ? `≥${a1}ft` : "";
+    case "AT_OR_BELOW":
+      return a1 != null ? `≤${a1}ft` : "";
+    case "BETWEEN":
+      return `${a2 ?? "?"}–${a1 ?? "?"}ft`;
+    default:
+      return "";
+  }
+}
+
+/** Format a speed constraint DTO as a compact label (e.g. "≤250kt"). */
+function fmtSpd(c: { type: string; speed_kt?: number | null }): string {
+  const s = c.speed_kt ?? null;
+  if (s == null) return "";
+  switch (c.type) {
+    case "AT":
+      return `${s}kt`;
+    case "AT_OR_ABOVE":
+      return `≥${s}kt`;
+    case "AT_OR_BELOW":
+      return `≤${s}kt`;
+    default:
+      return "";
+  }
+}
 
 export default function MapApp() {
   const [airways, setAirways] = useState<AirwayCollection | null>(null);
@@ -219,6 +266,44 @@ export default function MapApp() {
   const [fir, setFir] = useState<FirCollection | null>(null);
   const [firLoading, setFirLoading] = useState(false);
 
+  // SID/STAR procedure line layers (lazy — fetched on first enable).
+  const [sidOn, setSidOn] = useState(false);
+  const [starOn, setStarOn] = useState(false);
+  // Procedure inspector: legs + constraints fetched when a SID/STAR line is
+  // clicked. null = closed.
+  const [procView, setProcView] = useState<{
+    sel: ProcedureSelection;
+    loading?: boolean;
+    data?: ProcedureDto;
+    error?: string;
+  } | null>(null);
+  const handleProcedureClick = useCallback((sel: ProcedureSelection) => {
+    setProcView({ sel, loading: true });
+    // The clicked line's transition_identifier is either a runway (RW…) or
+    // an enroute transition fix; route it to the right query param and let
+    // the API auto-resolve the other axis.
+    const t = (sel.transition ?? "").toUpperCase();
+    const isRunway = t.startsWith("RW");
+    fetchProcedure(sel.airport, sel.name, {
+      type: sel.type,
+      runway: isRunway ? sel.transition ?? undefined : undefined,
+      transition: isRunway ? undefined : sel.transition ?? undefined,
+    })
+      .then((data) => setProcView({ sel, data }))
+      .catch((e: unknown) =>
+        setProcView({
+          sel,
+          error: e instanceof Error ? e.message : "Failed to load procedure",
+        }),
+      );
+  }, []);
+  const [sidLines, setSidLines] = useState<ProcedureLineCollection | null>(
+    null,
+  );
+  const [starLines, setStarLines] = useState<ProcedureLineCollection | null>(
+    null,
+  );
+
   // RouteBuilder picker is restricted to the FPL route's own fixes
   // (VTPStoVTBS.csv / airway Y8), not every fix in the airway file.
   const [routeIdents, setRouteIdents] = useState<string[]>([]);
@@ -320,6 +405,24 @@ export default function MapApp() {
       )
       .finally(() => setFirLoading(false));
   }, [firOn, fir, firLoading]);
+
+  // Fetch the SID/STAR procedure lines once, the first time each is enabled.
+  useEffect(() => {
+    if (!sidOn || sidLines) return;
+    fetchSidLines()
+      .then(setSidLines)
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : "Failed to load SID lines"),
+      );
+  }, [sidOn, sidLines]);
+  useEffect(() => {
+    if (!starOn || starLines) return;
+    fetchStarLines()
+      .then(setStarLines)
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : "Failed to load STAR lines"),
+      );
+  }, [starOn, starLines]);
 
   const waypoints: Waypoint[] = useMemo(
     () => (airways ? deriveWaypoints(airways) : []),
@@ -685,6 +788,10 @@ export default function MapApp() {
               firOn={firOn}
               onFir={setFirOn}
               firLoading={firLoading}
+              sidOn={sidOn}
+              onSid={setSidOn}
+              starOn={starOn}
+              onStar={setStarOn}
               onToggleSidebar={toggleSidebar}
               onZoomIn={handleZoomIn}
               onZoomOut={handleZoomOut}
@@ -694,6 +801,9 @@ export default function MapApp() {
               airways={showAirways ? airways : null}
               waypoints={showWaypoints ? waypoints : null}
               fir={firOn ? fir : null}
+              sidLines={sidOn ? sidLines : null}
+              starLines={starOn ? starLines : null}
+              onProcedureClick={handleProcedureClick}
               trajectories={trajectories}
               hiddenKeys={hiddenKeys}
               typeFilter={acTypeQuery}
@@ -767,6 +877,62 @@ export default function MapApp() {
               onToggleAllRoutes={toggleAllRoutesHidden}
             />
             {trajectories.length > 0 && <AltitudeLegend />}
+
+            {/* Procedure inspector — legs + constraints for a clicked
+                SID/STAR track. */}
+            {procView && (
+              <div className="proc-panel">
+                <div className="proc-panel-head">
+                  <strong>
+                    {procView.sel.type} · {procView.sel.name}
+                  </strong>
+                  <button
+                    type="button"
+                    className="proc-panel-close"
+                    onClick={() => setProcView(null)}
+                    aria-label="Close procedure panel"
+                  >
+                    ✕
+                  </button>
+                </div>
+                {procView.loading && (
+                  <p className="proc-panel-status">Loading legs…</p>
+                )}
+                {procView.error && (
+                  <p className="proc-panel-status error">{procView.error}</p>
+                )}
+                {procView.data && (
+                  <>
+                    <p className="proc-panel-sub">
+                      {procView.data.airport}
+                      {procView.data.runway ? ` · ${procView.data.runway}` : ""}
+                      {procView.data.transition
+                        ? ` · ${procView.data.transition}`
+                        : ""}
+                      {procView.data.assumptions.length > 0 && (
+                        <em> (auto-picked)</em>
+                      )}
+                    </p>
+                    <ol className="proc-leg-list">
+                      {procView.data.legs.map((lg, i) => (
+                        <li key={`${lg.seqno}-${i}`} className="proc-leg">
+                          <span className="proc-leg-term">
+                            {lg.path_terminator}
+                          </span>
+                          <span className="proc-leg-ident">
+                            {lg.ident ?? "—"}
+                          </span>
+                          <span className="proc-leg-con">
+                            {fmtAlt(lg.altitude)}
+                            {fmtSpd(lg.speed) ? ` · ${fmtSpd(lg.speed)}` : ""}
+                          </span>
+                        </li>
+                      ))}
+                    </ol>
+                  </>
+                )}
+              </div>
+            )}
           </>
         )}
       </main>

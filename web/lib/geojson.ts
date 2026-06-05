@@ -8,10 +8,43 @@
  * de-duplicate by identifier. No coordinate is invented or guessed.
  */
 
-import type { AirwayCollection, FirCollection, Waypoint } from "./types";
+import type {
+  AirwayCollection,
+  FirCollection,
+  ProcedureLineCollection,
+  Waypoint,
+} from "./types";
 
 const SOURCE_URL = "/data/airway_waypoint.geojson";
 const FIR_URL = "/data/fir.geojson";
+const SID_LINES_URL = "/data/sid/sid_line_thai.geojson";
+const STAR_LINES_URL = "/data/star/star_line.geojson";
+
+/**
+ * Fetch the drawn SID (departure) procedure tracks. Loaded lazily when the
+ * user enables the SID layer — these are the DFD `*_line` exports, just the
+ * polylines (the coded legs + constraints come from the procedures API).
+ */
+export async function fetchSidLines(): Promise<ProcedureLineCollection> {
+  const res = await fetch(SID_LINES_URL, { cache: "force-cache" });
+  if (!res.ok) {
+    throw new Error(
+      `Failed to load ${SID_LINES_URL}: ${res.status} ${res.statusText}`,
+    );
+  }
+  return (await res.json()) as ProcedureLineCollection;
+}
+
+/** Fetch the drawn STAR (arrival) procedure tracks. Loaded lazily. */
+export async function fetchStarLines(): Promise<ProcedureLineCollection> {
+  const res = await fetch(STAR_LINES_URL, { cache: "force-cache" });
+  if (!res.ok) {
+    throw new Error(
+      `Failed to load ${STAR_LINES_URL}: ${res.status} ${res.statusText}`,
+    );
+  }
+  return (await res.json()) as ProcedureLineCollection;
+}
 
 /**
  * Fetch worldwide FIR boundaries. This file is large (~15 MB), so callers
