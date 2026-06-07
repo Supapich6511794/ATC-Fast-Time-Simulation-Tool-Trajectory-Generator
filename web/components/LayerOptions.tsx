@@ -12,6 +12,7 @@
 import { memo, useMemo, useState } from "react";
 
 import type { PanelAirport } from "@/lib/atcLayers";
+import type { ProcedureDto } from "@/lib/api";
 
 /** Visibility + style state for one procedure layer (SID or STAR). */
 export interface ProcLayerState {
@@ -51,6 +52,14 @@ export interface ProcLayerWiring {
   onChange: (s: ProcLayerState) => void;
   airportOpts: string[];
   procOpts: string[];
+  /** Cascading lookup index: airport → procedure → [transitions]. */
+  index: Record<string, Record<string, string[]>>;
+  /** Resolve one procedure's legs + constraints via the API. */
+  lookup: (
+    airport: string,
+    name: string,
+    transition: string | null,
+  ) => Promise<ProcedureDto>;
 }
 
 interface Props {
@@ -67,6 +76,8 @@ interface Props {
   // Gates
   gatesOn: boolean;
   onGatesOn: (on: boolean) => void;
+  /** Highlight a looked-up procedure on the map (null clears it). */
+  onProcHighlight: (data: ProcedureDto | null) => void;
   // Procedure layers
   sid: ProcLayerWiring;
   star: ProcLayerWiring;
@@ -86,6 +97,7 @@ function LayerOptions({
   onShowRunways,
   gatesOn,
   onGatesOn,
+  onProcHighlight,
   sid,
   star,
   pbn,
@@ -156,6 +168,9 @@ function LayerOptions({
             onChange={PROC[tab].onChange}
             airportOpts={PROC[tab].airportOpts}
             procOpts={PROC[tab].procOpts}
+            index={PROC[tab].index}
+            lookup={PROC[tab].lookup}
+            onHighlight={onProcHighlight}
           />
         )}
       </div>
@@ -246,12 +261,22 @@ function ProcTab({
   onChange,
   airportOpts,
   procOpts,
+  index,
+  lookup,
+  onHighlight,
 }: {
   kind: "SID" | "STAR" | "PBN" | "ILS";
   state: ProcLayerState;
   onChange: (s: ProcLayerState) => void;
   airportOpts: string[];
   procOpts: string[];
+  index: Record<string, Record<string, string[]>>;
+  lookup: (
+    airport: string,
+    name: string,
+    transition: string | null,
+  ) => Promise<ProcedureDto>;
+  onHighlight: (data: ProcedureDto | null) => void;
 }) {
   const set = (patch: Partial<ProcLayerState>) =>
     onChange({ ...state, ...patch });
@@ -306,7 +331,174 @@ function ProcTab({
         suffix="PX"
         onChange={(v) => set({ thickness: v })}
       />
+
+      <ProcLookup
+        kind={kind}
+        index={index}
+        lookup={lookup}
+        onHighlight={onHighlight}
+      />
     </>
+  );
+}
+
+/* --- Direct procedure lookup form (airport → procedure → transition) ------ */
+
+const fmtAlt = (c: ProcedureDto["legs"][number]["altitude"]): string => {
+  const a1 = c.alt1_ft ?? null;
+  const a2 = c.alt2_ft ?? null;
+  switch (c.type) {
+    case "AT":
+      return a1 != null ? `${a1}ft` : "";
+    case "AT_OR_ABOVE":
+      return a1 != null ? `≥${a1}ft` : "";
+    case "AT_OR_BELOW":
+      return a1 != null ? `≤${a1}ft` : "";
+    case "BETWEEN":
+      return `${a2 ?? "?"}–${a1 ?? "?"}ft`;
+    default:
+      return "";
+  }
+};
+const fmtSpd = (c: ProcedureDto["legs"][number]["speed"]): string => {
+  const s = c.speed_kt ?? null;
+  if (s == null) return "";
+  if (c.type === "AT_OR_ABOVE") return `≥${s}kt`;
+  if (c.type === "AT") return `${s}kt`;
+  return `≤${s}kt`;
+};
+
+function ProcLookup({
+  kind,
+  index,
+  lookup,
+  onHighlight,
+}: {
+  kind: string;
+  index: Record<string, Record<string, string[]>>;
+  lookup: (
+    airport: string,
+    name: string,
+    transition: string | null,
+  ) => Promise<ProcedureDto>;
+  onHighlight: (data: ProcedureDto | null) => void;
+}) {
+  const [airport, setAirport] = useState("");
+  const [proc, setProc] = useState("");
+  const [trans, setTrans] = useState("");
+  const [res, setRes] = useState<{
+    loading?: boolean;
+    data?: ProcedureDto;
+    error?: string;
+  } | null>(null);
+
+  const airports = useMemo(() => Object.keys(index).sort(), [index]);
+  const procs = useMemo(
+    () => (airport && index[airport] ? Object.keys(index[airport]).sort() : []),
+    [index, airport],
+  );
+  const transitions = useMemo(
+    () => (airport && proc ? index[airport]?.[proc] ?? [] : []),
+    [index, airport, proc],
+  );
+
+  const run = () => {
+    if (!airport || !proc) return;
+    setRes({ loading: true });
+    lookup(airport, proc, trans || null)
+      .then((data) => {
+        setRes({ data });
+        onHighlight(data); // light up the path on the map
+      })
+      .catch((e: unknown) =>
+        setRes({ error: e instanceof Error ? e.message : "Lookup failed" }),
+      );
+  };
+
+  return (
+    <div className="lo-lookup">
+      <p className="lo-label">LOOK UP A {kind}</p>
+      <select
+        className="lo-lk-select"
+        value={airport}
+        onChange={(e) => {
+          setAirport(e.target.value);
+          setProc("");
+          setTrans("");
+          setRes(null);
+          onHighlight(null);
+        }}
+      >
+        <option value="">Airport…</option>
+        {airports.map((a) => (
+          <option key={a} value={a}>
+            {a}
+          </option>
+        ))}
+      </select>
+      <select
+        className="lo-lk-select"
+        value={proc}
+        disabled={!airport}
+        onChange={(e) => {
+          setProc(e.target.value);
+          setTrans("");
+          setRes(null);
+        }}
+      >
+        <option value="">Procedure…</option>
+        {procs.map((p) => (
+          <option key={p} value={p}>
+            {p}
+          </option>
+        ))}
+      </select>
+      <select
+        className="lo-lk-select"
+        value={trans}
+        disabled={!proc}
+        onChange={(e) => setTrans(e.target.value)}
+      >
+        <option value="">All transitions (auto)</option>
+        {transitions.map((t) => (
+          <option key={t} value={t}>
+            {t}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        className="lo-lk-btn"
+        disabled={!airport || !proc}
+        onClick={run}
+      >
+        Show legs
+      </button>
+
+      {res?.loading && <p className="lo-empty">Loading legs…</p>}
+      {res?.error && <p className="lo-empty">{res.error}</p>}
+      {res?.data && (
+        <>
+          <p className="lo-lk-sub">
+            {res.data.airport}
+            {res.data.runway ? ` · ${res.data.runway}` : ""}
+            {res.data.transition ? ` · ${res.data.transition}` : ""}
+          </p>
+          <ol className="lo-lk-legs">
+            {res.data.legs.map((lg, i) => (
+              <li key={`${lg.seqno}-${i}`}>
+                <span className="lo-lk-term">{lg.path_terminator}</span>
+                <span className="lo-lk-ident">{lg.ident ?? "—"}</span>
+                <span className="lo-lk-con">
+                  {fmtAlt(lg.altitude)}
+                  {fmtSpd(lg.speed) ? ` · ${fmtSpd(lg.speed)}` : ""}
+                </span>
+              </li>
+            ))}
+          </ol>
+        </>
+      )}
+    </div>
   );
 }
 

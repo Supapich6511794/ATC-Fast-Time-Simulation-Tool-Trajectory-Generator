@@ -43,6 +43,7 @@ import type {
 import type { AirportOption } from "@/lib/aip";
 import type { GateCollection, RunwayPoint } from "@/lib/atcLayers";
 import type { ProcLayerState } from "@/components/LayerOptions";
+import type { ProcedureDto } from "@/lib/api";
 
 interface Props {
   basemap: Basemap;
@@ -74,6 +75,9 @@ interface Props {
   /** Gate points (shown when non-null) and runway threshold points. */
   gates?: GateCollection | null;
   runways?: RunwayPoint[] | null;
+  /** A procedure resolved via the lookup form / map click — drawn as a
+   *  bright highlighted path with labelled fixes. */
+  highlightProc?: ProcedureDto | null;
   /** Fired when a SID/STAR track is clicked — the parent fetches that
    *  procedure's coded legs + constraints from the procedures API. */
   onProcedureClick?: (sel: ProcedureSelection) => void;
@@ -536,6 +540,7 @@ export default function LeafletMap({
   hiddenAirports,
   gates,
   runways,
+  highlightProc,
   trajectories,
   hiddenKeys,
   previewRoutes,
@@ -660,6 +665,66 @@ export default function LeafletMap({
       })
       .filter(Boolean);
   }, [gates]);
+
+  // Highlighted procedure (from the lookup form / map click): a bright
+  // yellow glow path through its fixes, with permanent ident labels.
+  const highlightLayer = useMemo(() => {
+    const wps = highlightProc?.waypoints ?? [];
+    if (wps.length < 1) return null;
+    const line: L.LatLngExpression[] = wps.map((w) => [w.lat, w.lon]);
+    return (
+      <Fragment key={`hl-${highlightProc?.name}`}>
+        {line.length >= 2 && (
+          <>
+            <Polyline
+              positions={line}
+              interactive={false}
+              pathOptions={{
+                color: "#fde047",
+                weight: 9,
+                opacity: 0.3,
+                lineCap: "round",
+                lineJoin: "round",
+              }}
+            />
+            <Polyline
+              positions={line}
+              interactive={false}
+              pathOptions={{
+                color: "#fde047",
+                weight: 3,
+                opacity: 0.95,
+                lineCap: "round",
+                lineJoin: "round",
+              }}
+            />
+          </>
+        )}
+        {wps.map((w, i) => (
+          <CircleMarker
+            key={`hl-${w.ident}-${i}`}
+            center={[w.lat, w.lon]}
+            radius={4}
+            pathOptions={{
+              color: "#0f172a",
+              weight: 1.5,
+              fillColor: "#fde047",
+              fillOpacity: 1,
+            }}
+          >
+            <Tooltip
+              permanent
+              direction="top"
+              offset={[0, -4]}
+              className="hl-tip"
+            >
+              {w.ident}
+            </Tooltip>
+          </CircleMarker>
+        ))}
+      </Fragment>
+    );
+  }, [highlightProc]);
 
   // Runway threshold points (white squares).
   const runwayLayer = useMemo(() => {
@@ -990,6 +1055,7 @@ export default function LeafletMap({
       {waypointLayer}
       {previewLayer}
       {trajectoryLayer}
+      {highlightLayer}
 
       {trajectories.map((t, ti) => {
         // Only the route currently bound to the playback engine gets an

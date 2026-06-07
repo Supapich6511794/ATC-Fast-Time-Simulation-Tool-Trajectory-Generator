@@ -328,8 +328,12 @@ export default function MapApp() {
     data?: ProcedureDto;
     error?: string;
   } | null>(null);
+  // The procedure currently highlighted on the map (from a map click or the
+  // lookup form). null = nothing highlighted.
+  const [highlightProc, setHighlightProc] = useState<ProcedureDto | null>(null);
   const handleProcedureClick = useCallback((sel: ProcedureSelection) => {
     setProcView({ sel, loading: true });
+    setHighlightProc(null);
     // The clicked line's transition_identifier is either a runway (RW…) or
     // an enroute transition fix; route it to the right query param and let
     // the API auto-resolve the other axis.
@@ -340,7 +344,10 @@ export default function MapApp() {
       runway: isRunway ? sel.transition ?? undefined : undefined,
       transition: isRunway ? undefined : sel.transition ?? undefined,
     })
-      .then((data) => setProcView({ sel, data }))
+      .then((data) => {
+        setProcView({ sel, data });
+        setHighlightProc(data); // light up the clicked procedure's path
+      })
       .catch((e: unknown) =>
         setProcView({
           sel,
@@ -603,6 +610,48 @@ export default function MapApp() {
   const ilsOpts = useMemo(
     () => procOpts(ilsLines, ils.airports),
     [ilsLines, ils.airports],
+  );
+
+  // Cascading index for the direct lookup form: airport -> procedure ->
+  // [transitions]. Built from the line collection.
+  const buildIndex = (lines: ProcedureLineCollection | null) => {
+    const idx: Record<string, Record<string, string[]>> = {};
+    for (const f of lines?.features ?? []) {
+      const a = f.properties.airport_identifier;
+      const p = f.properties.procedure_identifier;
+      const t = f.properties.transition_identifier ?? "";
+      if (!a || !p) continue;
+      (idx[a] ??= {});
+      (idx[a][p] ??= []);
+      if (t && !idx[a][p].includes(t)) idx[a][p].push(t);
+    }
+    for (const a of Object.keys(idx))
+      for (const p of Object.keys(idx[a])) idx[a][p].sort();
+    return idx;
+  };
+  const sidIndex = useMemo(() => buildIndex(sidLines), [sidLines]);
+  const starIndex = useMemo(() => buildIndex(starLines), [starLines]);
+  const pbnIndex = useMemo(() => buildIndex(pbnLines), [pbnLines]);
+  const ilsIndex = useMemo(() => buildIndex(ilsLines), [ilsLines]);
+
+  // Direct procedure lookup (form-driven): map the chosen transition to the
+  // right query param and resolve via the procedures API.
+  const lookupProcedure = useCallback(
+    (
+      type: "SID" | "STAR" | "PBN" | "ILS",
+      airport: string,
+      name: string,
+      transition: string | null,
+    ) => {
+      const t = (transition ?? "").toUpperCase();
+      const isRunway = t.startsWith("RW");
+      return fetchProcedure(airport, name, {
+        type,
+        runway: isRunway ? transition ?? undefined : undefined,
+        transition: isRunway ? undefined : transition ?? undefined,
+      });
+    },
+    [],
   );
 
   // Airport list handlers for the panel.
@@ -1001,29 +1050,38 @@ export default function MapApp() {
               onShowRunways={setShowRunways}
               gatesOn={gatesOn}
               onGatesOn={setGatesOn}
+              onProcHighlight={setHighlightProc}
               sid={{
                 state: sid,
                 onChange: setSid,
                 airportOpts: sidOpts.airports,
                 procOpts: sidOpts.procedures,
+                index: sidIndex,
+                lookup: (a, n, t) => lookupProcedure("SID", a, n, t),
               }}
               star={{
                 state: star,
                 onChange: setStar,
                 airportOpts: starOpts.airports,
                 procOpts: starOpts.procedures,
+                index: starIndex,
+                lookup: (a, n, t) => lookupProcedure("STAR", a, n, t),
               }}
               pbn={{
                 state: pbn,
                 onChange: setPbn,
                 airportOpts: pbnOpts.airports,
                 procOpts: pbnOpts.procedures,
+                index: pbnIndex,
+                lookup: (a, n, t) => lookupProcedure("PBN", a, n, t),
               }}
               ils={{
                 state: ils,
                 onChange: setIls,
                 airportOpts: ilsOpts.airports,
                 procOpts: ilsOpts.procedures,
+                index: ilsIndex,
+                lookup: (a, n, t) => lookupProcedure("ILS", a, n, t),
               }}
             />
             <LeafletMap
@@ -1047,6 +1105,7 @@ export default function MapApp() {
               hiddenAirports={hiddenAirports}
               gates={gatesOn ? gates : null}
               runways={showRunways ? runways : null}
+              highlightProc={highlightProc}
               onProcedureClick={handleProcedureClick}
               trajectories={trajectories}
               hiddenKeys={hiddenKeys}
@@ -1133,7 +1192,10 @@ export default function MapApp() {
                   <button
                     type="button"
                     className="proc-panel-close"
-                    onClick={() => setProcView(null)}
+                    onClick={() => {
+                      setProcView(null);
+                      setHighlightProc(null);
+                    }}
                     aria-label="Close procedure panel"
                   >
                     ✕
