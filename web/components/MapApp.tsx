@@ -35,10 +35,28 @@ import {
   fetchAirways,
   fetchFir,
   fetchSidLines,
+  fetchSidWaypoints,
   fetchStarLines,
+  fetchStarWaypoints,
 } from "@/lib/geojson";
 import { fetchProcedure, type ProcedureDto } from "@/lib/api";
+import {
+  fetchGates,
+  fetchIlsLines,
+  fetchIlsWaypoints,
+  fetchPanelAirports,
+  fetchPbnLines,
+  fetchPbnWaypoints,
+  fetchRunways,
+  type GateCollection,
+  type PanelAirport,
+  type RunwayPoint,
+} from "@/lib/atcLayers";
 import type { ProcedureSelection } from "@/components/LeafletMap";
+import LayerOptions, {
+  DEFAULT_PROC_LAYER,
+  type ProcLayerState,
+} from "@/components/LayerOptions";
 import { fetchCsvRouteIdents } from "@/lib/routeCsv";
 import type { Basemap, Theme } from "@/lib/mapPrefs";
 import type { PreviewPoint } from "@/lib/routePreview";
@@ -47,6 +65,7 @@ import type {
   AirwayCollection,
   FirCollection,
   ProcedureLineCollection,
+  ProcedureWaypointCollection,
   Waypoint,
 } from "@/lib/types";
 import { useSimPlayback } from "@/lib/useSimPlayback";
@@ -266,9 +285,41 @@ export default function MapApp() {
   const [fir, setFir] = useState<FirCollection | null>(null);
   const [firLoading, setFirLoading] = useState(false);
 
-  // SID/STAR procedure line layers (lazy — fetched on first enable).
-  const [sidOn, setSidOn] = useState(false);
-  const [starOn, setStarOn] = useState(false);
+  // Airports + runways layers (the Layer Options "Airports" tab). Airport
+  // markers are controlled per-airport by the list (no master toggle).
+  const [airportList, setAirportList] = useState<PanelAirport[]>([]);
+  const [hiddenAirports, setHiddenAirports] = useState<Set<string>>(new Set());
+  const [showRunways, setShowRunways] = useState(false);
+  const [runways, setRunways] = useState<RunwayPoint[]>([]);
+
+  // Gates layer.
+  const [gatesOn, setGatesOn] = useState(false);
+  const [gates, setGates] = useState<GateCollection | null>(null);
+
+  // Procedure-style layers (SID/STAR/PBN/ILS) — rich state from the panel.
+  const [layersOpen, setLayersOpen] = useState(false);
+  const [sid, setSid] = useState<ProcLayerState>(DEFAULT_PROC_LAYER);
+  const [star, setStar] = useState<ProcLayerState>(DEFAULT_PROC_LAYER);
+  const [pbn, setPbn] = useState<ProcLayerState>(DEFAULT_PROC_LAYER);
+  const [ils, setIls] = useState<ProcLayerState>(DEFAULT_PROC_LAYER);
+  const [sidWpts, setSidWpts] = useState<ProcedureWaypointCollection | null>(
+    null,
+  );
+  const [starWpts, setStarWpts] = useState<ProcedureWaypointCollection | null>(
+    null,
+  );
+  const [pbnLines, setPbnLines] = useState<ProcedureLineCollection | null>(
+    null,
+  );
+  const [pbnWpts, setPbnWpts] = useState<ProcedureWaypointCollection | null>(
+    null,
+  );
+  const [ilsLines, setIlsLines] = useState<ProcedureLineCollection | null>(
+    null,
+  );
+  const [ilsWpts, setIlsWpts] = useState<ProcedureWaypointCollection | null>(
+    null,
+  );
   // Procedure inspector: legs + constraints fetched when a SID/STAR line is
   // clicked. null = closed.
   const [procView, setProcView] = useState<{
@@ -406,23 +457,168 @@ export default function MapApp() {
       .finally(() => setFirLoading(false));
   }, [firOn, fir, firLoading]);
 
-  // Fetch the SID/STAR procedure lines once, the first time each is enabled.
+  // Airport list for the Layer Options "Airports" tab + map markers.
   useEffect(() => {
-    if (!sidOn || sidLines) return;
+    let cancelled = false;
+    fetchPanelAirports()
+      .then((xs) => !cancelled && setAirportList(xs))
+      .catch(() => {
+        /* airports simply unavailable if the CSV can't be read */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Runways (threshold points) — fetched the first time they're shown.
+  useEffect(() => {
+    if (!showRunways || runways.length > 0) return;
+    fetchRunways()
+      .then(setRunways)
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : "Failed to load runways"),
+      );
+  }, [showRunways, runways.length]);
+
+  // Gates — fetched the first time the layer is enabled.
+  useEffect(() => {
+    if (!gatesOn || gates) return;
+    fetchGates()
+      .then(setGates)
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : "Failed to load gates"),
+      );
+  }, [gatesOn, gates]);
+
+  // PBN / ILS line data — like SID/STAR, fetched when the panel opens or a
+  // routes layer is enabled (so the filter dropdowns can populate).
+  const pbnNeedLines = layersOpen || pbn.routes;
+  const ilsNeedLines = layersOpen || ils.routes;
+  useEffect(() => {
+    if (!pbnNeedLines || pbnLines) return;
+    fetchPbnLines()
+      .then(setPbnLines)
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : "Failed to load PBN lines"),
+      );
+  }, [pbnNeedLines, pbnLines]);
+  useEffect(() => {
+    if (!ilsNeedLines || ilsLines) return;
+    fetchIlsLines()
+      .then(setIlsLines)
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : "Failed to load ILS lines"),
+      );
+  }, [ilsNeedLines, ilsLines]);
+  useEffect(() => {
+    if (!pbn.waypoints || pbnWpts) return;
+    fetchPbnWaypoints()
+      .then(setPbnWpts)
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : "Failed to load PBN fixes"),
+      );
+  }, [pbn.waypoints, pbnWpts]);
+  useEffect(() => {
+    if (!ils.waypoints || ilsWpts) return;
+    fetchIlsWaypoints()
+      .then(setIlsWpts)
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : "Failed to load ILS fixes"),
+      );
+  }, [ils.waypoints, ilsWpts]);
+
+  // SID/STAR line data — fetched once the Layer Options panel is opened
+  // (so the filter dropdowns can populate) or a routes layer is enabled.
+  const sidNeedLines = layersOpen || sid.routes;
+  const starNeedLines = layersOpen || star.routes;
+  useEffect(() => {
+    if (!sidNeedLines || sidLines) return;
     fetchSidLines()
       .then(setSidLines)
       .catch((e: unknown) =>
         setError(e instanceof Error ? e.message : "Failed to load SID lines"),
       );
-  }, [sidOn, sidLines]);
+  }, [sidNeedLines, sidLines]);
   useEffect(() => {
-    if (!starOn || starLines) return;
+    if (!starNeedLines || starLines) return;
     fetchStarLines()
       .then(setStarLines)
       .catch((e: unknown) =>
         setError(e instanceof Error ? e.message : "Failed to load STAR lines"),
       );
-  }, [starOn, starLines]);
+  }, [starNeedLines, starLines]);
+
+  // SID/STAR waypoint data — fetched the first time Waypoints is enabled.
+  useEffect(() => {
+    if (!sid.waypoints || sidWpts) return;
+    fetchSidWaypoints()
+      .then(setSidWpts)
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : "Failed to load SID fixes"),
+      );
+  }, [sid.waypoints, sidWpts]);
+  useEffect(() => {
+    if (!star.waypoints || starWpts) return;
+    fetchStarWaypoints()
+      .then(setStarWpts)
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : "Failed to load STAR fixes"),
+      );
+  }, [star.waypoints, starWpts]);
+
+  // Distinct airport / procedure options for the SID/STAR filter dropdowns.
+  // PROCEDURE options cascade from the AIRPORT selection.
+  const procOpts = (
+    lines: ProcedureLineCollection | null,
+    airportFilter: Set<string>,
+  ) => {
+    const airports = new Set<string>();
+    const procs = new Set<string>();
+    for (const f of lines?.features ?? []) {
+      const a = f.properties.airport_identifier;
+      if (a) airports.add(a);
+      if (airportFilter.size === 0 || airportFilter.has(a)) {
+        if (f.properties.procedure_identifier) {
+          procs.add(f.properties.procedure_identifier);
+        }
+      }
+    }
+    return {
+      airports: [...airports].sort(),
+      procedures: [...procs].sort(),
+    };
+  };
+  const sidOpts = useMemo(
+    () => procOpts(sidLines, sid.airports),
+    [sidLines, sid.airports],
+  );
+  const starOpts = useMemo(
+    () => procOpts(starLines, star.airports),
+    [starLines, star.airports],
+  );
+  const pbnOpts = useMemo(
+    () => procOpts(pbnLines, pbn.airports),
+    [pbnLines, pbn.airports],
+  );
+  const ilsOpts = useMemo(
+    () => procOpts(ilsLines, ils.airports),
+    [ilsLines, ils.airports],
+  );
+
+  // Airport list handlers for the panel.
+  const toggleAirport = useCallback((code: string) => {
+    setHiddenAirports((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
+      return next;
+    });
+  }, []);
+  const showAllAirports = useCallback(() => setHiddenAirports(new Set()), []);
+  const hideAllAirports = useCallback(
+    () => setHiddenAirports(new Set(airportList.map((a) => a.code))),
+    [airportList],
+  );
 
   const waypoints: Waypoint[] = useMemo(
     () => (airways ? deriveWaypoints(airways) : []),
@@ -788,21 +984,69 @@ export default function MapApp() {
               firOn={firOn}
               onFir={setFirOn}
               firLoading={firLoading}
-              sidOn={sidOn}
-              onSid={setSidOn}
-              starOn={starOn}
-              onStar={setStarOn}
+              onOpenLayers={() => setLayersOpen(true)}
               onToggleSidebar={toggleSidebar}
               onZoomIn={handleZoomIn}
               onZoomOut={handleZoomOut}
+            />
+            <LayerOptions
+              open={layersOpen}
+              onClose={() => setLayersOpen(false)}
+              airportList={airportList}
+              hiddenAirports={hiddenAirports}
+              onToggleAirport={toggleAirport}
+              onShowAllAirports={showAllAirports}
+              onHideAllAirports={hideAllAirports}
+              showRunways={showRunways}
+              onShowRunways={setShowRunways}
+              gatesOn={gatesOn}
+              onGatesOn={setGatesOn}
+              sid={{
+                state: sid,
+                onChange: setSid,
+                airportOpts: sidOpts.airports,
+                procOpts: sidOpts.procedures,
+              }}
+              star={{
+                state: star,
+                onChange: setStar,
+                airportOpts: starOpts.airports,
+                procOpts: starOpts.procedures,
+              }}
+              pbn={{
+                state: pbn,
+                onChange: setPbn,
+                airportOpts: pbnOpts.airports,
+                procOpts: pbnOpts.procedures,
+              }}
+              ils={{
+                state: ils,
+                onChange: setIls,
+                airportOpts: ilsOpts.airports,
+                procOpts: ilsOpts.procedures,
+              }}
             />
             <LeafletMap
               basemap={basemap}
               airways={showAirways ? airways : null}
               waypoints={showWaypoints ? waypoints : null}
               fir={firOn ? fir : null}
-              sidLines={sidOn ? sidLines : null}
-              starLines={starOn ? starLines : null}
+              sidLines={sidLines}
+              starLines={starLines}
+              sidWpts={sidWpts}
+              starWpts={starWpts}
+              pbnLines={pbnLines}
+              pbnWpts={pbnWpts}
+              ilsLines={ilsLines}
+              ilsWpts={ilsWpts}
+              sid={sid}
+              star={star}
+              pbn={pbn}
+              ils={ils}
+              airports={airportList}
+              hiddenAirports={hiddenAirports}
+              gates={gatesOn ? gates : null}
+              runways={showRunways ? runways : null}
               onProcedureClick={handleProcedureClick}
               trajectories={trajectories}
               hiddenKeys={hiddenKeys}

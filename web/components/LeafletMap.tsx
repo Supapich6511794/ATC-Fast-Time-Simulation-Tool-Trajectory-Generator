@@ -37,8 +37,12 @@ import type {
   AirwayCollection,
   FirCollection,
   ProcedureLineCollection,
+  ProcedureWaypointCollection,
   Waypoint,
 } from "@/lib/types";
+import type { AirportOption } from "@/lib/aip";
+import type { GateCollection, RunwayPoint } from "@/lib/atcLayers";
+import type { ProcLayerState } from "@/components/LayerOptions";
 
 interface Props {
   basemap: Basemap;
@@ -46,10 +50,30 @@ interface Props {
   /** Reference waypoint layer (all fixes), or null to hide. */
   waypoints: Waypoint[] | null;
   fir: FirCollection | null;
-  /** Drawn SID (departure) procedure tracks, or null to hide. */
+  /** SID/STAR procedure tracks + fixes (full collections; visibility,
+   *  filtering and styling are driven by `sid`/`star`). */
   sidLines?: ProcedureLineCollection | null;
-  /** Drawn STAR (arrival) procedure tracks, or null to hide. */
   starLines?: ProcedureLineCollection | null;
+  sidWpts?: ProcedureWaypointCollection | null;
+  starWpts?: ProcedureWaypointCollection | null;
+  pbnLines?: ProcedureLineCollection | null;
+  pbnWpts?: ProcedureWaypointCollection | null;
+  ilsLines?: ProcedureLineCollection | null;
+  ilsWpts?: ProcedureWaypointCollection | null;
+  /** Layer Options state per procedure layer (routes/waypoints on,
+   *  airport+procedure filters, opacity, line thickness). */
+  sid?: ProcLayerState;
+  star?: ProcLayerState;
+  pbn?: ProcLayerState;
+  ils?: ProcLayerState;
+  /** Aerodromes for the Airports layer — every one not in `hiddenAirports`
+   *  is drawn as a pin. */
+  airports?: AirportOption[];
+  /** Airport ICAOs hidden from the map (unchecked in the panel). */
+  hiddenAirports?: Set<string>;
+  /** Gate points (shown when non-null) and runway threshold points. */
+  gates?: GateCollection | null;
+  runways?: RunwayPoint[] | null;
   /** Fired when a SID/STAR track is clicked — the parent fetches that
    *  procedure's coded legs + constraints from the procedures API. */
   onProcedureClick?: (sel: ProcedureSelection) => void;
@@ -124,23 +148,30 @@ const PREVIEW_COLORS = [
 const DEFAULT_CENTER: L.LatLngExpression = [11.0, 99.5];
 const DEFAULT_ZOOM = 6;
 
-/** SID = green (climbing out), STAR = magenta (arriving). */
+/** Per-layer colours: SID green, STAR magenta, PBN amber, ILS red. */
 const SID_COLOR = "#34d399";
 const STAR_COLOR = "#f472b6";
+const PBN_COLOR = "#fbbf24";
+const ILS_COLOR = "#ef4444";
+const GATE_COLOR = "#fb923c";
+const RUNWAY_COLOR = "#e5e7eb";
 
-/** A SID/STAR track the user clicked, for the parent to resolve via the API. */
+/** Procedure-style layer kinds (share line/waypoint schema + rendering). */
+type ProcKind = "SID" | "STAR" | "PBN" | "ILS";
+
+/** A track the user clicked, for the parent to resolve via the API. */
 export interface ProcedureSelection {
   airport: string;
   name: string;
   transition: string | null;
-  type: "SID" | "STAR";
+  type: ProcKind;
 }
 
-/** Tooltip/popup + click wiring for one SID/STAR procedure line feature. */
+/** Tooltip/popup + click wiring for one procedure line feature. */
 function bindProcedureFeature(
   feature: GeoJSON.Feature,
   layer: L.Layer,
-  type: "SID" | "STAR",
+  type: ProcKind,
   onClick?: (sel: ProcedureSelection) => void,
 ): void {
   const p = (feature.properties ?? {}) as {
@@ -166,6 +197,110 @@ function bindProcedureFeature(
       }),
     );
   }
+}
+
+/** True if a feature's airport/procedure pass the Layer Options filters. */
+function passesProcFilter(
+  props: { airport_identifier?: string; procedure_identifier?: string },
+  state: ProcLayerState,
+): boolean {
+  if (
+    state.airports.size > 0 &&
+    !state.airports.has(props.airport_identifier ?? "")
+  ) {
+    return false;
+  }
+  if (
+    state.procedures.size > 0 &&
+    !state.procedures.has(props.procedure_identifier ?? "")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/** A filtered + styled SID/STAR <GeoJSON> line layer, or null when off. */
+function buildProcedureLayer(
+  lines: ProcedureLineCollection | null | undefined,
+  state: ProcLayerState | undefined,
+  type: ProcKind,
+  color: string,
+  onClick?: (sel: ProcedureSelection) => void,
+): ReactNode {
+  if (!lines || !state?.routes) return null;
+  const features = lines.features.filter((f) =>
+    passesProcFilter(f.properties, state),
+  );
+  // react-leaflet's GeoJSON is keyed by data identity — fold the filter +
+  // style into the key so it rebuilds when the user changes them.
+  const apSig = [...state.airports].sort().join(",");
+  const prSig = [...state.procedures].sort().join(",");
+  const key = `${type}-${features.length}-${state.opacity}-${state.thickness}-${apSig}-${prSig}`;
+  return (
+    <GeoJSON
+      key={key}
+      data={{ type: "FeatureCollection", features } as GeoJSON.FeatureCollection}
+      style={() => ({
+        color,
+        weight: state.thickness,
+        opacity: state.opacity,
+      })}
+      onEachFeature={(f, layer) =>
+        bindProcedureFeature(f, layer, type, onClick)
+      }
+    />
+  );
+}
+
+/** Filtered SID/STAR fix dots (deduped by ident), or null when off. */
+function buildWaypointLayer(
+  wpts: ProcedureWaypointCollection | null | undefined,
+  state: ProcLayerState | undefined,
+  color: string,
+): ReactNode {
+  if (!wpts || !state?.waypoints) return null;
+  const seen = new Map<string, { lat: number; lon: number }>();
+  for (const f of wpts.features) {
+    const p = f.properties;
+    if (!passesProcFilter(p, state)) continue;
+    const ident = p.waypoint_identifier ?? null;
+    const lat = p.waypoint_latitude ?? null;
+    const lon = p.waypoint_longitude ?? null;
+    if (!ident || lat == null || lon == null) continue;
+    if (!seen.has(ident)) seen.set(ident, { lat, lon });
+  }
+  return [...seen.entries()].map(([ident, { lat, lon }]) => (
+    <CircleMarker
+      key={`pwp-${ident}`}
+      center={[lat, lon]}
+      radius={2.5}
+      pathOptions={{
+        color,
+        weight: 1,
+        fillColor: color,
+        fillOpacity: 0.6,
+        opacity: state.opacity,
+      }}
+    >
+      <Tooltip direction="top" offset={[0, -4]}>
+        {ident}
+      </Tooltip>
+    </CircleMarker>
+  ));
+}
+
+/** Blue map-pin airport icon (airplane glyph) with a hover pulse glow. */
+function airportIcon(): L.DivIcon {
+  return L.divIcon({
+    className: "airport-icon",
+    iconSize: [30, 38],
+    iconAnchor: [15, 36], // tip of the pin sits on the coordinate
+    html: `<span class="airport-pulse"></span><span class="airport-pin">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="#fff">
+        <path d="M12 2 L14 10 L22 14 L22 16 L14 13 L13 20 L16 22 L16 23
+                 L12 22 L8 23 L8 22 L11 20 L10 13 L2 16 L2 14 L10 10 Z"/>
+      </svg></span>`,
+  });
 }
 
 /** Fit to the generated routes if any, otherwise the airway network. */
@@ -387,6 +522,20 @@ export default function LeafletMap({
   fir,
   sidLines,
   starLines,
+  sidWpts,
+  starWpts,
+  pbnLines,
+  pbnWpts,
+  ilsLines,
+  ilsWpts,
+  sid,
+  star,
+  pbn,
+  ils,
+  airports,
+  hiddenAirports,
+  gates,
+  runways,
   trajectories,
   hiddenKeys,
   previewRoutes,
@@ -438,38 +587,125 @@ export default function LeafletMap({
     [airways],
   );
 
-  // SID/STAR procedure tracks. Each feature is one procedure (per runway /
-  // transition); hovering shows its name, clicking bubbles a selection up so
-  // the parent can fetch its coded legs + constraints from the API.
+  // SID/STAR procedure tracks. Filtered by the Layer Options airport +
+  // procedure selections and styled by its opacity / line-thickness sliders.
+  // Hover shows the name; clicking bubbles a selection up so the parent can
+  // fetch the coded legs + constraints from the API. The data key includes
+  // the filter/style so react-leaflet rebuilds the layer when they change.
   const sidLayer = useMemo(
-    () =>
-      sidLines && (
-        <GeoJSON
-          key={`sid-${sidLines.features.length}`}
-          data={sidLines}
-          style={() => ({ color: SID_COLOR, weight: 2, opacity: 0.65 })}
-          onEachFeature={(f, layer) =>
-            bindProcedureFeature(f, layer, "SID", onProcedureClick)
-          }
-        />
-      ),
-    [sidLines, onProcedureClick],
+    () => buildProcedureLayer(sidLines, sid, "SID", SID_COLOR, onProcedureClick),
+    [sidLines, sid, onProcedureClick],
   );
-
   const starLayer = useMemo(
     () =>
-      starLines && (
-        <GeoJSON
-          key={`star-${starLines.features.length}`}
-          data={starLines}
-          style={() => ({ color: STAR_COLOR, weight: 2, opacity: 0.65 })}
-          onEachFeature={(f, layer) =>
-            bindProcedureFeature(f, layer, "STAR", onProcedureClick)
-          }
-        />
-      ),
-    [starLines, onProcedureClick],
+      buildProcedureLayer(starLines, star, "STAR", STAR_COLOR, onProcedureClick),
+    [starLines, star, onProcedureClick],
   );
+
+  // SID/STAR fixes (the coded waypoints) as small dots with ident tooltips.
+  const sidWptLayer = useMemo(
+    () => buildWaypointLayer(sidWpts, sid, SID_COLOR),
+    [sidWpts, sid],
+  );
+  const starWptLayer = useMemo(
+    () => buildWaypointLayer(starWpts, star, STAR_COLOR),
+    [starWpts, star],
+  );
+
+  // PBN / ILS reuse the same procedure-layer machinery as SID/STAR. No
+  // click-to-fetch — the procedures API resolves SID/STAR only.
+  const pbnLayer = useMemo(
+    () => buildProcedureLayer(pbnLines, pbn, "PBN", PBN_COLOR),
+    [pbnLines, pbn],
+  );
+  const ilsLayer = useMemo(
+    () => buildProcedureLayer(ilsLines, ils, "ILS", ILS_COLOR),
+    [ilsLines, ils],
+  );
+  const pbnWptLayer = useMemo(
+    () => buildWaypointLayer(pbnWpts, pbn, PBN_COLOR),
+    [pbnWpts, pbn],
+  );
+  const ilsWptLayer = useMemo(
+    () => buildWaypointLayer(ilsWpts, ils, ILS_COLOR),
+    [ilsWpts, ils],
+  );
+
+  // Gates — small orange dots with the gate name on hover.
+  const gateLayer = useMemo(() => {
+    if (!gates) return null;
+    return gates.features
+      .map((f, i) => {
+        const p = f.properties;
+        const lat = p.gate_latitude;
+        const lon = p.gate_longitude;
+        if (lat == null || lon == null) return null;
+        return (
+          <CircleMarker
+            key={`gate-${p.airport_identifier}-${p.gate_identifier}-${i}`}
+            center={[lat, lon]}
+            radius={2}
+            pathOptions={{
+              color: GATE_COLOR,
+              weight: 1,
+              fillColor: GATE_COLOR,
+              fillOpacity: 0.8,
+            }}
+          >
+            <Tooltip direction="top" offset={[0, -3]}>
+              {p.airport_identifier} · {p.gate_identifier}
+            </Tooltip>
+          </CircleMarker>
+        );
+      })
+      .filter(Boolean);
+  }, [gates]);
+
+  // Runway threshold points (white squares).
+  const runwayLayer = useMemo(() => {
+    if (!runways) return null;
+    return runways.map((r, i) => (
+      <CircleMarker
+        key={`rwy-${r.airport}-${r.ident}-${i}`}
+        center={[r.lat, r.lon]}
+        radius={3}
+        pathOptions={{
+          color: "#0f172a",
+          weight: 1,
+          fillColor: RUNWAY_COLOR,
+          fillOpacity: 0.95,
+        }}
+      >
+        <Tooltip direction="top" offset={[0, -3]}>
+          {r.airport} · RWY {r.ident}
+        </Tooltip>
+      </CircleMarker>
+    ));
+  }, [runways]);
+
+  // Airport markers — shown per-airport from the Layer Options list
+  // (checked = visible). Hidden aerodromes are dropped.
+  const airportLayer = useMemo(() => {
+    if (!airports) return null;
+    return airports
+      .filter((a) => !hiddenAirports?.has(a.code))
+      .map((a) => (
+        <Marker
+          key={`ap-${a.code}`}
+          position={[a.lat, a.lon]}
+          icon={airportIcon()}
+        >
+          <Tooltip
+            direction="top"
+            offset={[0, -34]}
+            className="airport-tip"
+          >
+            <span className="airport-tip-name">{a.name}</span>
+            <span className="airport-tip-code">{a.code}</span>
+          </Tooltip>
+        </Marker>
+      ));
+  }, [airports, hiddenAirports]);
 
   const waypointLayer = useMemo(
     () =>
@@ -742,6 +978,15 @@ export default function LeafletMap({
       {airwayLayer}
       {sidLayer}
       {starLayer}
+      {pbnLayer}
+      {ilsLayer}
+      {sidWptLayer}
+      {starWptLayer}
+      {pbnWptLayer}
+      {ilsWptLayer}
+      {gateLayer}
+      {runwayLayer}
+      {airportLayer}
       {waypointLayer}
       {previewLayer}
       {trajectoryLayer}

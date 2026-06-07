@@ -3058,6 +3058,45 @@ body {
   gap: 8px;
 }
 
+/* On narrower viewports the centered Flight Tags + aircraft search would
+ * collide with the top-left menu and top-right layer tools, so drop it to a
+ * second row below them and shrink the search box. */
+@media (max-width: 900px) {
+  .map-topbar {
+    top: 58px;
+    flex-wrap: wrap;
+    justify-content: center;
+    max-width: calc(100vw - 16px);
+  }
+  .actype-search {
+    max-width: calc(100vw - 24px);
+  }
+  .actype-search-input {
+    width: 150px;
+    max-width: 40vw;
+  }
+}
+
+@media (max-width: 480px) {
+  /* Very small screens: full-width search row under the toolbars. */
+  .map-topbar {
+    top: 54px;
+    left: 8px;
+    right: 8px;
+    transform: none;
+    width: auto;
+  }
+  .actype-search {
+    flex: 1;
+    max-width: none;
+  }
+  .actype-search-input {
+    width: auto;
+    max-width: none;
+    flex: 1;
+  }
+}
+
 /* Aircraft-type filter search (a flex child of .map-topbar). */
 .actype-search {
   display: flex;
@@ -3295,18 +3334,320 @@ body {
   font-weight: 600;
 }
 
-/* Colour swatch next to the SID/STAR layer toggles. */
-.ov-swatch {
-  width: 14px;
-  height: 3px;
-  border-radius: 2px;
-  flex: none;
+/* "Airports · SID · STAR…" button in the Layers dropdown. */
+.ov-air-more {
+  margin-top: 4px;
+  padding: 6px 8px;
+  border: 1px solid #33415588;
+  border-radius: 8px;
+  background: #0f172a;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
 }
-.ov-swatch-sid {
-  background: #34d399;
+.ov-air-more:hover {
+  border-color: var(--accent);
 }
-.ov-swatch-star {
-  background: #f472b6;
+
+/* Blue map-pin airport icon with airplane glyph + hover pulse. */
+.airport-icon {
+  background: transparent !important;
+  border: none !important;
+}
+.airport-pin {
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #2f9bff;
+  border: 2px solid #0b3a6b;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.45);
+  transition: filter 0.15s ease;
+}
+.airport-pin svg {
+  transform: rotate(45deg); /* keep the plane upright inside the rotated pin */
+}
+/* Faint cyan glow that pulses while hovering an airport. */
+.airport-pulse {
+  position: absolute;
+  top: 14px;
+  left: 15px;
+  width: 0;
+  height: 0;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  opacity: 0;
+}
+.airport-icon:hover .airport-pin {
+  filter: brightness(1.15) drop-shadow(0 0 6px rgba(34, 211, 238, 0.9));
+}
+.airport-icon:hover .airport-pulse {
+  width: 38px;
+  height: 38px;
+  opacity: 1;
+  background: radial-gradient(
+    circle,
+    rgba(34, 211, 238, 0.45) 0%,
+    rgba(34, 211, 238, 0) 70%
+  );
+  animation: airport-pulse 1.4s ease-out infinite;
+}
+@keyframes airport-pulse {
+  0% {
+    transform: translate(-50%, -50%) scale(0.5);
+    opacity: 0.7;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1.5);
+    opacity: 0;
+  }
+}
+
+/* Dark airport tooltip: bold name + cyan ICAO (matches the reference UI). */
+.airport-tip.leaflet-tooltip {
+  background: #0b1220;
+  border: 1px solid #1e3a5f;
+  border-radius: 8px;
+  color: var(--text);
+  padding: 6px 10px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+.airport-tip.leaflet-tooltip::before {
+  border-top-color: #1e3a5f;
+}
+.airport-tip-name {
+  display: block;
+  font-weight: 700;
+  font-size: 12px;
+}
+.airport-tip-code {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #38bdf8;
+}
+
+/* ============================================================= *
+ *  Layer Options panel (tabbed: Airports / SID / STAR / …)
+ * ============================================================= */
+.lo-panel {
+  position: absolute;
+  top: 60px;
+  left: 12px;
+  z-index: 1100;
+  width: 320px;
+  max-width: calc(100vw - 24px);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid #33415588;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  color: var(--text);
+}
+.lo-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid #33415588;
+  font-size: 14px;
+}
+.lo-close {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+}
+.lo-close:hover {
+  color: var(--text);
+}
+.lo-tabs {
+  display: flex;
+  border-bottom: 1px solid #33415588;
+}
+.lo-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 2px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.lo-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.lo-tab-ico {
+  font-size: 14px;
+}
+.lo-body {
+  padding: 12px;
+  overflow-y: auto;
+}
+.lo-check {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.lo-search {
+  width: 100%;
+  margin: 8px 0;
+  padding: 7px 10px;
+  border: 1px solid #33415588;
+  border-radius: 8px;
+  background: #0f172a;
+  color: var(--text);
+  font-size: 13px;
+}
+.lo-ap-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.lo-ap-actions button {
+  flex: 1;
+  padding: 6px;
+  border: 1px solid #33415588;
+  border-radius: 8px;
+  background: #0f172a;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.lo-ap-actions button:hover {
+  border-color: var(--accent);
+}
+.lo-ap-group {
+  margin: 10px 0 4px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.lo-ap-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 4px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+.lo-ap-row:hover {
+  background: #0f172a;
+}
+.lo-ap-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lo-ap-code {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 11px;
+}
+.lo-empty {
+  padding: 8px 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.lo-field {
+  margin-top: 12px;
+}
+.lo-label {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.lo-select {
+  position: relative;
+  margin-top: 4px;
+}
+.lo-select-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border: 1px solid #33415588;
+  border-radius: 8px;
+  background: #0f172a;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.lo-caret {
+  color: var(--muted);
+}
+.lo-select-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 5;
+  max-height: 200px;
+  overflow-y: auto;
+  background: #0f172a;
+  border: 1px solid #33415588;
+  border-radius: 8px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+.lo-select-all {
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-bottom: 1px solid #1e293b;
+  background: transparent;
+  color: var(--accent);
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+}
+.lo-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+.lo-opt:hover {
+  background: var(--panel);
+}
+.lo-slider-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.lo-slider-val {
+  font-size: 11px;
+  color: var(--muted);
+}
+.lo-slider {
+  width: 100%;
+  margin-top: 6px;
+  accent-color: var(--accent);
 }
 
 /* Procedure inspector panel — legs + constraints for a clicked SID/STAR. */
@@ -3605,10 +3946,10 @@ body {
    section being filled in) independently of the Generator form. */
 .preview-fab {
   position: absolute;
-  /* Top-right, tucked just under the .ov-top toolbar row so it no longer
-     collides with the bottom-left altitude legend. */
-  right: 12px;
-  top: 64px;
+  /* Centered just above the replay/playback bar (.sim) at the bottom. */
+  left: 50%;
+  bottom: 78px;
+  transform: translateX(-50%);
   z-index: 1000;
   display: flex;
   align-items: center;

@@ -24,10 +24,8 @@ interface Props {
   firOn: boolean;
   onFir: (on: boolean) => void;
   firLoading: boolean;
-  sidOn: boolean;
-  onSid: (on: boolean) => void;
-  starOn: boolean;
-  onStar: (on: boolean) => void;
+  /** Open the tabbed Layer Options panel (Airports / SID / STAR / …). */
+  onOpenLayers: () => void;
   onToggleSidebar: () => void;
   /** Custom map zoom drivers — the built-in Leaflet zoom control is
    *  disabled so a matching +/− pair can sit inline with this toolbar. */
@@ -49,10 +47,7 @@ function MapOverlay({
   firOn,
   onFir,
   firLoading,
-  sidOn,
-  onSid,
-  starOn,
-  onStar,
+  onOpenLayers,
   onToggleSidebar,
   onZoomIn,
   onZoomOut,
@@ -108,24 +103,16 @@ function MapOverlay({
                   <span>FIR</span>
                   {firLoading && <em className="ov-loading">loading…</em>}
                 </label>
-                <label className="ov-air-item">
-                  <input
-                    type="checkbox"
-                    checked={sidOn}
-                    onChange={(e) => onSid(e.target.checked)}
-                  />
-                  <span className="ov-swatch ov-swatch-sid" aria-hidden />
-                  <span>SID (departures)</span>
-                </label>
-                <label className="ov-air-item">
-                  <input
-                    type="checkbox"
-                    checked={starOn}
-                    onChange={(e) => onStar(e.target.checked)}
-                  />
-                  <span className="ov-swatch ov-swatch-star" aria-hidden />
-                  <span>STAR (arrivals)</span>
-                </label>
+                <button
+                  type="button"
+                  className="ov-air-more"
+                  onClick={() => {
+                    onOpenLayers();
+                    setAirspaceOpen(false);
+                  }}
+                >
+                  ⚙ More Layer Options
+                </button>
               </div>
             )}
           </div>

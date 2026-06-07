@@ -12,6 +12,7 @@ import type {
   AirwayCollection,
   FirCollection,
   ProcedureLineCollection,
+  ProcedureWaypointCollection,
   Waypoint,
 } from "./types";
 
@@ -19,6 +20,26 @@ const SOURCE_URL = "/data/airway_waypoint.geojson";
 const FIR_URL = "/data/fir.geojson";
 const SID_LINES_URL = "/data/sid/sid_line_thai.geojson";
 const STAR_LINES_URL = "/data/star/star_line.geojson";
+const SID_WPTS_URL = "/data/sid/sid_waypoint_thai.geojson";
+const STAR_WPTS_URL = "/data/star/star_waypoint.geojson";
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const res = await fetch(url, { cache: "force-cache" });
+  if (!res.ok) {
+    throw new Error(`Failed to load ${url}: ${res.status} ${res.statusText}`);
+  }
+  return (await res.json()) as T;
+}
+
+/** Fetch SID procedure waypoints (the coded fixes). Loaded lazily. */
+export function fetchSidWaypoints(): Promise<ProcedureWaypointCollection> {
+  return fetchJson<ProcedureWaypointCollection>(SID_WPTS_URL);
+}
+
+/** Fetch STAR procedure waypoints (the coded fixes). Loaded lazily. */
+export function fetchStarWaypoints(): Promise<ProcedureWaypointCollection> {
+  return fetchJson<ProcedureWaypointCollection>(STAR_WPTS_URL);
+}
 
 /**
  * Fetch the drawn SID (departure) procedure tracks. Loaded lazily when the

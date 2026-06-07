@@ -11,7 +11,9 @@ import type {
   FeatureCollection,
   LineString,
   MultiLineString,
+  MultiPoint,
   MultiPolygon,
+  Point,
   Polygon,
 } from "geojson";
 
@@ -75,6 +77,22 @@ export interface ProcedureLineProperties {
 export type ProcedureLineCollection = FeatureCollection<
   LineString | MultiLineString,
   ProcedureLineProperties
+>;
+
+/** Properties on each SID/STAR procedure waypoint feature (DFD leg row). */
+export interface ProcedureWaypointProperties {
+  airport_identifier: string;
+  procedure_identifier: string;
+  transition_identifier?: string | null;
+  waypoint_identifier?: string | null;
+  waypoint_latitude?: number | null;
+  waypoint_longitude?: number | null;
+}
+
+/** `sid_waypoint_thai.geojson` / `star_waypoint.geojson` — procedure fixes. */
+export type ProcedureWaypointCollection = FeatureCollection<
+  Point | MultiPoint,
+  ProcedureWaypointProperties
 >;
 
 /**
