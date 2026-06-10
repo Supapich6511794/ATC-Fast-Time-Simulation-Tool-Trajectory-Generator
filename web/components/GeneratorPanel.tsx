@@ -25,7 +25,12 @@ import {
   type AirportOption,
   type Fix,
 } from "@/lib/aip";
-import { generateBatch, generateTrajectory, type GenerateInput } from "@/lib/api";
+import {
+  generateBatch,
+  generateTrajectory,
+  listProcedures,
+  type GenerateInput,
+} from "@/lib/api";
 import SearchCombo from "@/components/SearchCombo";
 import {
   flightOptions,
@@ -79,6 +84,9 @@ interface PlanDraft {
   routeStr: string;
   builtWpts: string[];
   routes: string[];
+  /** SID name (spliced at ADEP) / STAR name (spliced at ADES). "" = none. */
+  sid: string;
+  star: string;
 }
 
 let _planSeq = 0;
@@ -98,6 +106,8 @@ function blankPlan(): PlanDraft {
     routeStr: "",
     builtWpts: [],
     routes: [],
+    sid: "",
+    star: "",
   };
 }
 
@@ -218,6 +228,10 @@ function GeneratorPanel({
   const [builtWpts, setBuiltWpts] = useState<string[]>([]);
   /** Extra Item-15 routes to fly together (capped at #possible routes). */
   const [routes, setRoutes] = useState<string[]>([]);
+  // SID/STAR terminal procedures to splice (empty = none). Their option
+  // lists are fetched per ADEP/ADES below.
+  const [sid, setSid] = useState("");
+  const [star, setStar] = useState("");
 
   // --- Multi-plan tabs -----------------------------------------------------
   // The active tab's values live in the scalar state above. `plans` holds a
@@ -273,6 +287,8 @@ function GeneratorPanel({
     routeStr,
     builtWpts,
     routes,
+    sid,
+    star,
   });
 
   /** Load a PlanDraft into the live editor (scalar state). */
@@ -288,6 +304,8 @@ function GeneratorPanel({
     setRouteStr(d.routeStr);
     setBuiltWpts(d.builtWpts);
     setRoutes(d.routes);
+    setSid(d.sid);
+    setStar(d.star);
   };
 
   const switchTo = (id: string) => {
@@ -426,6 +444,39 @@ function GeneratorPanel({
     return kBestRoutes(allFixes, airwaysMap, depLL, desLL, { k: 6 });
   }, [pairReady, dep, des, airportLL, allFixes, airwaysMap]);
 
+  // SID/STAR procedure names published at the current ADEP/ADES. Fetched
+  // whenever the airport changes; an airport with no coded procedures (or
+  // an unreachable API) yields an empty list and the picker just shows
+  // "None". SID belongs to ADEP, STAR to ADES.
+  const [sidOptions, setSidOptions] = useState<string[]>([]);
+  const [starOptions, setStarOptions] = useState<string[]>([]);
+  useEffect(() => {
+    if (!dep) {
+      setSidOptions([]);
+      return;
+    }
+    let cancelled = false;
+    listProcedures(dep)
+      .then((p) => !cancelled && setSidOptions(p.SID))
+      .catch(() => !cancelled && setSidOptions([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [dep]);
+  useEffect(() => {
+    if (!des) {
+      setStarOptions([]);
+      return;
+    }
+    let cancelled = false;
+    listProcedures(des)
+      .then((p) => !cancelled && setStarOptions(p.STAR))
+      .catch(() => !cancelled && setStarOptions([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [des]);
+
   // CAT62 reference table (loaded once) for pre-screening candidate
   // routes against the city-pair reference time.
   const [cat62, setCat62] = useState<Cat62Table | null>(null);
@@ -503,12 +554,14 @@ function GeneratorPanel({
   const handleAdepChange = (v: string) => {
     if (v.trim().toUpperCase() !== adep.trim().toUpperCase()) {
       clearRouteSelection();
+      setSid(""); // SID is ADEP-specific — drop it when ADEP changes.
     }
     setAdep(v);
   };
   const handleAdesChange = (v: string) => {
     if (v.trim().toUpperCase() !== ades.trim().toUpperCase()) {
       clearRouteSelection();
+      setStar(""); // STAR is ADES-specific — drop it when ADES changes.
     }
     setAdes(v);
   };
@@ -772,6 +825,8 @@ function GeneratorPanel({
               gs_kt: d.gsKt,
               rfl: d.rfl,
               // ...overrides, // DISABLED: speed schedule (advanced)
+              ...(d.sid ? { sid: d.sid } : {}),
+              ...(d.star ? { star: d.star } : {}),
             },
             label: isCsv ? `Airway CSV · ${dp}→${ds}` : r || "(route)",
           });
@@ -933,6 +988,8 @@ function GeneratorPanel({
             gs_kt: gsKt,
             rfl,
             // ...speedOverrides, // DISABLED: speed schedule (advanced)
+            ...(sid ? { sid } : {}),
+            ...(star ? { star } : {}),
             ...(multi ? { flight_index: i } : {}),
           }),
         ),
@@ -1402,6 +1459,60 @@ function GeneratorPanel({
               </div>
             )}
           </div>
+
+          {/* Terminal procedures — splice a SID at ADEP / STAR at ADES into
+              the enroute route. Options come from the navdata for each
+              aerodrome; "None" leaves that end as a direct leg. */}
+          <div className="field-row">
+            <label className="field">
+              <span>SID (at {dep || "ADEP"})</span>
+              <select
+                value={sid}
+                onChange={(e) => setSid(e.target.value)}
+                disabled={!dep}
+              >
+                <option value="">None (direct departure)</option>
+                {sid && !sidOptions.includes(sid) && (
+                  <option value={sid}>{sid}</option>
+                )}
+                {sidOptions.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>STAR (at {des || "ADES"})</span>
+              <select
+                value={star}
+                onChange={(e) => setStar(e.target.value)}
+                disabled={!des}
+              >
+                <option value="">None (direct arrival)</option>
+                {star && !starOptions.includes(star) && (
+                  <option value={star}>{star}</option>
+                )}
+                {starOptions.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {((dep && sidOptions.length === 0) ||
+            (des && starOptions.length === 0)) && (
+            <p className="rt-hint">
+              {sidOptions.length === 0 && starOptions.length === 0
+                ? `No coded SID/STAR in the navdata for ${dep || "ADEP"} / ${
+                    des || "ADES"
+                  }.`
+                : sidOptions.length === 0
+                  ? `No coded SID for ${dep}.`
+                  : `No coded STAR for ${des}.`}
+            </p>
+          )}
 
           <div className="fpl-prev">
             <span>PREVIEW FPL STRING</span>

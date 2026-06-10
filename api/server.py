@@ -39,8 +39,11 @@ from trajectory_sim.geodesy import route_distance_nm
 from trajectory_sim.navdata import (
     AmbiguousProcedureError,
     NavData,
+    Procedure,
     ProcedureNotFoundError,
     ProcedureType,
+    RouteWaypoint,
+    splice_procedures,
 )
 from trajectory_sim.output import (
     build_trajectory_gdf,
@@ -132,6 +135,21 @@ class GenerateRequest(BaseModel):
     # each file/PK is unique; the Callsign column itself stays the
     # user-typed value. Omit for a single-route request.
     flight_index: int | None = None
+
+    # --- SID/STAR terminal procedures (Phase 4) ----------------------
+    # Optional procedure names to splice around the enroute route: the SID
+    # is resolved at ADEP and inserted right after departure, the STAR at
+    # ADES and inserted right before arrival. Runway/transition are
+    # optional — when omitted, an ambiguous choice is auto-resolved to the
+    # first candidate and reported in `warnings` (same behaviour as the
+    # map's click-to-load). An unknown procedure is skipped with a warning,
+    # never a hard error, so a bad name can't sink the generation.
+    sid: str | None = None
+    sid_runway: str | None = None
+    sid_transition: str | None = None
+    star: str | None = None
+    star_runway: str | None = None
+    star_transition: str | None = None
 
     # --- Optional speed-schedule overrides (Phase 3 tuning) -----------
     # Any field left None keeps the airframe's default. Applied per
@@ -372,6 +390,127 @@ def _navdata() -> NavData:
     )
 
 
+def _resolve_procedure_auto(
+    nav: NavData,
+    airport: str,
+    name: str,
+    *,
+    proc_type: "ProcedureType | None" = None,
+    runway: str | None = None,
+    transition: str | None = None,
+    auto: bool = True,
+) -> "tuple[Procedure, list[dict[str, str]]]":
+    """Resolve a SID/STAR, auto-picking the first candidate on ambiguity.
+
+    Shared by the ``/api/procedures`` endpoint and the splice in
+    ``_generate_one``. When ``auto`` is true (the default), each
+    runway/transition/type ambiguity is settled by taking the first
+    candidate and recording it in the returned ``assumptions`` list; with
+    ``auto`` false the :class:`AmbiguousProcedureError` propagates so the
+    caller can surface the choices. :class:`ProcedureNotFoundError` always
+    propagates.
+    """
+    assumptions: list[dict[str, str]] = []
+    rwy, trn, pt = runway, transition, proc_type
+    while True:
+        try:
+            proc = nav.lookup_procedure(
+                airport, name, proc_type=pt, runway=rwy, transition=trn
+            )
+            return proc, assumptions
+        except AmbiguousProcedureError as e:
+            if not auto:
+                raise
+            pick = sorted(e.candidates)[0]
+            assumptions.append({e.kind: pick})
+            if e.kind == "runway":
+                rwy = pick
+            elif e.kind == "transition":
+                trn = pick
+            else:  # procedure type
+                pt = ProcedureType(pick)
+
+
+def _resolve_proc_for_splice(
+    nav: NavData,
+    airport: str,
+    name: str,
+    proc_type: "ProcedureType",
+    runway: str | None,
+    transition: str | None,
+    warnings: list[str],
+) -> "Procedure | None":
+    """Resolve one SID/STAR for splicing; a miss is a warning, not an error.
+
+    Ambiguous runway/transition is auto-resolved to the first candidate (the
+    selection is reported in ``warnings``), mirroring the map's click-to-load.
+    Returns ``None`` if the procedure can't be found so generation continues
+    with the enroute route unchanged.
+    """
+    label = proc_type.value
+    try:
+        proc, assumptions = _resolve_procedure_auto(
+            nav,
+            airport,
+            name,
+            proc_type=proc_type,
+            runway=runway,
+            transition=transition,
+        )
+    except (ProcedureNotFoundError, AmbiguousProcedureError) as e:
+        warnings.append(f"{label} {name!r} at {airport}: {e} — skipped.")
+        return None
+    if assumptions:
+        picks = ", ".join(f"{k} {v}" for a in assumptions for k, v in a.items())
+        warnings.append(f"{label} {proc.name} at {airport}: assumed {picks}.")
+    return proc
+
+
+def _splice_terminal_procedures(
+    req: "GenerateRequest",
+    adep: str,
+    ades: str,
+    route_pts: "list[tuple[str, float, float]]",
+    warnings: list[str],
+) -> "list[tuple[str, float, float]]":
+    """Fold the requested SID (ADEP) and STAR (ADES) into the enroute fixes.
+
+    The SID's fixes lead the sequence (it flies first, right after ADEP); the
+    STAR's fixes trail it (right before ADES). Shared boundary fixes — the SID
+    enroute-transition fix vs. the route's first fix, and the route's last fix
+    vs. the STAR entry fix — collapse via :func:`splice_procedures`. With
+    neither procedure requested the route passes through untouched.
+    """
+    sid_name = (req.sid or "").strip()
+    star_name = (req.star or "").strip()
+    if not sid_name and not star_name:
+        return route_pts
+
+    nav = _navdata()
+    sid_proc = (
+        _resolve_proc_for_splice(
+            nav, adep, sid_name, ProcedureType.SID,
+            req.sid_runway, req.sid_transition, warnings,
+        )
+        if sid_name
+        else None
+    )
+    star_proc = (
+        _resolve_proc_for_splice(
+            nav, ades, star_name, ProcedureType.STAR,
+            req.star_runway, req.star_transition, warnings,
+        )
+        if star_name
+        else None
+    )
+    if sid_proc is None and star_proc is None:
+        return route_pts
+
+    enroute = [RouteWaypoint(ident=i, lat=la, lon=lo) for i, la, lo in route_pts]
+    spliced = splice_procedures(enroute, sid=sid_proc, star=star_proc)
+    return [(w.ident, w.lat, w.lon) for w in spliced]
+
+
 def _constraint_json(con: object) -> dict[str, object]:
     """Serialise an Altitude/Speed constraint dataclass to a plain dict."""
     return {
@@ -420,37 +559,30 @@ def get_procedure(
     """
     nav = _navdata()
     proc_type = _parse_proc_type(type)
-    assumptions: list[dict[str, str]] = []
-    rwy, trn, pt = runway, transition, proc_type
-    while True:
-        try:
-            proc = nav.lookup_procedure(
-                airport, name, proc_type=pt, runway=rwy, transition=trn
-            )
-            break
-        except ProcedureNotFoundError as e:
-            raise HTTPException(
-                404,
-                {"detail": str(e), "available": e.available},  # type: ignore[arg-type]
-            ) from None
-        except AmbiguousProcedureError as e:
-            if not auto:
-                raise HTTPException(
-                    409,
-                    {  # type: ignore[arg-type]
-                        "detail": str(e),
-                        "kind": e.kind,
-                        "candidates": sorted(e.candidates),
-                    },
-                ) from None
-            pick = sorted(e.candidates)[0]
-            assumptions.append({e.kind: pick})
-            if e.kind == "runway":
-                rwy = pick
-            elif e.kind == "transition":
-                trn = pick
-            else:  # procedure type
-                pt = ProcedureType(pick)
+    try:
+        proc, assumptions = _resolve_procedure_auto(
+            nav,
+            airport,
+            name,
+            proc_type=proc_type,
+            runway=runway,
+            transition=transition,
+            auto=auto,
+        )
+    except ProcedureNotFoundError as e:
+        raise HTTPException(
+            404,
+            {"detail": str(e), "available": e.available},  # type: ignore[arg-type]
+        ) from None
+    except AmbiguousProcedureError as e:
+        raise HTTPException(
+            409,
+            {  # type: ignore[arg-type]
+                "detail": str(e),
+                "kind": e.kind,
+                "candidates": sorted(e.candidates),
+            },
+        ) from None
 
     return {
         "airport": proc.airport,
@@ -549,6 +681,11 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
                 route_pts.reverse()
     else:
         raise HTTPException(400, f"Unknown source {req.source!r}")
+
+    # Phase 4: splice the SID (at ADEP) and STAR (at ADES) around the now
+    # ADEP-oriented enroute fixes, before the < 2 check — a thin route can
+    # become valid once its terminal procedures are folded in.
+    route_pts = _splice_terminal_procedures(req, adep, ades, route_pts, warnings)
 
     if len(route_pts) < 2:
         raise HTTPException(400, "Route resolved to fewer than 2 waypoints.")

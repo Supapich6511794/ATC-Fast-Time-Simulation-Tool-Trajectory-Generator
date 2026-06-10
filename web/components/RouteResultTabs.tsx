@@ -3,23 +3,27 @@
 /**
  * RouteResultTabs — per-route result block with two leaf sections:
  *   1. Vertical profile  (the altitude chart + TOC/TOD readouts)
- *   2. Trajectory summary (Phase 1 horizontal stats)
+ *   2. Trajectory summary (Phase 1 horizontal stats + per-waypoint table)
  *
  * Download is intentionally NOT a per-route view — it lives behind the
  * global "⬇ Download" button which opens a multi-route popup that lets
  * the user pick any subset of routes × formats. Keeping it global avoids
  * the user having to navigate per route to grab files.
  *
- * Mounted once per generated flight inside GeneratorPanel. The active
- * leaf can be either controlled internally (own tab strip) or driven by
- * a parent via `forceSection` — that's what the top-level "Generated ▾"
- * dropdown uses to navigate straight to e.g. "R1 → Trajectory summary".
+ * Two render modes:
+ *   - Detail mode (default): mounted by the per-route nav. Own tab strip
+ *     (or `forceSection` driven by the parent), no card chrome.
+ *   - Collapsible card mode (`collapsible`): the Route Profile "all routes"
+ *     list. Each route is a compact, colour-tagged card that expands to
+ *     reveal the active section. `sectionMode` sets what an expanded card
+ *     shows ("both" = stacked Overview, else a single section with an
+ *     in-card Vertical/Summary switch).
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import AltitudeProfile from "@/components/AltitudeProfile";
-import type { TrajectoryResult } from "@/lib/trajectory/types";
+import type { Phase, TrajectoryResult } from "@/lib/trajectory/types";
 
 export type RouteSection = "vertical" | "summary";
 
@@ -48,6 +52,14 @@ interface Props {
    *  altitude chart so its plane tracks the map playback. Null when this
    *  route isn't the one being animated. */
   simT?: number | null;
+  /** Collapsible card mode for the Route Profile list. */
+  collapsible?: boolean;
+  /** Whether the card is collapsed (header only). */
+  collapsed?: boolean;
+  /** Toggle the card's collapsed state. */
+  onToggleCollapse?: () => void;
+  /** What an expanded card shows in collapsible mode. */
+  sectionMode?: RouteSection | "both";
 }
 
 const TABS: { id: RouteSection; label: string }[] = [
@@ -63,6 +75,12 @@ function fmtAlt(ft: number | null | undefined): string {
     : `${Math.round(ft).toLocaleString()} ft`;
 }
 
+/** Flight-level label for the per-waypoint table (FL0 on the ground). */
+function fmtFL(ft: number | null | undefined): string {
+  if (ft == null) return "—";
+  return `FL${Math.round(ft / 100)}`;
+}
+
 export default function RouteResultTabs({
   trajectory,
   download,
@@ -71,16 +89,343 @@ export default function RouteResultTabs({
   forceSection,
   stacked,
   simT,
+  collapsible,
+  collapsed,
+  onToggleCollapse,
+  sectionMode = "both",
 }: Props) {
   const [tab, setTab] = useState<RouteSection>(forceSection ?? "vertical");
   // Keep the rendered tab in sync when the parent drives the choice.
   useEffect(() => {
     if (forceSection) setTab(forceSection);
   }, [forceSection]);
+
+  // In-card section switch for collapsible mode (the "Vertical profile →
+  // Trajectory summary →" links). Defaults to the global section and
+  // follows it when the user flips the top-level Overview/Vertical/Summary
+  // tabs, but can be overridden per card.
+  const [cardSec, setCardSec] = useState<RouteSection>(
+    sectionMode === "summary" ? "summary" : "vertical",
+  );
+  useEffect(() => {
+    if (sectionMode === "vertical" || sectionMode === "summary") {
+      setCardSec(sectionMode);
+    }
+  }, [sectionMode]);
+
   const { stats, profile, meta } = trajectory;
 
-  // Stacked mode shows both sections one above the other; the tab
-  // strip is hidden and the boolean below gates per-section rendering.
+  // Per-waypoint readout for the summary table: snap each route fix to its
+  // nearest emitted trajectory sample for that fix's FL / speed / phase.
+  const waypointRows = useMemo(() => {
+    const pts = trajectory.points;
+    if (pts.length === 0) return [];
+    return trajectory.route.map((wp) => {
+      let best = pts[0];
+      let bestD = Infinity;
+      for (const p of pts) {
+        const d = (p.lat - wp.lat) ** 2 + (p.lon - wp.lon) ** 2;
+        if (d < bestD) {
+          bestD = d;
+          best = p;
+        }
+      }
+      return {
+        ident: wp.ident,
+        altFt: best.altitude_ft,
+        gsKt: best.gs_kt,
+        phase: best.phase as Phase,
+      };
+    });
+  }, [trajectory.route, trajectory.points]);
+
+  /** Vertical-profile section — stat boxes, chart, speed schedule, phases. */
+  const renderVertical = (withTitle: boolean) => (
+    <div className="rt-section rt-section-vertical">
+      {withTitle && <h4 className="rt-section-title">Vertical profile</h4>}
+
+      <dl className="rt-vp-stats">
+        <div>
+          <dt>Cruise</dt>
+          <dd>{fmtAlt(stats.cruiseAltFt)}</dd>
+        </div>
+        <div>
+          <dt>Req FL</dt>
+          <dd>{fmtAlt(stats.rflFt)}</dd>
+        </div>
+        <div>
+          <dt>TOC</dt>
+          <dd>{fmtAlt(profile.toc?.altitudeFt ?? null)}</dd>
+        </div>
+        <div>
+          <dt>TOD</dt>
+          <dd>{fmtAlt(profile.tod?.altitudeFt ?? null)}</dd>
+        </div>
+      </dl>
+
+      <AltitudeProfile trajectory={trajectory} simT={simT} />
+
+      {/* Phase-3: planned speed schedule. */}
+      {profile.speedSchedule && (
+        <div className="rt-speed">
+          <div className="rt-speed-head">Speed schedule</div>
+          <p className="rt-speed-line">
+            <span className="rt-speed-chip ph-climb">Climb</span>
+            {profile.speedSchedule.climbCasKt} kt CAS · M
+            {profile.speedSchedule.climbMach}
+          </p>
+          <p className="rt-speed-line">
+            <span className="rt-speed-chip ph-cruise">Cruise</span>
+            M{profile.speedSchedule.cruiseMach}
+          </p>
+          <p className="rt-speed-line">
+            <span className="rt-speed-chip ph-descent">Descent</span>
+            M{profile.speedSchedule.descentMach} ·
+            {profile.speedSchedule.descentCasKt} kt CAS
+          </p>
+          <p className="rt-speed-foot">
+            {profile.speedSchedule.belowFl100RestrictionKt} kt CAS below FL100 ·
+            CAS→Mach crossover at FL
+            {Math.round(profile.speedSchedule.crossoverFt / 100)}
+          </p>
+        </div>
+      )}
+
+      {profile.phaseBreakdown && (
+        <dl className="rt-phase-grid">
+          {(["climb", "cruise", "descent"] as const).map((p) => {
+            const row = profile.phaseBreakdown![p];
+            return (
+              <div key={p} className={`ph-row ph-${p}`}>
+                <dt>{p.charAt(0).toUpperCase() + p.slice(1)}</dt>
+                <dd>
+                  {row.timeMin == null ? "—" : `${row.timeMin.toFixed(1)} min`}
+                  <span className="rt-phase-gs">
+                    {row.avgGsKt == null ? "" : ` · ${Math.round(row.avgGsKt)} kt`}
+                  </span>
+                </dd>
+              </div>
+            );
+          })}
+        </dl>
+      )}
+    </div>
+  );
+
+  /** Trajectory-summary section — hero stats, CAT62, metadata, waypoints. */
+  const renderSummary = (withTitle: boolean) => (
+    <div className="rt-summary">
+      {withTitle && <h4 className="rt-section-title">Trajectory summary</h4>}
+
+      {/* Hero stats: the three headline numbers. */}
+      <dl className="rt-summary-grid">
+        <div>
+          <dt>Waypoints</dt>
+          <dd>{stats.waypointCount}</dd>
+        </div>
+        <div>
+          <dt>Distance</dt>
+          <dd>
+            {stats.distanceNm}
+            <span className="rt-summary-unit"> NM</span>
+          </dd>
+        </div>
+        <div>
+          <dt>Flight time</dt>
+          <dd>
+            {stats.timeMinutes}
+            <span className="rt-summary-unit"> min</span>
+          </dd>
+        </div>
+      </dl>
+
+      {/* CAT62 flight-time validation — green PASS / red FAIL with delta. */}
+      {trajectory.validation && (
+        <div
+          className={`rt-cat62 ${
+            trajectory.validation.passed ? "pass" : "fail"
+          }`}
+        >
+          <div className="rt-cat62-head">
+            <span className="rt-cat62-title">
+              {trajectory.validation.source === "estimate"
+                ? "Flight-time check"
+                : "CAT62 check"}
+              {trajectory.validation.source === "estimate" && (
+                <span
+                  className="rt-cat62-est"
+                  title="No CAT62 sample for this city pair — reference is a distance-based estimate. Replace with a real CAT062 figure for an authoritative check."
+                >
+                  est
+                </span>
+              )}
+            </span>
+            <span className="rt-cat62-status">
+              {trajectory.validation.status}
+            </span>
+          </div>
+          <div className="rt-cat62-row">
+            <span>
+              {trajectory.validation.source === "estimate" ? "Est" : "Ref"}{" "}
+              <strong>{Math.round(trajectory.validation.cat62Min)} min</strong>
+            </span>
+            <span>
+              Sim{" "}
+              <strong>
+                {Math.round(trajectory.validation.simulatedMin)} min
+              </strong>
+            </span>
+            <span>
+              Δ{" "}
+              <strong>
+                {trajectory.validation.deltaMin >= 0 ? "+" : "-"}
+                {Math.abs(Math.round(trajectory.validation.deltaMin))} min
+              </strong>
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Secondary metadata strip. */}
+      <dl className="rt-summary-meta">
+        <div>
+          <dt>Callsign</dt>
+          <dd>{meta.callsign}</dd>
+        </div>
+        <div>
+          <dt>Aircraft</dt>
+          <dd>{meta.aircraftType}</dd>
+        </div>
+        <div>
+          <dt>Route</dt>
+          <dd>
+            {meta.adep} <span className="rt-arrow">→</span> {meta.ades}
+          </dd>
+        </div>
+        <div>
+          <dt>Points</dt>
+          <dd>{stats.pointCount.toLocaleString()}</dd>
+        </div>
+      </dl>
+
+      {/* Per-waypoint table: ident · FL · speed · phase. */}
+      {waypointRows.length > 0 && (
+        <div className="rt-wp">
+          <div className="rt-wp-head">Waypoints</div>
+          <table className="rt-wp-table">
+            <thead>
+              <tr>
+                <th>Ident</th>
+                <th>FL</th>
+                <th>Spd</th>
+                <th>Phase</th>
+              </tr>
+            </thead>
+            <tbody>
+              {waypointRows.map((w, i) => (
+                <tr key={`${w.ident}-${i}`}>
+                  <td className="rt-wp-ident">{w.ident}</td>
+                  <td className={`rt-wp-fl ph-${w.phase}`}>{fmtFL(w.altFt)}</td>
+                  <td className="rt-wp-spd">
+                    {w.gsKt == null ? "—" : `${Math.round(w.gsKt)}kt`}
+                  </td>
+                  <td className={`rt-wp-phase ph-${w.phase}`}>
+                    {w.phase.toUpperCase()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+
+  // ---- Collapsible card mode (Route Profile "all routes" list) ----------
+  if (collapsible) {
+    const tagNum = routeIndex ?? 1;
+    const colorClass = `c${(tagNum - 1) % 6}`;
+    return (
+      <div
+        className={`rt-card ${colorClass}${collapsed ? "" : " open"}`}
+      >
+        <div
+          className="rt-card-head"
+          role="button"
+          tabIndex={0}
+          aria-expanded={!collapsed}
+          onClick={onToggleCollapse}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onToggleCollapse?.();
+            }
+          }}
+        >
+          <span className="rt-card-tag">R{tagNum}</span>
+          <span className="rt-card-call">{meta.callsign}</span>
+          <span className="rt-card-route" title={download.route}>
+            {download.route}
+          </span>
+          <button
+            type="button"
+            className="rt-card-x"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove();
+            }}
+            title="Remove this flight from the map and downloads"
+            aria-label={`Remove ${download.flightKey}`}
+          >
+            ✕
+          </button>
+          <span className="rt-card-caret" aria-hidden>
+            {collapsed ? "▾" : "▴"}
+          </span>
+        </div>
+
+        {!collapsed && (
+          <div className="rt-card-body rt-tabpanel" role="region">
+            {sectionMode === "both" ? (
+              <>
+                {renderVertical(true)}
+                <hr className="rt-section-sep" />
+                {renderSummary(true)}
+              </>
+            ) : (
+              <>
+                <div className="rt-linktabs" role="tablist">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={cardSec === "vertical"}
+                    className={cardSec === "vertical" ? "active" : undefined}
+                    onClick={() => setCardSec("vertical")}
+                  >
+                    Vertical profile →
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={cardSec === "summary"}
+                    className={cardSec === "summary" ? "active" : undefined}
+                    onClick={() => setCardSec("summary")}
+                  >
+                    Trajectory summary →
+                  </button>
+                </div>
+                {cardSec === "vertical"
+                  ? renderVertical(false)
+                  : renderSummary(false)}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ---- Detail mode (per-route nav) --------------------------------------
   const showVertical = stacked || tab === "vertical";
   const showSummary = stacked || tab === "summary";
 
@@ -124,191 +469,9 @@ export default function RouteResultTabs({
       )}
 
       <div className="rt-tabpanel" role="tabpanel">
-        {showVertical && (
-          <>
-            {stacked && (
-              <h4 className="rt-section-title">Vertical profile</h4>
-            )}
-            <AltitudeProfile trajectory={trajectory} simT={simT} />
-            <dl className="rt-vp-stats">
-              <div>
-                <dt>Cruise</dt>
-                <dd>{fmtAlt(stats.cruiseAltFt)}</dd>
-              </div>
-              <div>
-                <dt>Requested FL</dt>
-                <dd>{fmtAlt(stats.rflFt)}</dd>
-              </div>
-              <div>
-                <dt>TOC</dt>
-                <dd>{fmtAlt(profile.toc?.altitudeFt ?? null)}</dd>
-              </div>
-              <div>
-                <dt>TOD</dt>
-                <dd>{fmtAlt(profile.tod?.altitudeFt ?? null)}</dd>
-              </div>
-            </dl>
-
-            {/* Phase-3: planned speed schedule + per-phase aggregates. */}
-            {profile.speedSchedule && (
-              <div className="rt-speed">
-                <div className="rt-speed-head">Speed schedule</div>
-                <p className="rt-speed-line">
-                  <span className="rt-speed-chip ph-climb">Climb</span>
-                  {profile.speedSchedule.climbCasKt} kt CAS · M
-                  {profile.speedSchedule.climbMach}
-                </p>
-                <p className="rt-speed-line">
-                  <span className="rt-speed-chip ph-cruise">Cruise</span>
-                  M{profile.speedSchedule.cruiseMach}
-                </p>
-                <p className="rt-speed-line">
-                  <span className="rt-speed-chip ph-descent">Descent</span>
-                  M{profile.speedSchedule.descentMach} ·
-                  {profile.speedSchedule.descentCasKt} kt CAS
-                </p>
-                <p className="rt-speed-foot">
-                  {profile.speedSchedule.belowFl100RestrictionKt} kt CAS
-                  below FL100 · CAS→Mach crossover at FL
-                  {Math.round(profile.speedSchedule.crossoverFt / 100)}
-                </p>
-              </div>
-            )}
-
-            {profile.phaseBreakdown && (
-              <dl className="rt-phase-grid">
-                {(["climb", "cruise", "descent"] as const).map((p) => {
-                  const row = profile.phaseBreakdown![p];
-                  return (
-                    <div key={p} className={`ph-row ph-${p}`}>
-                      <dt>
-                        {p.charAt(0).toUpperCase() + p.slice(1)}
-                      </dt>
-                      <dd>
-                        {row.timeMin == null
-                          ? "—"
-                          : `${row.timeMin.toFixed(1)} min`}
-                        <span className="rt-phase-gs">
-                          {row.avgGsKt == null
-                            ? ""
-                            : ` · ${Math.round(row.avgGsKt)} kt`}
-                        </span>
-                      </dd>
-                    </div>
-                  );
-                })}
-              </dl>
-            )}
-          </>
-        )}
-
+        {showVertical && renderVertical(stacked ?? false)}
         {showVertical && showSummary && <hr className="rt-section-sep" />}
-
-        {showSummary && (
-          <div className="rt-summary">
-            {stacked && (
-              <h4 className="rt-section-title">Trajectory summary</h4>
-            )}
-            {/* Big-number 2×2 grid: the four headline stats first, so a
-                quick glance answers "how big is this flight". */}
-            <dl className="rt-summary-grid">
-              <div>
-                <dt>Waypoints</dt>
-                <dd>{stats.waypointCount}</dd>
-              </div>
-              <div>
-                <dt>Points</dt>
-                <dd>{stats.pointCount.toLocaleString()}</dd>
-              </div>
-              <div>
-                <dt>Distance</dt>
-                <dd>
-                  {stats.distanceNm}
-                  <span className="rt-summary-unit"> NM</span>
-                </dd>
-              </div>
-              <div>
-                <dt>Flight time</dt>
-                <dd>
-                  {stats.timeMinutes}
-                  <span className="rt-summary-unit"> min</span>
-                </dd>
-              </div>
-            </dl>
-
-            {/* CAT62 flight-time validation — shown only when the city
-                pair has a reference entry. Green PASS / red FAIL with the
-                signed delta vs the reference. */}
-            {trajectory.validation && (
-              <div
-                className={`rt-cat62 ${
-                  trajectory.validation.passed ? "pass" : "fail"
-                }`}
-              >
-                <div className="rt-cat62-head">
-                  <span className="rt-cat62-title">
-                    {trajectory.validation.source === "estimate"
-                      ? "Flight-time check"
-                      : "CAT62 check"}
-                    {trajectory.validation.source === "estimate" && (
-                      <span
-                        className="rt-cat62-est"
-                        title="No CAT62 sample for this city pair — reference is a distance-based estimate. Replace with a real CAT062 figure for an authoritative check."
-                      >
-                        est
-                      </span>
-                    )}
-                  </span>
-                  <span className="rt-cat62-status">
-                    {trajectory.validation.status}
-                  </span>
-                </div>
-                <div className="rt-cat62-row">
-                  <span>
-                    {trajectory.validation.source === "estimate"
-                      ? "Est"
-                      : "Ref"}{" "}
-                    <strong>
-                      {Math.round(trajectory.validation.cat62Min)} min
-                    </strong>
-                  </span>
-                  <span>
-                    Sim{" "}
-                    <strong>
-                      {Math.round(trajectory.validation.simulatedMin)} min
-                    </strong>
-                  </span>
-                  <span>
-                    Δ{" "}
-                    <strong>
-                      {trajectory.validation.deltaMin >= 0 ? "+" : "-"}
-                      {Math.abs(Math.round(trajectory.validation.deltaMin))} min
-                    </strong>
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {/* Secondary metadata strip — single column, smaller text. */}
-            <dl className="rt-summary-meta">
-              <div>
-                <dt>Callsign</dt>
-                <dd>{meta.callsign}</dd>
-              </div>
-              <div>
-                <dt>Aircraft</dt>
-                <dd>{meta.aircraftType}</dd>
-              </div>
-              <div>
-                <dt>Route</dt>
-                <dd>
-                  {meta.adep} <span className="rt-arrow">→</span> {meta.ades}
-                </dd>
-              </div>
-            </dl>
-          </div>
-        )}
-
+        {showSummary && renderSummary(stacked ?? false)}
       </div>
     </div>
   );

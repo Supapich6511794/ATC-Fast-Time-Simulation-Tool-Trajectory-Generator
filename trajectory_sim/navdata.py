@@ -705,6 +705,72 @@ class Procedure:
         return out
 
 
+def _collapse_consecutive_idents(
+    waypoints: "list[RouteWaypoint]",
+) -> list[RouteWaypoint]:
+    """Drop a waypoint whose ident equals the one immediately before it.
+
+    The first occurrence wins (its coordinates are kept). This is the single
+    primitive every join in this module relies on: a shared boundary fix
+    listed by both sides of a join collapses to one point. Same rule used by
+    :meth:`Procedure.waypoints` and :func:`load_route_csv`.
+    """
+    out: list[RouteWaypoint] = []
+    for wp in waypoints:
+        if out and out[-1].ident == wp.ident:
+            continue
+        out.append(wp)
+    return out
+
+
+def splice_procedures(
+    enroute: "list[RouteWaypoint]",
+    *,
+    sid: "Procedure | None" = None,
+    star: "Procedure | None" = None,
+) -> list[RouteWaypoint]:
+    """Splice a SID before, and a STAR after, the enroute fix sequence.
+
+    Produces the ordered fix sequence that runs *between* the aerodromes —
+    SID fixes first (they begin just after ADEP), then the enroute fixes,
+    then the STAR fixes (they end just before ADES). The caller anchors ADEP
+    and ADES around the result; this function never invents an aerodrome
+    point.
+
+    The joins are where a SID/STAR meets the enroute portion:
+
+    * **SID → enroute** (subtask 5): a SID's last fix is its enroute
+      transition fix (e.g. DAGAB). An Item-15 route conventionally *starts*
+      at that same fix, so listing it on both sides would duplicate it; the
+      duplicate is collapsed. If the route starts elsewhere, both are kept
+      and the leg between them stands as a direct join.
+    * **enroute → STAR** (subtask 4): a STAR's first fix is its enroute
+      entry fix (e.g. LADAR), which an Item-15 route conventionally *ends*
+      on — same collapse on the trailing boundary.
+
+    Args:
+        enroute: Resolved enroute fixes, in flight order (may be empty for a
+            terminal-to-terminal hop with no published enroute portion).
+        sid: Departure procedure for ADEP, already resolved to a runway +
+            transition. ``None`` when no SID applies (direct departure).
+        star: Arrival procedure for ADES, likewise resolved. ``None`` when no
+            STAR applies (direct arrival).
+
+    Returns:
+        The spliced :class:`RouteWaypoint` sequence with shared boundary
+        fixes (and any other consecutive duplicate idents) collapsed. When
+        both ``sid`` and ``star`` are ``None`` this is the enroute list with
+        consecutive duplicates removed — i.e. direct routing is a no-op join.
+    """
+    sequence: list[RouteWaypoint] = []
+    if sid is not None:
+        sequence.extend(sid.waypoints())
+    sequence.extend(enroute)
+    if star is not None:
+        sequence.extend(star.waypoints())
+    return _collapse_consecutive_idents(sequence)
+
+
 class ProcedureNotFoundError(LookupError):
     """Raised when no procedure matches the requested key."""
 

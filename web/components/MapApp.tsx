@@ -149,10 +149,18 @@ export default function MapApp() {
   const [nav, setNav] = useState<NavView>(null);
   const [generatedOpen, setGeneratedOpen] = useState(false);
   const [downloadOpen, setDownloadOpen] = useState(false);
-  // "All routes" pagination — how many routes are currently shown in
-  // the stacked landing view. Starts at 1 (just R1); "Show more"
-  // increments by one each click. Reset on every fresh generation.
-  const [visibleCount, setVisibleCount] = useState(1);
+  // Route Profile cards are individually collapsible (by flightKey). A key
+  // in the set = that card is expanded. Overview defaults to all collapsed;
+  // the Vertical/Summary tabs expand the first card. Reset per generation.
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
+  const toggleExpanded = useCallback((flightKey: string) => {
+    setExpandedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(flightKey)) next.delete(flightKey);
+      else next.add(flightKey);
+      return next;
+    });
+  }, []);
 
   // Playback source: which generated route the SimControls clock is
   // bound to. A number picks one route; "all" plays every route on the
@@ -247,7 +255,7 @@ export default function MapApp() {
       // reveals the rest one at a time.
       if (list.length > 0) {
         setNav({ kind: "all", section: "both" });
-        setVisibleCount(1);
+        setExpandedKeys(new Set()); // Overview lands with every card collapsed
         setProfileFlightQuery("");
         setProfileRouteQuery("");
         setSidebarOpen(true);
@@ -692,8 +700,6 @@ export default function MapApp() {
         return n;
       });
     }
-    // Keep the "all routes" pagination in range when a route is removed.
-    setVisibleCount((c) => Math.max(1, Math.min(c, next.length)));
     // And keep the playback source pointing at a still-existing route.
     setPlaybackIdx((p) => {
       if (p === "all") return next.length > 0 ? "all" : 0;
@@ -800,7 +806,24 @@ export default function MapApp() {
         }`}
       >
         <div className="sidebar-header">
-          <h1>Flight Trajectory Generator</h1>
+          <h1 className="brand">
+            <span className="brand-ico" aria-hidden>
+              <svg viewBox="0 0 24 24" width="16" height="16">
+                <path
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  d="M5 12a7 7 0 0 1 7-7m0 14a7 7 0 0 0 7-7M8.5 12a3.5 3.5 0 0 1 3.5-3.5m0 7A3.5 3.5 0 0 0 15.5 12"
+                />
+                <circle cx="12" cy="12" r="1.4" fill="currentColor" />
+              </svg>
+            </span>
+            Flight Trajectory Generator
+          </h1>
+          {trajectories.length > 0 && nav?.kind !== "generator" && (
+            <span className="ready-badge">READY</span>
+          )}
           {nav?.kind === "generator" && genStatus && (
             <span className="sidebar-ready">{genStatus}</span>
           )}
@@ -867,6 +890,11 @@ export default function MapApp() {
 
         {nav?.kind === "all" && trajectories.length > 0 && (
           <div className="gen-all">
+            <p className="rp-ready">
+              {trajectories.length} flight
+              {trajectories.length === 1 ? "" : "s"} ready
+            </p>
+
             {/* Two-scope search: 1) pick a flight (callsign / ADEP-ADES),
                 2) optionally a specific route within it (empty = all). */}
             <div className="rp-search">
@@ -897,20 +925,52 @@ export default function MapApp() {
               </p>
             </div>
 
-            {/* "both" overview paginates (heaviest view); the dedicated
-                Vertical / Trajectory section views show every match. */}
-            {(nav.section === "both"
-              ? profileRows.slice(0, visibleCount)
-              : profileRows
-            ).map(({ t, d, i }) => (
+            {/* Inline section tabs — mirror the "Route Profile ▾" dropdown.
+                Overview lands with every card collapsed; Vertical / Summary
+                expand the first card so its section is visible at a glance. */}
+            <div className="rp-tabs" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={nav.section === "both"}
+                className={nav.section === "both" ? "active" : undefined}
+                onClick={() => setNav({ kind: "all", section: "both" })}
+              >
+                Overview
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={nav.section === "vertical"}
+                className={nav.section === "vertical" ? "active" : undefined}
+                onClick={() => setNav({ kind: "all", section: "vertical" })}
+              >
+                Vertical
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={nav.section === "summary"}
+                className={nav.section === "summary" ? "active" : undefined}
+                onClick={() => setNav({ kind: "all", section: "summary" })}
+              >
+                Summary
+              </button>
+            </div>
+
+            {/* Collapsible, colour-tagged route cards — expand any to reveal
+                the active section. Heavy charts mount only when expanded. */}
+            {profileRows.map(({ t, d, i }) => (
               <RouteResultTabs
                 key={d.flightKey}
                 trajectory={t}
                 download={d}
-                routeIndex={trajectories.length > 1 ? i + 1 : null}
+                routeIndex={i + 1}
                 onRemove={() => removeResultAt(i)}
-                forceSection={nav.section === "both" ? undefined : nav.section}
-                stacked={nav.section === "both"}
+                collapsible
+                collapsed={!expandedKeys.has(d.flightKey)}
+                onToggleCollapse={() => toggleExpanded(d.flightKey)}
+                sectionMode={nav.section}
                 simT={playSimT(i)}
               />
             ))}
@@ -919,33 +979,6 @@ export default function MapApp() {
               <p className="rp-search-empty">
                 No routes match this search. Clear the boxes to see all.
               </p>
-            )}
-
-            {nav.section === "both" &&
-              visibleCount < profileRows.length && (
-                <button
-                  type="button"
-                  className="gen-show-more"
-                  onClick={() =>
-                    setVisibleCount((c) =>
-                      Math.min(c + 1, profileRows.length),
-                    )
-                  }
-                >
-                  ▾ Show more (
-                  {profileRows.length - visibleCount} route
-                  {profileRows.length - visibleCount === 1 ? "" : "s"} left)
-                </button>
-              )}
-
-            {nav.section === "both" && visibleCount > 1 && (
-              <button
-                type="button"
-                className="gen-show-less"
-                onClick={() => setVisibleCount(1)}
-              >
-                ▴ Show fewer
-              </button>
             )}
           </div>
         )}

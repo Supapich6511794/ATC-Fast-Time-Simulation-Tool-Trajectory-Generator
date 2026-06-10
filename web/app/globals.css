@@ -2634,33 +2634,40 @@ body {
   }
 }
 
-/* Vertical-profile tab: compact stat row under the chart. */
+/* Vertical-profile tab: four bordered stat cells above the chart. */
 .rt-vp-stats {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-  margin: 8px 0 0;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin: 0 0 12px;
 }
 
 .rt-vp-stats div {
-  background: #0f172a;
-  border-radius: 6px;
-  padding: 6px 8px;
+  background: #0b1424;
+  border: 1px solid #243049;
+  border-radius: 8px;
+  padding: 8px 9px;
 }
 
 .rt-vp-stats dt {
   font-size: 9px;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   color: var(--muted);
 }
 
 .rt-vp-stats dd {
-  margin: 1px 0 0;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text);
+  margin: 4px 0 0;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--accent);
   font-family: ui-monospace, "SFMono-Regular", monospace;
+}
+
+.app.theme-light .rt-vp-stats div {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
 }
 
 /* ---- Trajectory summary tab: hero 2×2 grid + secondary meta strip ---- */
@@ -2673,33 +2680,33 @@ body {
 
 .rt-summary-grid {
   display: grid !important;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px !important;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px !important;
   margin: 0 !important;
 }
 
 .rt-summary-grid div {
-  background: #0f172a !important;
-  border: 1px solid #33415588;
-  border-radius: 10px !important;
-  padding: 14px 14px !important;
+  background: #0b1424 !important;
+  border: 1px solid #243049;
+  border-radius: 8px !important;
+  padding: 10px 11px !important;
 }
 
 .rt-summary-grid dt {
-  font-size: 10px !important;
+  font-size: 9px !important;
   font-weight: 700 !important;
   text-transform: uppercase;
-  letter-spacing: 0.08em !important;
+  letter-spacing: 0.06em !important;
   color: var(--muted) !important;
   font-family: ui-sans-serif, system-ui, sans-serif !important;
 }
 
 .rt-summary-grid dd {
-  margin: 6px 0 0 !important;
-  font-size: 22px !important;
+  margin: 5px 0 0 !important;
+  font-size: 18px !important;
   font-weight: 800 !important;
-  color: var(--text) !important;
-  font-family: ui-sans-serif, system-ui, sans-serif !important;
+  color: var(--accent) !important;
+  font-family: ui-monospace, "SFMono-Regular", monospace !important;
   line-height: 1.15;
   letter-spacing: -0.01em;
 }
@@ -5421,4 +5428,337 @@ body {
   .alt-legend-bar {
     height: 80px;
   }
+}
+
+/* ============================================================= *
+ *  Route Profile redesign — branded header, inline section tabs,
+ *  collapsible colour-tagged route cards, per-waypoint table.
+ * ============================================================= */
+
+/* ---- Branded sidebar title + READY badge ---- */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.brand-ico {
+  display: inline-flex;
+  color: var(--accent);
+  filter: drop-shadow(0 0 5px rgba(56, 189, 248, 0.55));
+}
+
+.app.theme-light .brand,
+.app.theme-light .brand-ico {
+  color: #0b6ea8;
+}
+
+.ready-badge {
+  margin-left: auto;
+  padding: 3px 10px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: #052e16;
+  background: #34d399;
+  border-radius: 999px;
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.45);
+  white-space: nowrap;
+}
+
+/* ---- "N flights ready" status line above the search ---- */
+.rp-ready {
+  margin: 2px 0 12px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #34d399;
+}
+
+/* ---- Inline Overview / Vertical / Summary tabs ---- */
+.rp-tabs {
+  display: flex;
+  gap: 16px;
+  margin: 0 0 14px;
+  border-bottom: 1px solid #243049;
+}
+
+.rp-tabs button {
+  position: relative;
+  background: none;
+  border: none;
+  padding: 8px 2px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.rp-tabs button:hover {
+  color: var(--text);
+}
+
+.rp-tabs button.active {
+  color: var(--accent);
+}
+
+.rp-tabs button.active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+/* ---- Collapsible route card ---- */
+.rt-card {
+  --rt-c: #38bdf8;
+  margin: 0 0 10px;
+  background: #0c1626;
+  border: 1px solid #1f2b44;
+  border-left: 3px solid var(--rt-c);
+  border-radius: 10px;
+  overflow: hidden;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.rt-card.open {
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.12),
+    0 8px 24px rgba(2, 6, 23, 0.55);
+}
+
+/* Per-index accent colours (cycle of 6), matching the R-tag. */
+.rt-card.c0 {
+  --rt-c: #38bdf8;
+}
+.rt-card.c1 {
+  --rt-c: #34d399;
+}
+.rt-card.c2 {
+  --rt-c: #fb923c;
+}
+.rt-card.c3 {
+  --rt-c: #a78bfa;
+}
+.rt-card.c4 {
+  --rt-c: #f472b6;
+}
+.rt-card.c5 {
+  --rt-c: #fbbf24;
+}
+
+.rt-card-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.rt-card-head:hover {
+  background: rgba(56, 189, 248, 0.04);
+}
+
+.rt-card-tag {
+  flex-shrink: 0;
+  min-width: 26px;
+  text-align: center;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #06121f;
+  background: var(--rt-c);
+  border-radius: 5px;
+}
+
+.rt-card-call {
+  flex-shrink: 0;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.rt-card-route {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-card-x {
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid transparent;
+  color: #f87171;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  line-height: 1.4;
+}
+
+.rt-card-x:hover {
+  border-color: #f87171;
+  background: rgba(248, 113, 113, 0.08);
+}
+
+.rt-card-caret {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 11px;
+  width: 12px;
+  text-align: center;
+}
+
+.rt-card-body {
+  padding: 4px 12px 14px;
+  border-top: 1px solid #1f2b44;
+}
+
+/* ---- In-card "Vertical profile → / Trajectory summary →" links ---- */
+.rt-linktabs {
+  display: flex;
+  gap: 16px;
+  margin: 8px 0 12px;
+}
+
+.rt-linktabs button {
+  background: none;
+  border: none;
+  padding: 2px 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.rt-linktabs button:hover {
+  color: var(--text);
+}
+
+.rt-linktabs button.active {
+  color: var(--accent);
+}
+
+/* ---- Per-waypoint table (summary section) ---- */
+.rt-wp {
+  margin-top: 4px;
+}
+
+.rt-wp-head {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.rt-wp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 11px;
+  background: #0b1424;
+  border: 1px solid #243049;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.rt-wp-table th {
+  text-align: left;
+  padding: 7px 10px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: rgba(36, 48, 73, 0.5);
+  border-bottom: 1px solid #243049;
+}
+
+.rt-wp-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid #1a2438;
+  color: var(--text);
+}
+
+.rt-wp-table tr:last-child td {
+  border-bottom: none;
+}
+
+.rt-wp-ident {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* FL value tinted by phase — cool on climb/descent, warm at cruise. */
+.rt-wp-fl.ph-climb,
+.rt-wp-fl.ph-descent {
+  color: #38bdf8;
+}
+.rt-wp-fl.ph-cruise {
+  color: #fb7185;
+}
+
+.rt-wp-phase {
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.rt-wp-phase.ph-climb {
+  color: #34d399;
+}
+.rt-wp-phase.ph-cruise {
+  color: #fb923c;
+}
+.rt-wp-phase.ph-descent {
+  color: #fbbf24;
+}
+
+.app.theme-light .rt-card {
+  background: #ffffff;
+  border-color: #cbd5e1;
+}
+
+.app.theme-light .rt-card-body {
+  border-top-color: #e2e8f0;
+}
+
+.app.theme-light .rt-card-call {
+  color: #0f172a;
+}
+
+.app.theme-light .rt-wp-table {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+.app.theme-light .rt-wp-table th {
+  background: #eef2f7;
+  border-bottom-color: #cbd5e1;
+}
+
+.app.theme-light .rt-wp-table td {
+  border-bottom-color: #e2e8f0;
 }

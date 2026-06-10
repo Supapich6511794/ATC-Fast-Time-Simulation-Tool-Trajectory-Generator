@@ -47,6 +47,16 @@ export interface GenerateInput {
   descent_mach?: number;
   descent_cas_kt?: number;
   restrict_cas_kt?: number;
+  /** Optional SID (resolved at ADEP) / STAR (resolved at ADES) names to
+   *  splice around the enroute route. Runway/transition are optional — the
+   *  server auto-picks the first candidate on ambiguity and reports it in
+   *  `warnings`. An unknown name is skipped with a warning, never fatal. */
+  sid?: string;
+  sid_runway?: string;
+  sid_transition?: string;
+  star?: string;
+  star_runway?: string;
+  star_transition?: string;
 }
 
 export interface GenerateResponse {
@@ -343,6 +353,39 @@ export interface ProcedureDto {
   assumptions: Record<string, string>[];
   legs: ProcedureLegDto[];
   waypoints: { ident: string; lat: number; lon: number }[];
+}
+
+export interface ProcedureList {
+  airport: string;
+  SID: string[];
+  STAR: string[];
+}
+
+/**
+ * List the SID/STAR procedure names published at an aerodrome
+ * (GET /api/procedures/{airport}). Returns empty arrays when the airport has
+ * no coded procedures in the navdata. Never throws on a missing airport — an
+ * empty list is the natural "no procedures" answer the picker shows.
+ */
+export async function listProcedures(airport: string): Promise<ProcedureList> {
+  const code = airport.trim().toUpperCase();
+  const empty: ProcedureList = { airport: code, SID: [], STAR: [] };
+  if (!code) return empty;
+  let res: Response;
+  try {
+    res = await fetch(
+      `${API_BASE}/api/procedures/${encodeURIComponent(code)}`,
+    );
+  } catch {
+    return empty;
+  }
+  if (!res.ok) return empty;
+  const j = (await res.json()) as Partial<ProcedureList>;
+  return {
+    airport: j.airport ?? code,
+    SID: j.SID ?? [],
+    STAR: j.STAR ?? [],
+  };
 }
 
 /**
