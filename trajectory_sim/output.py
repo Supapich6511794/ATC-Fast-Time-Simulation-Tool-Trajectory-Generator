@@ -32,6 +32,7 @@ def build_trajectory_gdf(
     *,
     variable_speed: bool = True,
     wind_kt: float | None = None,
+    output_every_s: float = 4.0,
 ) -> gpd.GeoDataFrame:
     """Build a trajectory GeoDataFrame from a sequence of waypoints.
 
@@ -90,6 +91,7 @@ def build_trajectory_gdf(
             rfl_ft=rfl * 100.0,
             eobt=eobt,
             wind_kt=wind_kt,
+            output_every_s=output_every_s,
         )
         records = [
             {
@@ -119,7 +121,12 @@ def build_trajectory_gdf(
         lat1, lon1 = waypoint_sequence[i]
         lat2, lon2 = waypoint_sequence[i + 1]
         leg_points = interpolate_great_circle(
-            lat1, lon1, lat2, lon2, ground_speed_kt=ground_speed_kt
+            lat1,
+            lon1,
+            lat2,
+            lon2,
+            ground_speed_kt=ground_speed_kt,
+            output_every_s=output_every_s,
         )
         track_deg = compute_bearing(lat1, lon1, lat2, lon2)
 
@@ -282,6 +289,23 @@ def write_csv(
     if eobt.tzinfo is None:
         eobt = eobt.replace(tzinfo=timezone.utc)
 
+    # Surveillance cadence — the ACTUAL spacing between emitted track
+    # points (median of consecutive epoch_ts deltas), so the file self-
+    # documents which Surveillance Profile produced it. The median ignores
+    # the final, possibly-shorter endpoint step.
+    def _to_dt(x: object) -> datetime:
+        d = x.to_pydatetime() if hasattr(x, "to_pydatetime") else x
+        return d.replace(tzinfo=timezone.utc) if d.tzinfo is None else d
+
+    ts_list = list(gdf["epoch_ts"])
+    cadence_s: float | None = None
+    if len(ts_list) >= 2:
+        deltas = sorted(
+            (_to_dt(ts_list[i + 1]) - _to_dt(ts_list[i])).total_seconds()
+            for i in range(len(ts_list) - 1)
+        )
+        cadence_s = deltas[len(deltas) // 2]  # median step
+
     with out_path.open("w", encoding="utf-8", newline="") as f:
         f.write(f"ROUTE: {route_str}\n")
         f.write(f"DEP: {adep}\n")
@@ -290,6 +314,13 @@ def write_csv(
         if rfl is not None:
             f.write(f"FL: F{rfl}\n")
         f.write(f"ATD: {eobt.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        if cadence_s is not None:
+            cs = (
+                int(cadence_s)
+                if abs(cadence_s - round(cadence_s)) < 1e-6
+                else round(cadence_s, 1)
+            )
+            f.write(f"SURVEILLANCE: {cs}s\n")
         # Plain-ASCII separator — em-dashes mojibake in Excel/Notepad
         # when the file is opened under cp1252/cp874 (Thai Windows
         # default), making "———" render as 'â€"â€"â€"'.

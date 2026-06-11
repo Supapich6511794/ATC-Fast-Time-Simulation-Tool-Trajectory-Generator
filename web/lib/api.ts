@@ -35,6 +35,11 @@ export interface GenerateInput {
   gs_kt: number;
   /** Requested Flight Level in hundreds of feet (FL330 → 330). */
   rfl: number;
+  /** Surveillance Profile: seconds between emitted track points (and the
+   *  UTC timestamps in exports). 5 = en-route radar (default), 4 = CAT62
+   *  terminal, 1 = high-rate. Output density only — flight time/validation
+   *  are unaffected. Omitted → server default (5 s). */
+  output_every_s?: number;
   /** 0-based index when several routes share (callsign, EOBT). Server
    *  suffixes the flight_key/filename with `_R{n+1}` to keep files
    *  distinct without mangling the user's callsign. */

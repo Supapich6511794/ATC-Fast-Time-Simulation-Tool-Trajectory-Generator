@@ -163,6 +163,14 @@ class GenerateRequest(BaseModel):
     # Below-FL100 CAS cap (default 250 kt). Pass a large value to lift it.
     restrict_cas_kt: float | None = None
 
+    # --- Surveillance Profile (output sampling cadence) --------------
+    # Seconds between emitted track points (and therefore between the UTC
+    # timestamps in the exported files). 5 s = en-route radar (default),
+    # 4 s = CAT62 terminal surveillance, 1 s = high-rate. This only changes
+    # the OUTPUT density — the underlying timeline is integrated at a fine
+    # internal step, so flight time / CAT62 validation are unaffected.
+    output_every_s: float = Field(5.0, ge=0.5, le=60.0)
+
 
 # Per-airframe speed tuning mutates module-level state in
 # trajectory_sim.performance; serialise generation so concurrent
@@ -201,6 +209,20 @@ def _cache_export(
     _EXPORT_CACHE.move_to_end(flight_key)
     while len(_EXPORT_CACHE) > _EXPORT_CACHE_MAX:
         _EXPORT_CACHE.popitem(last=False)
+
+    # Invalidate any stale on-disk export for this flight_key. `_materialise`
+    # serves an existing file as-is, so without this a re-generation under the
+    # same (callsign, EOBT) — hence the same flight_key/filename — would keep
+    # handing back the OLD file (e.g. the previous Surveillance cadence). A
+    # fresh gdf must replace its files, so drop them now and let the next
+    # download rewrite them from this cache entry.
+    for _ext in _MEDIA:
+        stale = _OUT_DIR / f"{flight_key}.{_ext}"
+        if stale.exists():
+            try:
+                stale.unlink()
+            except OSError:
+                pass  # best-effort; _materialise rewrites gpkg defensively too
 
 # CAT62 reference times, loaded once. Falls back to an empty table if the
 # bundled file is somehow missing, so the endpoint never hard-fails.
@@ -797,6 +819,8 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
                 # not from the raw int the browser sent.
                 rfl=fpl.rfl,
                 flight_key_suffix=flight_key_suffix,
+                # Surveillance Profile cadence chosen in the UI (default 5 s).
+                output_every_s=req.output_every_s,
             )
             # Snapshot the schedule actually flown *before* restore, so the
             # reported speed_schedule reflects this flight's overrides (not

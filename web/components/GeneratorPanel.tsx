@@ -215,6 +215,17 @@ function GeneratorPanel({
   const [gsKt, setGsKt] = useState(450);
   const [rfl, setRfl] = useState(350);
 
+  // Surveillance Profile — output sampling cadence (seconds) applied to the
+  // whole generation. 5 s = en-route radar (default), 4 s = CAT62 terminal,
+  // 1 s = high-rate, or a free "custom" value. Only changes export density;
+  // flight time / CAT62 validation are unaffected.
+  const [survMode, setSurvMode] = useState<"5" | "4" | "1" | "custom">("5");
+  const [survCustom, setSurvCustom] = useState(5);
+  const outputEveryS = Math.max(
+    0.5,
+    Math.min(60, survMode === "custom" ? survCustom : Number(survMode)),
+  );
+
   // Phase-3 speed-schedule tuning (advanced, collapsed by default).
   // Empty string = use the airframe default for that field.
   // --- DISABLED: speed schedule (advanced) — kept for future use. ---
@@ -824,6 +835,7 @@ function GeneratorPanel({
               eobt: d.eobt,
               gs_kt: d.gsKt,
               rfl: d.rfl,
+              output_every_s: outputEveryS,
               // ...overrides, // DISABLED: speed schedule (advanced)
               ...(d.sid ? { sid: d.sid } : {}),
               ...(d.star ? { star: d.star } : {}),
@@ -987,6 +999,7 @@ function GeneratorPanel({
             eobt,
             gs_kt: gsKt,
             rfl,
+            output_every_s: outputEveryS,
             // ...speedOverrides, // DISABLED: speed schedule (advanced)
             ...(sid ? { sid } : {}),
             ...(star ? { star } : {}),
@@ -1172,6 +1185,63 @@ function GeneratorPanel({
                 onChange={(e) => setGsKt(Number(e.target.value))}
               />
             </label>
+          </div>
+
+          {/* Surveillance Profile — output sampling cadence for the exported
+              track (and the UTC timestamps in the files). Applies to every
+              plan in this generation; output density only, so the CAT62
+              flight-time check is unaffected. */}
+          <div className="field surv">
+            <span>Surveillance Profile</span>
+            <div
+              className="surv-opts"
+              role="radiogroup"
+              aria-label="Surveillance Profile"
+            >
+              {(
+                [
+                  { v: "5", label: "5s", sub: "En-route Radar" },
+                  { v: "4", label: "4s", sub: "CAT62 Terminal" },
+                  { v: "1", label: "1s", sub: "High-rate" },
+                  { v: "custom", label: "Custom", sub: "set interval" },
+                ] as const
+              ).map((o) => (
+                <button
+                  type="button"
+                  key={o.v}
+                  role="radio"
+                  aria-checked={survMode === o.v}
+                  className={`surv-opt${survMode === o.v ? " on" : ""}`}
+                  onClick={() => setSurvMode(o.v)}
+                >
+                  <span className="surv-radio" aria-hidden />
+                  <span className="surv-text">
+                    <span className="surv-label">
+                      {o.label}
+                      {o.v === "5" && (
+                        <span className="surv-default">Default</span>
+                      )}
+                    </span>
+                    <span className="surv-sub">{o.sub}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+            {survMode === "custom" && (
+              <label className="surv-custom">
+                <span>Interval (seconds)</span>
+                <input
+                  type="number"
+                  min={0.5}
+                  max={60}
+                  step={0.5}
+                  value={survCustom}
+                  onChange={(e) =>
+                    setSurvCustom(Number(e.target.value) || 0.5)
+                  }
+                />
+              </label>
+            )}
           </div>
 
           {/* Advanced: speed-schedule tuning. Collapsed by default; the

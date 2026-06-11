@@ -5762,3 +5762,119 @@ body {
 .app.theme-light .rt-wp-table td {
   border-bottom-color: #e2e8f0;
 }
+
+/* ============================================================= *
+ *  Surveillance Profile — output cadence selector (Generator)
+ * ============================================================= */
+.field.surv {
+  margin-top: 4px;
+}
+
+.surv-opts {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.surv-opt {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  background: #0b1424;
+  border: 1px solid #243049;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.surv-opt:hover {
+  border-color: #3b4a6b;
+}
+
+.surv-opt.on {
+  border-color: var(--accent);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.surv-radio {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 2px solid #475569;
+  position: relative;
+  transition: border-color 0.15s;
+}
+
+.surv-opt.on .surv-radio {
+  border-color: var(--accent);
+}
+
+.surv-opt.on .surv-radio::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.surv-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.surv-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.surv-default {
+  padding: 1px 6px;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #052e16;
+  background: #34d399;
+  border-radius: 999px;
+}
+
+.surv-sub {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.surv-custom {
+  display: block;
+  margin-top: 8px;
+}
+
+.surv-custom span {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.surv-custom input {
+  width: 120px;
+}
+
+.app.theme-light .surv-opt {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.app.theme-light .surv-opt.on {
+  background: rgba(56, 189, 248, 0.12);
+  border-color: var(--accent);
+}
