@@ -29,7 +29,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -72,6 +72,14 @@ _DATA = _ROOT / "web" / "public" / "data"
 _AIP_PATH = _DATA / "aip_VT.json"
 _OUT_DIR = _ROOT / "api" / "_outputs"
 _OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Cache-Control for the rarely-changing reference endpoints (procedures).
+# This navdata only changes per AIRAC cycle (~28 days) and a new cycle means
+# a redeploy/restart anyway, so the browser/CDN may safely keep it for a day —
+# repeat SID/STAR clicks and look-ups then skip the network entirely.
+# Dynamic endpoints (/api/generate*, /api/download*) are deliberately NOT
+# given this header: their output depends on the user's FPL input.
+_STATIC_CACHE = "public, max-age=86400"  # 1 day
 
 def _sq_dist(a: tuple[float, float], b: tuple[float, float]) -> float:
     return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
@@ -546,11 +554,14 @@ def _constraint_json(con: object) -> dict[str, object]:
 
 
 @app.get("/api/procedures/{airport}")
-def list_procedures(airport: str, type: str | None = None) -> dict[str, object]:
+def list_procedures(
+    airport: str, response: Response, type: str | None = None
+) -> dict[str, object]:
     """List SID/STAR names published at an aerodrome.
 
     ``type`` (optional) restricts to "SID" or "STAR".
     """
+    response.headers["Cache-Control"] = _STATIC_CACHE
     nav = _navdata()
     proc_type = _parse_proc_type(type)
     if proc_type is not None:
@@ -567,6 +578,7 @@ def list_procedures(airport: str, type: str | None = None) -> dict[str, object]:
 def get_procedure(
     airport: str,
     name: str,
+    response: Response,
     type: str | None = None,
     runway: str | None = None,
     transition: str | None = None,
@@ -579,6 +591,7 @@ def get_procedure(
     reporting it in ``assumptions`` — so a single click always yields legs.
     Set ``auto=false`` to get a 409 listing the choices instead.
     """
+    response.headers["Cache-Control"] = _STATIC_CACHE
     nav = _navdata()
     proc_type = _parse_proc_type(type)
     try:
