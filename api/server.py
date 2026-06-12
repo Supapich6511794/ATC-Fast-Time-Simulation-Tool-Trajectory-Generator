@@ -25,6 +25,7 @@ import threading
 import zipfile
 from collections import OrderedDict
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
 
@@ -1180,22 +1181,40 @@ def download_zip(req: ZipRequest) -> StreamingResponse:
     if not req.files:
         raise HTTPException(400, "No files requested.")
 
+    # Validate + dedup the requested files (same path-traversal rejection as
+    # the single-file endpoint). Dedup so two identical specs can't race on
+    # writing the same path.
+    seen: set[tuple[str, str]] = set()
+    valid: list[tuple[str, str]] = []
+    for spec in req.files:
+        ext = spec.ext.lower()
+        flight_key = spec.flight_key
+        if ext not in _MEDIA:
+            continue
+        if "/" in flight_key or "\\" in flight_key or ".." in flight_key:
+            continue
+        key = (flight_key, ext)
+        if key not in seen:
+            seen.add(key)
+            valid.append(key)
+
+    # Materialise the files concurrently. GeoPackage/GeoJSON writing goes
+    # through GDAL/pyogrio, which releases the GIL, so this overlaps the slow
+    # per-file writes instead of doing them strictly back-to-back (the main
+    # reason a big multi-route .gpkg download felt frozen). Each file has a
+    # distinct path (deduped above), so concurrent writes don't collide.
+    with ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 2) + 2)) as ex:
+        materialised = list(
+            ex.map(lambda fe: (fe, _materialise(fe[0], fe[1])), valid)
+        )
+
     # Build the archive in memory so we can stream it back without ever
     # writing it to disk — the output files are already on disk, this
-    # endpoint only repackages them.
+    # endpoint only repackages them. Zipping stays sequential (one archive).
     buf = io.BytesIO()
     added = 0
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for spec in req.files:
-            ext = spec.ext.lower()
-            flight_key = spec.flight_key
-            # Reject the same path-traversal patterns the single-file
-            # endpoint rejects.
-            if ext not in _MEDIA:
-                continue
-            if "/" in flight_key or "\\" in flight_key or ".." in flight_key:
-                continue
-            path = _materialise(flight_key, ext)
+        for (flight_key, ext), path in materialised:
             if path is not None:
                 zf.write(path, arcname=f"{flight_key}.{ext}")
                 added += 1

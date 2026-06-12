@@ -109,6 +109,12 @@ function DownloadModal({
     "separate",
   );
 
+  // True while the server is materialising/zipping the files. Files are
+  // written lazily on download (GeoPackage via GDAL is the slow part), so a
+  // multi-route export can take seconds — this drives a "Preparing…" state on
+  // the button so the user sees progress instead of a frozen dialog.
+  const [busy, setBusy] = useState(false);
+
   // Typeahead state for the route picker — open while focused / typing.
   const [routeQuery, setRouteQuery] = useState("");
   const [routeOpen, setRouteOpen] = useState(false);
@@ -125,6 +131,7 @@ function DownloadModal({
       setRouteQuery("");
       setRouteOpen(false);
       setRouteActive(0);
+      setBusy(false);
     }
   }, [open]);
 
@@ -356,6 +363,16 @@ function DownloadModal({
   };
 
   const runDownload = async () => {
+    if (busy) return; // guard against double-clicks while preparing
+    setBusy(true);
+    try {
+      await runDownloadInner();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runDownloadInner = async () => {
     const rIdx = Array.from(routeSel).sort((a, b) => a - b);
     const fmts = Array.from(fmtSel);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
@@ -662,22 +679,26 @@ function DownloadModal({
 
         <div className="dlm-foot">
           <span className="dlm-foot-note">
-            {!canDownload
-              ? "Pick at least one route and one format"
-              : bundleMode === "combined"
-                ? `${routeSel.size} route${routeSel.size === 1 ? "" : "s"} merged → ${fileCount} file${fileCount === 1 ? "" : "s"} (one per format)`
-                : `${fileCount} file${fileCount === 1 ? "" : "s"} will download`}
+            {busy
+              ? `Preparing ${fileCount} file${fileCount === 1 ? "" : "s"}… (large GeoPackage exports can take a few seconds)`
+              : !canDownload
+                ? "Pick at least one route and one format"
+                : bundleMode === "combined"
+                  ? `${routeSel.size} route${routeSel.size === 1 ? "" : "s"} merged → ${fileCount} file${fileCount === 1 ? "" : "s"} (one per format)`
+                  : `${fileCount} file${fileCount === 1 ? "" : "s"} will download`}
           </span>
           <div className="dlm-foot-btns">
-            <button className="dlm-cancel" onClick={onClose}>
+            <button className="dlm-cancel" onClick={onClose} disabled={busy}>
               Cancel
             </button>
             <button
               className="dlm-go"
               onClick={runDownload}
-              disabled={!canDownload}
+              disabled={!canDownload || busy}
             >
-              ⬇ Download {canDownload ? `(${fileCount})` : ""}
+              {busy
+                ? "⏳ Preparing…"
+                : `⬇ Download ${canDownload ? `(${fileCount})` : ""}`}
             </button>
           </div>
         </div>
