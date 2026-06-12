@@ -680,7 +680,7 @@ function DownloadModal({
         <div className="dlm-foot">
           <span className="dlm-foot-note">
             {busy
-              ? `Preparing ${fileCount} file${fileCount === 1 ? "" : "s"}… (large GeoPackage exports can take a few seconds)`
+              ? `Preparing ${fileCount} file${fileCount === 1 ? "" : "s"}… (large file exports can take a few seconds)`
               : !canDownload
                 ? "Pick at least one route and one format"
                 : bundleMode === "combined"
