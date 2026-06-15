@@ -53,6 +53,11 @@ import {
   type Cat62Table,
 } from "@/lib/cat62";
 import { kBestRoutes } from "@/lib/routeFinder";
+import {
+  aipRouteOptions,
+  fetchAipRoutes,
+  type AipRoute,
+} from "@/lib/aipRoutes";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
 
 /** How the route portion is supplied (all three kept, none removed). */
@@ -437,6 +442,40 @@ function GeneratorPanel({
   const isY8Corridor =
     (dep === "VTBS" && des === "VTSP") || (dep === "VTSP" && des === "VTBS");
 
+  // Predefined AIP flight-planning routes (ENR 4). When a city pair has a
+  // published route it is used VERBATIM instead of the computed best-route
+  // (no BKK/CMA navaid endpoints). RNAV vs Non-RNAV picks which table.
+  const [aipRoutes, setAipRoutes] = useState<AipRoute[]>([]);
+  const [rnavMode, setRnavMode] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    fetchAipRoutes()
+      .then((rs) => !cancelled && setAipRoutes(rs))
+      .catch(() => {
+        /* no published routes available → computed best-route is used */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // ADES suggestions cascade from ADEP: when the departure aerodrome has
+  // published AIP routes, the destination dropdown lists only those filed
+  // destinations (e.g. VTCC → VTBD, VTBS). Falls back to all aerodromes when
+  // the ADEP has no AIP route (so best-route pairs still work); free-typing
+  // any ICAO stays allowed by the combobox.
+  const adesOptions = useMemo<ComboOption[]>(() => {
+    const a = adep.trim().toUpperCase();
+    if (!a) return airportOptions;
+    const dests = new Set(
+      aipRoutes
+        .filter((r) => r.adep.toUpperCase() === a)
+        .map((r) => r.ades.toUpperCase()),
+    );
+    if (dests.size === 0) return airportOptions;
+    return airportOptions.filter((o) => dests.has(o.code.toUpperCase()));
+  }, [adep, aipRoutes, airportOptions]);
+
   // Aerodrome reference coords, keyed by ICAO, for the route finder.
   const airportLL = useMemo(() => {
     const m = new Map<string, { lat: number; lon: number }>();
@@ -448,12 +487,36 @@ function GeneratorPanel({
   // k-shortest) over the whole Thai airway network. Empty when either
   // airport's coordinates aren't in the AIP (e.g. a free-typed field).
   const bestRoutes = useMemo(() => {
-    if (!pairReady || allFixes.length === 0) return [];
+    if (!pairReady) return [];
     const depLL = airportLL.get(dep) ?? null;
     const desLL = airportLL.get(des) ?? null;
-    if (!depLL || !desLL) return [];
+    // Prefer the published AIP route(s) for this directional pair + RNAV
+    // mode — used verbatim, so no computed shortest path and no injected
+    // BKK/CMA endpoints. Falls back to the graph search when the pair has
+    // no published route.
+    const aip = aipRouteOptions(
+      aipRoutes,
+      dep,
+      des,
+      rnavMode,
+      allFixes,
+      airwaysMap,
+      depLL,
+      desLL,
+    );
+    if (aip.length > 0) return aip;
+    if (allFixes.length === 0 || !depLL || !desLL) return [];
     return kBestRoutes(allFixes, airwaysMap, depLL, desLL, { k: 6 });
-  }, [pairReady, dep, des, airportLL, allFixes, airwaysMap]);
+  }, [pairReady, dep, des, airportLL, allFixes, airwaysMap, aipRoutes, rnavMode]);
+
+  // Whether the current pair + RNAV mode resolves to a published AIP route
+  // (so the UI can label it "AIP filed route" vs a computed best-route).
+  const usingAip = useMemo(
+    () =>
+      aipRouteOptions(aipRoutes, dep, des, rnavMode, allFixes, airwaysMap)
+        .length > 0,
+    [aipRoutes, dep, des, rnavMode, allFixes, airwaysMap],
+  );
 
   // SID/STAR procedure names published at the current ADEP/ADES. Fetched
   // whenever the airport changes; an airport with no coded procedures (or
@@ -540,6 +603,47 @@ function GeneratorPanel({
     routeMode === "build" ? builtRoute : routeStr.trim();
   // Can't queue more routes than there are distinct possible ones.
   const routeCap = Math.max(1, bestRoutes.length);
+
+  // SID/STAR filtered to procedures that actually connect to the chosen
+  // route's terminal fixes: a SID must reach the route's FIRST en-route fix,
+  // a STAR must start from its LAST. Thai procedure names are coded from that
+  // fix (OLVUK → OLVU1B/OLVU3A…, ENBAT → ENBA2A…), so we match on the
+  // alphabetic name prefix. Falls back to all options when nothing matches
+  // (e.g. a computed route whose entry fix has no same-named SID), so the
+  // picker is never an unintended dead-end.
+  const routeEndFixes = useMemo(() => {
+    // The RNAV/Non-RNAV toggle is authoritative: when the pair has a
+    // published route, derive the terminal fixes from THAT (so toggling
+    // capability immediately reflows the SID/STAR lists), not from whatever
+    // is left in the route box. Only fall back to the box for non-AIP pairs.
+    const src = usingAip
+      ? bestRoutes[0]?.text ?? ""
+      : (effectiveRoute && effectiveRoute.trim()) || bestRoutes[0]?.text || "";
+    const known = new Set(allFixes.map((f) => f.ident));
+    const toks = src
+      .toUpperCase()
+      .split(/\s+/)
+      .filter((t) => t && t !== "DCT" && known.has(t));
+    return { first: toks[0] ?? null, last: toks[toks.length - 1] ?? null };
+  }, [usingAip, effectiveRoute, bestRoutes, allFixes]);
+
+  const sidShown = useMemo(() => {
+    const f = routeEndFixes.first;
+    if (!f) return sidOptions;
+    const m = sidOptions.filter((n) =>
+      f.startsWith(n.match(/^[A-Z]+/)?.[0] ?? n),
+    );
+    return m.length > 0 ? m : sidOptions;
+  }, [sidOptions, routeEndFixes]);
+
+  const starShown = useMemo(() => {
+    const f = routeEndFixes.last;
+    if (!f) return starOptions;
+    const m = starOptions.filter((n) =>
+      f.startsWith(n.match(/^[A-Z]+/)?.[0] ?? n),
+    );
+    return m.length > 0 ? m : starOptions;
+  }, [starOptions, routeEndFixes]);
   const addRoute = () => {
     const r = effectiveRoute.trim();
     if (!r || routes.includes(r) || routes.length >= routeCap) return;
@@ -563,9 +667,22 @@ function GeneratorPanel({
     setBuiltWpts([]);
   };
   const handleAdepChange = (v: string) => {
-    if (v.trim().toUpperCase() !== adep.trim().toUpperCase()) {
+    const nv = v.trim().toUpperCase();
+    if (nv !== adep.trim().toUpperCase()) {
       clearRouteSelection();
       setSid(""); // SID is ADEP-specific — drop it when ADEP changes.
+      // ADES cascades from ADEP: if the new ADEP publishes AIP destinations
+      // and the current ADES isn't one of them, clear it so the dependent
+      // dropdown stays consistent.
+      const dests = new Set(
+        aipRoutes
+          .filter((r) => r.adep.toUpperCase() === nv)
+          .map((r) => r.ades.toUpperCase()),
+      );
+      if (dests.size > 0 && ades && !dests.has(ades.trim().toUpperCase())) {
+        setAdes("");
+        setStar("");
+      }
     }
     setAdep(v);
   };
@@ -1148,7 +1265,7 @@ function GeneratorPanel({
               <IdentCombobox
                 value={ades}
                 onChange={handleAdesChange}
-                options={airportOptions}
+                options={adesOptions}
                 placeholder="Destination"
               />
             </label>
@@ -1372,6 +1489,55 @@ function GeneratorPanel({
               </button> */}
             </div>
 
+            {/* RNAV capability — selects which AIP flight-planning table the
+                published route comes from (RNAV vs Non-RNAV, ENR 4). */}
+            {pairReady && (
+              <div
+                className="rt-rnav"
+                role="radiogroup"
+                aria-label="Aircraft capability"
+              >
+                <span className="rt-rnav-label">Capability</span>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={rnavMode}
+                  className={rnavMode ? "active" : undefined}
+                  onClick={() => {
+                    if (rnavMode) return;
+                    // Switch capability + clear the now-invalid SID/STAR. The
+                    // route box is left as-is (empty until the user clicks a
+                    // suggestion) — the SID/STAR lists still follow the toggle
+                    // via the published-route lookup, no need to pre-fill it.
+                    setRnavMode(true);
+                    setSid("");
+                    setStar("");
+                  }}
+                >
+                  RNAV
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={!rnavMode}
+                  className={!rnavMode ? "active" : undefined}
+                  onClick={() => {
+                    if (!rnavMode) return;
+                    setRnavMode(false);
+                    setSid("");
+                    setStar("");
+                  }}
+                >
+                  Non-RNAV
+                </button>
+                {usingAip && (
+                  <span className="rt-rnav-note" title="Using the published AIP filed route for this city pair">
+                    ✦ AIP route
+                  </span>
+                )}
+              </div>
+            )}
+
             {routeMode === "fpl" && (
               <>
                 <input
@@ -1396,12 +1562,15 @@ function GeneratorPanel({
                 {pairReady && bestRoutes.length > 0 && (
                   <div className="rt-routes">
                     <span>
-                      Best routes ({dep} → {des})
-                      {hasReference
-                        ? passingRoutes.length > 0
-                          ? " — within 5 min of reference"
-                          : " — none within 5 min; showing all"
-                        : " — ranked shortest first"}
+                      {usingAip ? "AIP filed route" : "Best routes"} ({dep} →{" "}
+                      {des})
+                      {usingAip
+                        ? ` — ${rnavMode ? "RNAV" : "Non-RNAV"}, published`
+                        : hasReference
+                          ? passingRoutes.length > 0
+                            ? " — within 5 min of reference"
+                            : " — none within 5 min; showing all"
+                          : " — ranked shortest first"}
                     </span>
                     {(showAllRoutes ? shownRoutes : shownRoutes.slice(0, 3)).map(
                       (r, i) => {
@@ -1542,10 +1711,10 @@ function GeneratorPanel({
                 disabled={!dep}
               >
                 <option value="">None (direct departure)</option>
-                {sid && !sidOptions.includes(sid) && (
+                {sid && !sidShown.includes(sid) && (
                   <option value={sid}>{sid}</option>
                 )}
-                {sidOptions.map((n) => (
+                {sidShown.map((n) => (
                   <option key={n} value={n}>
                     {n}
                   </option>
@@ -1560,10 +1729,10 @@ function GeneratorPanel({
                 disabled={!des}
               >
                 <option value="">None (direct arrival)</option>
-                {star && !starOptions.includes(star) && (
+                {star && !starShown.includes(star) && (
                   <option value={star}>{star}</option>
                 )}
-                {starOptions.map((n) => (
+                {starShown.map((n) => (
                   <option key={n} value={n}>
                     {n}
                   </option>

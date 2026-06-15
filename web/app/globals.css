@@ -5878,3 +5878,58 @@ body {
   background: rgba(56, 189, 248, 0.12);
   border-color: var(--accent);
 }
+
+/* ---- RNAV / Non-RNAV capability toggle (route section) ---- */
+.rt-rnav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 4px;
+}
+
+.rt-rnav-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-right: 2px;
+}
+
+.rt-rnav button {
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  background: #0b1424;
+  border: 1px solid #243049;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.rt-rnav button:hover {
+  color: var(--text);
+}
+
+.rt-rnav button.active {
+  color: #06121f;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.rt-rnav-note {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #34d399;
+}
+
+.app.theme-light .rt-rnav button {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.app.theme-light .rt-rnav button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+}

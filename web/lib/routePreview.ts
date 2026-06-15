@@ -69,7 +69,10 @@ export function resolveRoutePreview(
   let prevIdent: string | null = null;
   let pendingAirway: string | null = null;
 
-  for (const t of tokens) {
+  for (const raw of tokens) {
+    // Slash-separated airway alternatives (e.g. "Y22/Y23") are stored
+    // verbatim for display; fly the first, like the server does.
+    const t = raw.includes("/") ? raw.split("/")[0] : raw;
     if (t === "DCT") {
       pendingAirway = null;
       continue;
