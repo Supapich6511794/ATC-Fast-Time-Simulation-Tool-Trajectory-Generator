@@ -482,15 +482,14 @@ function EndpointMarker({
   stroke,
   ident,
   role,
-  airport,
   detail,
 }: {
   position: L.LatLngExpression;
   fill: string;
   stroke: string;
+  /** The aerodrome ICAO at this endpoint (e.g. "VTBD"). */
   ident: string;
   role: "Start" | "End";
-  airport: string;
   detail: string;
 }) {
   return (
@@ -506,11 +505,11 @@ function EndpointMarker({
       }}
     >
       <Tooltip direction="top" offset={[0, -9]} sticky>
-        <strong>{ident}</strong> · {role} ({airport})
+        <strong>{ident}</strong> · {role}
       </Tooltip>
       <Popup>
         <strong>
-          {ident} — {role} ({airport})
+          {ident} — {role}
         </strong>
         <br />
         {detail}
@@ -942,7 +941,12 @@ export default function LeafletMap({
             />
             {altSegments}
 
-            {route.slice(1, -1).map((w) => (
+            {/* Every published route fix as a dot (OLVUK … MARNI). The
+                ADEP/ADES aerodromes are drawn separately by the endpoint
+                markers below, so we no longer drop the first/last fix —
+                with AIP routes those are real en-route fixes (e.g. OLVUK,
+                MARNI), NOT the airports. */}
+            {route.map((w) => (
               <HoverFix
                 key={`${kp}-${w.ident}`}
                 center={[w.lat, w.lon]}
@@ -978,18 +982,16 @@ export default function LeafletMap({
               position={line[0]}
               fill="#22c55e"
               stroke="#052e16"
-              ident={route[0]?.ident ?? ""}
+              ident={meta.adep}
               role="Start"
-              airport={meta.adep}
               detail={`${meta.callsign} · ${meta.eobtIso}`}
             />
             <EndpointMarker
               position={line[line.length - 1]}
               fill="#ef4444"
               stroke="#450a0a"
-              ident={route[route.length - 1]?.ident ?? ""}
+              ident={meta.ades}
               role="End"
-              airport={meta.ades}
               detail={`${meta.callsign} · ${pts[pts.length - 1].epoch_ts}`}
             />
 
