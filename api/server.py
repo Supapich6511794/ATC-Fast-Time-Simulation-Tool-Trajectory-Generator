@@ -355,6 +355,10 @@ def _expand_airways(route_str: str) -> str:
     """
     airways = _airways()
     tokens = route_str.split()
+    # Collapse slash-separated airway alternatives published in the AIP
+    # ("Y22/Y23", "W5/W6") to the first option — the route string keeps the
+    # slash for display fidelity, but a single airway is actually flown.
+    tokens = [t.split("/")[0] if "/" in t else t for t in tokens]
     out: list[str] = []
     i = 0
     while i < len(tokens):
