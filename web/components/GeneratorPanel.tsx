@@ -52,7 +52,7 @@ import {
   lookupReferenceMin,
   type Cat62Table,
 } from "@/lib/cat62";
-import { kBestRoutes } from "@/lib/routeFinder";
+import { kBestRoutes, type RouteOption } from "@/lib/routeFinder";
 import {
   aipRouteOptions,
   fetchAipRoutes,
@@ -307,6 +307,27 @@ function GeneratorPanel({
     star,
   });
 
+  /** Pick the route tab for a loaded plan: AIP when its route is a published
+   *  filed route for the pair, otherwise Manual (so a custom/imported route
+   *  shows automatically in the Manual editor, limited to the pair's
+   *  waypoints). Empty route defaults to AIP so the filed-route suggestions
+   *  appear. */
+  const routeTabForDraft = (d: PlanDraft): "aip" | "manual" => {
+    const a = d.adep.trim().toUpperCase();
+    const b = d.ades.trim().toUpperCase();
+    const norm = (s: string) => s.trim().toUpperCase().replace(/\s+/g, " ");
+    const rt = norm(d.routes?.[0] ?? d.routeStr ?? "");
+    if (!rt) return d.builtWpts.length > 0 ? "manual" : "aip";
+    return aipRoutes.some(
+      (r) =>
+        r.adep.toUpperCase() === a &&
+        r.ades.toUpperCase() === b &&
+        norm(r.route) === rt,
+    )
+      ? "aip"
+      : "manual";
+  };
+
   /** Load a PlanDraft into the live editor (scalar state). */
   const loadDraft = (d: PlanDraft) => {
     setCallsign(d.callsign);
@@ -322,6 +343,8 @@ function GeneratorPanel({
     setRoutes(d.routes);
     setSid(d.sid);
     setStar(d.star);
+    // Auto-select AIP vs Manual based on whether the route is a filed route.
+    setRouteTab(routeTabForDraft(d));
   };
 
   const switchTo = (id: string) => {
@@ -446,7 +469,10 @@ function GeneratorPanel({
   // published route it is used VERBATIM instead of the computed best-route
   // (no BKK/CMA navaid endpoints). RNAV vs Non-RNAV picks which table.
   const [aipRoutes, setAipRoutes] = useState<AipRoute[]>([]);
-  const [rnavMode, setRnavMode] = useState(true);
+  // Route source: "aip" = pick a published filed route (RNAV + Non-RNAV
+  // listed together); "manual" = build it (Type / Pick) from this pair's
+  // AIP waypoints.
+  const [routeTab, setRouteTab] = useState<"aip" | "manual">("aip");
   useEffect(() => {
     let cancelled = false;
     fetchAipRoutes()
@@ -486,37 +512,74 @@ function GeneratorPanel({
   // K best routes for ANY aerodrome pair — graph search (Yen's
   // k-shortest) over the whole Thai airway network. Empty when either
   // airport's coordinates aren't in the AIP (e.g. a free-typed field).
-  const bestRoutes = useMemo(() => {
+  const bestRoutes = useMemo<(RouteOption & { caps?: boolean[] })[]>(() => {
     if (!pairReady) return [];
     const depLL = airportLL.get(dep) ?? null;
     const desLL = airportLL.get(des) ?? null;
-    // Prefer the published AIP route(s) for this directional pair + RNAV
-    // mode — used verbatim, so no computed shortest path and no injected
-    // BKK/CMA endpoints. Falls back to the graph search when the pair has
-    // no published route.
-    const aip = aipRouteOptions(
-      aipRoutes,
-      dep,
-      des,
-      rnavMode,
-      allFixes,
-      airwaysMap,
-      depLL,
-      desLL,
-    );
-    if (aip.length > 0) return aip;
+    // Published AIP routes for BOTH capabilities (RNAV + Non-RNAV). When the
+    // SAME route string is filed under both, merge it into ONE entry tagged
+    // with both labels (no duplicate row). Used verbatim (no computed path,
+    // no injected BKK/CMA). Falls back to the graph search when the pair has
+    // no published route at all.
+    const both = [
+      ...aipRouteOptions(aipRoutes, dep, des, true, allFixes, airwaysMap, depLL, desLL).map(
+        (r) => ({ ...r, rnav: true }),
+      ),
+      ...aipRouteOptions(aipRoutes, dep, des, false, allFixes, airwaysMap, depLL, desLL).map(
+        (r) => ({ ...r, rnav: false }),
+      ),
+    ];
+    if (both.length > 0) {
+      const byText = new Map<
+        string,
+        RouteOption & { caps: boolean[] }
+      >();
+      for (const r of both) {
+        const e = byText.get(r.text);
+        if (e) {
+          if (!e.caps.includes(r.rnav)) e.caps.push(r.rnav);
+        } else {
+          byText.set(r.text, {
+            text: r.text,
+            distanceNm: r.distanceNm,
+            caps: [r.rnav],
+          });
+        }
+      }
+      // RNAV first within each capability set, then by distance.
+      return [...byText.values()].map((e) => ({
+        ...e,
+        caps: [...e.caps].sort((a, b) => Number(b) - Number(a)),
+      }));
+    }
     if (allFixes.length === 0 || !depLL || !desLL) return [];
     return kBestRoutes(allFixes, airwaysMap, depLL, desLL, { k: 6 });
-  }, [pairReady, dep, des, airportLL, allFixes, airwaysMap, aipRoutes, rnavMode]);
+  }, [pairReady, dep, des, airportLL, allFixes, airwaysMap, aipRoutes]);
 
-  // Whether the current pair + RNAV mode resolves to a published AIP route
-  // (so the UI can label it "AIP filed route" vs a computed best-route).
+  // Whether the current pair resolves to ANY published AIP route, so the UI
+  // can label it "AIP filed route".
   const usingAip = useMemo(
-    () =>
-      aipRouteOptions(aipRoutes, dep, des, rnavMode, allFixes, airwaysMap)
-        .length > 0,
-    [aipRoutes, dep, des, rnavMode, allFixes, airwaysMap],
+    () => bestRoutes.some((r) => r.caps !== undefined),
+    [bestRoutes],
   );
+
+  // Waypoints that appear in this pair's AIP routes (both capabilities) —
+  // the allowed set for Manual mode (Pick/Type). Falls back to every fix
+  // when the pair has no published route.
+  const manualFixes = useMemo(() => {
+    const a = dep.trim().toUpperCase();
+    const b = des.trim().toUpperCase();
+    const known = new Set(allFixes.map((f) => f.ident));
+    const out = new Set<string>();
+    for (const r of aipRoutes) {
+      if (r.adep.toUpperCase() !== a || r.ades.toUpperCase() !== b) continue;
+      for (const tok of r.route.toUpperCase().split(/\s+/)) {
+        const t = tok.includes("/") ? tok.split("/")[0] : tok;
+        if (t !== "DCT" && known.has(t)) out.add(t);
+      }
+    }
+    return out.size > 0 ? [...out].sort() : waypointIdents;
+  }, [aipRoutes, dep, des, allFixes, waypointIdents]);
 
   // SID/STAR procedure names published at the current ADEP/ADES. Fetched
   // whenever the airport changes; an airport with no coded procedures (or
@@ -612,13 +675,10 @@ function GeneratorPanel({
   // (e.g. a computed route whose entry fix has no same-named SID), so the
   // picker is never an unintended dead-end.
   const routeEndFixes = useMemo(() => {
-    // The RNAV/Non-RNAV toggle is authoritative: when the pair has a
-    // published route, derive the terminal fixes from THAT (so toggling
-    // capability immediately reflows the SID/STAR lists), not from whatever
-    // is left in the route box. Only fall back to the box for non-AIP pairs.
-    const src = usingAip
-      ? bestRoutes[0]?.text ?? ""
-      : (effectiveRoute && effectiveRoute.trim()) || bestRoutes[0]?.text || "";
+    // SID/STAR follow the route the user actually picked/typed (its first
+    // and last fix); fall back to the top suggestion before one is chosen.
+    const src =
+      (effectiveRoute && effectiveRoute.trim()) || bestRoutes[0]?.text || "";
     const known = new Set(allFixes.map((f) => f.ident));
     const toks = src
       .toUpperCase()
@@ -653,6 +713,16 @@ function GeneratorPanel({
     // map too, instead of leaving an orphan from the unchanged input.
     if (routeMode === "build") setBuiltWpts([]);
     else if (routeMode === "fpl") setRouteStr("");
+  };
+
+  /** Queue a specific route in ONE click (clicking a route in the AIP list) —
+   *  no separate "+ Add route" press. Deduped + capped like addRoute. */
+  const addRouteText = (text: string) => {
+    const r = text.trim();
+    if (!r) return;
+    setRoutes((xs) =>
+      xs.includes(r) || xs.length >= routeCap ? xs : [...xs, r],
+    );
   };
 
   /** Drop the active tab's route selection — the queue, the typed Item-15
@@ -797,6 +867,8 @@ function GeneratorPanel({
     if (r.ades) p.ades = r.ades;
     if (r.eobt) p.eobt = r.eobt;
     if (r.rfl != null) p.rfl = r.rfl;
+    if (r.sid) p.sid = r.sid;
+    if (r.star) p.star = r.star;
     // A multi-route flight rebuilds as ONE plan with a route queue; a
     // single-route flight fills the Item-15 box.
     if (r.routes && r.routes.length > 0) p.routes = r.routes;
@@ -1461,192 +1533,166 @@ function GeneratorPanel({
           */}
 
           <div className="field">
-            <span>Route string (Item 15)</span>
+            <span>Route</span>
             <div className="rt-modes" role="tablist">
               <button
                 role="tab"
-                aria-selected={routeMode === "fpl"}
-                className={routeMode === "fpl" ? "active" : undefined}
-                onClick={() => setRouteMode("fpl")}
+                aria-selected={routeTab === "aip"}
+                className={routeTab === "aip" ? "active" : undefined}
+                onClick={() => {
+                  setRouteTab("aip");
+                  setRouteMode("fpl"); // AIP picks fill the Item-15 text box
+                }}
               >
-                Type
+                AIP
               </button>
               <button
                 role="tab"
-                aria-selected={routeMode === "build"}
-                className={routeMode === "build" ? "active" : undefined}
-                onClick={() => setRouteMode("build")}
+                aria-selected={routeTab === "manual"}
+                className={routeTab === "manual" ? "active" : undefined}
+                onClick={() => setRouteTab("manual")}
               >
-                Pick waypoints
+                Manual
               </button>
-              {/* <button
-                role="tab"
-                aria-selected={routeMode === "csv"}
-                className={routeMode === "csv" ? "active" : undefined}
-                onClick={() => setRouteMode("csv")}
-              >
-                Airway CSV
-              </button> */}
             </div>
 
-            {/* RNAV capability — selects which AIP flight-planning table the
-                published route comes from (RNAV vs Non-RNAV, ENR 4). */}
-            {pairReady && (
-              <div
-                className="rt-rnav"
-                role="radiogroup"
-                aria-label="Aircraft capability"
-              >
-                <span className="rt-rnav-label">Capability</span>
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={rnavMode}
-                  className={rnavMode ? "active" : undefined}
-                  onClick={() => {
-                    if (rnavMode) return;
-                    // Switch capability + clear the now-invalid SID/STAR. The
-                    // route box is left as-is (empty until the user clicks a
-                    // suggestion) — the SID/STAR lists still follow the toggle
-                    // via the published-route lookup, no need to pre-fill it.
-                    setRnavMode(true);
-                    setSid("");
-                    setStar("");
-                  }}
-                >
-                  RNAV
-                </button>
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={!rnavMode}
-                  className={!rnavMode ? "active" : undefined}
-                  onClick={() => {
-                    if (!rnavMode) return;
-                    setRnavMode(false);
-                    setSid("");
-                    setStar("");
-                  }}
-                >
-                  Non-RNAV
-                </button>
-                {usingAip && (
-                  <span className="rt-rnav-note" title="Using the published AIP filed route for this city pair">
-                    ✦ AIP route
-                  </span>
-                )}
-              </div>
+            {!pairReady && (
+              <p className="rt-hint">
+                {!dep || !des
+                  ? "Enter ADEP and ADES above to start a route."
+                  : "ADEP and ADES cannot be the same."}
+              </p>
             )}
 
-            {routeMode === "fpl" && (
+            {/* AIP — pick a published filed route. RNAV + Non-RNAV are listed
+                together; click to fill the route, add either or both. */}
+            {routeTab === "aip" &&
+              pairReady &&
+              (bestRoutes.length > 0 ? (
+                <div className="rt-routes">
+                  <span>
+                    {usingAip ? "AIP filed routes" : "Best routes"} ({dep} →{" "}
+                    {des})
+                    {usingAip
+                      ? " — RNAV + Non-RNAV"
+                      : hasReference
+                        ? passingRoutes.length > 0
+                          ? " — within 5 min of reference"
+                          : " — none within 5 min; showing all"
+                        : " — ranked shortest first"}
+                  </span>
+                  {(showAllRoutes ? shownRoutes : shownRoutes.slice(0, 4)).map(
+                    (r) => {
+                      const passTag =
+                        r.passed === true
+                          ? " · PASS"
+                          : r.passed === false
+                            ? " · FAIL"
+                            : "";
+                      const queued = routes.includes(r.text);
+                      const cls = [
+                        queued ? "rt-best" : "",
+                        r.passed === true ? "rt-pass" : "",
+                        r.passed === false ? "rt-fail" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ");
+                      return (
+                        <button
+                          key={r.text}
+                          type="button"
+                          className={cls || undefined}
+                          onClick={() => addRouteText(r.text)}
+                          title={`${r.distanceNm} NM · ~${Math.round(r.simMin)} min — click to add`}
+                        >
+                          {r.caps?.includes(true) && (
+                            <span className="rt-cap">RNAV</span>
+                          )}
+                          {r.caps?.includes(false) && (
+                            <span className="rt-cap non">NON-RNAV</span>
+                          )}
+                          {queued && <span className="rt-cap added">✓</span>}
+                          {r.text} · {r.distanceNm} NM · ~
+                          {Math.round(r.simMin)} min{passTag}
+                        </button>
+                      );
+                    },
+                  )}
+                  {shownRoutes.length > 4 && (
+                    <button
+                      type="button"
+                      className="rt-more"
+                      onClick={() => setShowAllRoutes((v) => !v)}
+                    >
+                      {showAllRoutes
+                        ? "See less"
+                        : `See more (${shownRoutes.length - 4})`}
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <p className="rt-hint">
+                  No AIP filed route for {dep} → {des}. Use{" "}
+                  <strong>Manual</strong> to build one from this pair&apos;s
+                  waypoints.
+                </p>
+              ))}
+
+            {/* Manual — Type or Pick, limited to this pair's AIP waypoints. */}
+            {routeTab === "manual" && (
               <>
-                <input
-                  type="text"
-                  value={routeStr}
-                  onChange={(e) => setRouteStr(e.target.value)}
-                  placeholder="e.g. BKK Y8 PUT   or   DCT VANKO DCT PUT"
-                />
+                <div className="rt-modes rt-sub" role="tablist">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={routeMode !== "build"}
+                    className={routeMode !== "build" ? "active" : undefined}
+                    onClick={() => setRouteMode("fpl")}
+                  >
+                    Type
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={routeMode === "build"}
+                    className={routeMode === "build" ? "active" : undefined}
+                    onClick={() => setRouteMode("build")}
+                  >
+                    Pick waypoints
+                  </button>
+                </div>
 
-                {!pairReady && (
-                  <p className="rt-hint">
-                    {!dep || !des
-                      ? "Enter ADEP and ADES above to start a route."
-                      : "ADEP and ADES cannot be the same."}
-                  </p>
+                {routeMode !== "build" && (
+                  <>
+                    <input
+                      type="text"
+                      value={routeStr}
+                      list="manual-fixes"
+                      onChange={(e) => setRouteStr(e.target.value)}
+                      placeholder="e.g. SABIS Y8 SAVSA"
+                    />
+                    <datalist id="manual-fixes">
+                      {manualFixes.map((f) => (
+                        <option key={f} value={f} />
+                      ))}
+                    </datalist>
+                    {pairReady && manualFixes.length > 0 && (
+                      <p className="rt-hint">
+                        Waypoints for {dep} → {des}:{" "}
+                        <strong>{manualFixes.join(" · ")}</strong>
+                      </p>
+                    )}
+                  </>
                 )}
 
-                {/* Best-route ranker — graph search over the whole Thai
-                    airway network, for ANY aerodrome pair. When the pair
-                    has a flight-time reference, only routes that PASS the
-                    <5 min check are shown (falls back to all if none). */}
-                {pairReady && bestRoutes.length > 0 && (
-                  <div className="rt-routes">
-                    <span>
-                      {usingAip ? "AIP filed route" : "Best routes"} ({dep} →{" "}
-                      {des})
-                      {usingAip
-                        ? ` — ${rnavMode ? "RNAV" : "Non-RNAV"}, published`
-                        : hasReference
-                          ? passingRoutes.length > 0
-                            ? " — within 5 min of reference"
-                            : " — none within 5 min; showing all"
-                          : " — ranked shortest first"}
-                    </span>
-                    {(showAllRoutes ? shownRoutes : shownRoutes.slice(0, 3)).map(
-                      (r, i) => {
-                        const passTag =
-                          r.passed === true
-                            ? " · PASS"
-                            : r.passed === false
-                              ? " · FAIL"
-                              : "";
-                        const timeTag = ` · ~${Math.round(r.simMin)} min`;
-                        const cls = [
-                          i === 0 ? "rt-best" : "",
-                          r.passed === true ? "rt-pass" : "",
-                          r.passed === false ? "rt-fail" : "",
-                        ]
-                          .filter(Boolean)
-                          .join(" ");
-                        const delta =
-                          pairRefMin != null ? r.simMin - pairRefMin : null;
-                        return (
-                          <button
-                            key={r.text}
-                            type="button"
-                            className={cls || undefined}
-                            onClick={() => setRouteStr(r.text)}
-                            title={
-                              pairRefMin != null
-                                ? `${r.distanceNm} NM · ~${Math.round(
-                                    r.simMin,
-                                  )} min sim vs ${Math.round(
-                                    pairRefMin,
-                                  )} min ref (Δ ${
-                                    delta! >= 0 ? "+" : "-"
-                                  }${Math.abs(Math.round(delta!))} min)`
-                                : `${r.distanceNm} NM total`
-                            }
-                          >
-                            {r.text} · {r.distanceNm} NM{timeTag}{passTag}
-                          </button>
-                        );
-                      },
-                    )}
-                    {shownRoutes.length > 3 && (
-                      <button
-                        type="button"
-                        className="rt-more"
-                        onClick={() => setShowAllRoutes((v) => !v)}
-                      >
-                        {showAllRoutes
-                          ? "See less"
-                          : `See more (${shownRoutes.length - 3})`}
-                      </button>
-                    )}
-                  </div>
-                )}
-
-                {/* Pair is set but no airway routing found (e.g. an
-                    airport with no coords in the AIP) — guide the user. */}
-                {pairReady && bestRoutes.length === 0 && (
-                  <p className="rt-hint">
-                    No airway routing found for {dep} → {des}. Type an
-                    Item-15 route using any airway (e.g.{" "}
-                    <code>BKK A1 UBL</code>) — every airway is expanded
-                    automatically — or use <strong>Pick waypoints</strong>{" "}
-                    to search all {waypointIdents.length} fixes.
-                  </p>
+                {routeMode === "build" && (
+                  <RouteBuilder
+                    idents={manualFixes}
+                    selected={builtWpts}
+                    onChange={setBuiltWpts}
+                  />
                 )}
               </>
-            )}
-
-            {routeMode === "build" && (
-              <RouteBuilder
-                idents={waypointIdents}
-                selected={builtWpts}
-                onChange={setBuiltWpts}
-              />
             )}
 
             {routeMode === "csv" && (

@@ -300,19 +300,6 @@ function ProcTab({
         />
       </label>
 
-      <MultiSelect
-        label="AIRPORT"
-        options={airportOpts}
-        selected={state.airports}
-        onChange={(airports) => set({ airports, procedures: new Set() })}
-      />
-      <MultiSelect
-        label="PROCEDURE"
-        options={procOpts}
-        selected={state.procedures}
-        onChange={(procedures) => set({ procedures })}
-      />
-
       <Slider
         label="OPACITY"
         value={Math.round(state.opacity * 100)}

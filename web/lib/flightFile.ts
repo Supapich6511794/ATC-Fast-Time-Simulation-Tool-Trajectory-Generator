@@ -7,7 +7,8 @@
  * forgiving: unknown columns/keys are ignored, missing ones stay blank.
  *
  * Accepted shapes
- *   CSV      header row: callsign,actype,adep,ades,eobt,rfl,route
+ *   CSV      header row: callsign,actype,adep,ades,eobt,rfl,route,sid,star
+ *            (sid/star optional — spliced at ADEP/ADES when present)
  *   JSON     one object, or an array of objects, with those keys
  *   GeoJSON  FeatureCollection — ordered waypoint idents are read from
  *            feature properties and joined into an Item-15 string
@@ -33,6 +34,9 @@ export interface FlightRecord {
   rfl?: number;
   /** Item-15 style route string. */
   route?: string;
+  /** SID name spliced at ADEP / STAR name spliced at ADES (optional). */
+  sid?: string;
+  star?: string;
   /** Several Item-15 routes flown by ONE flight (the multi-route export).
    *  Set instead of `route` when a flight has more than one route, so the
    *  re-import rebuilds a single plan with a route queue rather than one
@@ -73,6 +77,8 @@ function fromObject(o: Record<string, unknown>): FlightRecord {
     eobt: normEobt(get("eobt", "etd", "departure_time")),
     rfl: numOrUndef(get("rfl", "fl", "level")),
     route: get("route", "route_string", "item15"),
+    sid: get("sid", "sid_name")?.toUpperCase(),
+    star: get("star", "star_name")?.toUpperCase(),
   };
 }
 
