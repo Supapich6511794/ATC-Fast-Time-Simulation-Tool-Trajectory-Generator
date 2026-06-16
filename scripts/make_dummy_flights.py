@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -58,6 +59,46 @@ def _load_aip() -> tuple[dict, dict, dict]:
 
 
 WAYPOINTS, AIRWAYS, AIRPORTS = _load_aip()
+
+_SID_LINE = _ROOT / "web" / "public" / "data" / "sid" / "sid_line_thai.geojson"
+_STAR_LINE = _ROOT / "web" / "public" / "data" / "star" / "star_line.geojson"
+
+
+def _load_procs(path: Path) -> dict[str, list[str]]:
+    """airport ICAO -> sorted procedure names (SID or STAR)."""
+    out: dict[str, set[str]] = {}
+    try:
+        gj = json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        return {}
+    for f in gj.get("features", []):
+        p = f.get("properties") or {}
+        a, pr = p.get("airport_identifier"), p.get("procedure_identifier")
+        if a and pr:
+            out.setdefault(a, set()).add(pr)
+    return {k: sorted(v) for k, v in out.items()}
+
+
+SIDS = _load_procs(_SID_LINE)
+STARS = _load_procs(_STAR_LINE)
+
+
+def _pick_proc(opts: list[str], fix: str | None) -> str:
+    """First procedure whose alphabetic prefix matches the connecting fix
+    (Thai naming: OLVUK → OLVU1B…), else "" (direct / no procedure)."""
+    if not fix:
+        return ""
+    for n in opts:
+        m = re.match(r"^[A-Z]+", n)
+        if m and fix.startswith(m.group(0)):
+            return n
+    return ""
+
+
+def _route_fixes(route_str: str) -> tuple[str | None, str | None]:
+    toks = [t.split("/")[0] if "/" in t else t for t in route_str.upper().split()]
+    fixes = [t for t in toks if t != "DCT" and t in WAYPOINTS]
+    return (fixes[0] if fixes else None, fixes[-1] if fixes else None)
 
 ACTYPES = ["B738", "A320", "A321", "A333", "A359", "B77W", "B789", "B763"]
 AIRLINES = ["THA", "AIQ", "TGW", "BKP", "DMK", "SEH", "NOK", "THD", "TVJ", "PGY"]
@@ -148,7 +189,8 @@ def sample_points(route_pts, eobt, rfl_ft, dep_elev, des_elev):
     return out
 
 
-def csv_block(callsign, actype, adep, ades, rfl, route_str, eobt, samples):
+def csv_block(callsign, actype, adep, ades, rfl, route_str, eobt, samples,
+              sid="", star=""):
     lines = [
         f"ROUTE: {route_str}",
         f"DEP: {adep}",
@@ -156,6 +198,12 @@ def csv_block(callsign, actype, adep, ades, rfl, route_str, eobt, samples):
         f"ACTYPE: {actype}",
         f"FL: F{rfl}",
         f"ATD: {eobt.strftime('%Y-%m-%d %H:%M:%S')}",
+    ]
+    if sid:
+        lines.append(f"SID: {sid}")
+    if star:
+        lines.append(f"STAR: {star}")
+    lines += [
         "",
         "---",
         "",
@@ -199,37 +247,67 @@ def main() -> None:
     manual_used = max(0, args.count - len(usable))  # AIP shortfall (→ 0 here)
     base_eobt = datetime(2026, 6, 11, 0, 0, tzinfo=timezone.utc)
 
+    # Group usable routes by pair so one flight can carry several routes.
+    by_pair: dict[tuple[str, str], list[tuple[dict, list]]] = {}
+    for r, coords in usable:
+        by_pair.setdefault((r["adep"], r["ades"]), []).append((r, coords))
+
     flights = []
     for i, (r, coords) in enumerate(picks):
+        adep, ades = r["adep"], r["ades"]
         callsign = f"{AIRLINES[i % len(AIRLINES)]}{100 + i:03d}"
         actype = ACTYPES[i % len(ACTYPES)]
-        rfl = _RFL_RNAV[i % len(_RFL_RNAV)] if r.get("rnav") else _RFL_NON[i % len(_RFL_NON)]
         eobt = base_eobt + timedelta(minutes=i * 3)
-        adep, ades = r["adep"], r["ades"]
+        stamp = eobt.strftime("%Y%m%dT%H%MZ")
+        # SID/STAR for the whole flight, from the picked route's terminal fixes.
+        first0, last0 = _route_fixes(r["route"])
+        sid = _pick_proc(SIDS.get(adep, []), first0)
+        star = _pick_proc(STARS.get(ades, []), last0)
         la1, lo1, e1 = AIRPORTS[adep]
         la2, lo2, e2 = AIRPORTS[ades]
-        route_pts = (
-            [(adep, la1, lo1)]
-            + [(f, la, lo) for (f, la, lo) in coords]
-            + [(ades, la2, lo2)]
-        )
-        samples = sample_points(route_pts, eobt, rfl * 100.0, e1, e2)
+        # Multi-route: the picked route + the pair's other published routes
+        # (up to 3 total, deduped) so the flight has more than one route.
+        group = [(r, coords)] + [
+            g for g in by_pair.get((adep, ades), []) if g[0]["route"] != r["route"]
+        ]
+        seen_rt: set[str] = set()
+        routes_out = []
+        for rr, cc in group:
+            if rr["route"] in seen_rt:
+                continue
+            seen_rt.add(rr["route"])
+            ri = len(routes_out) + 1
+            rfl = _RFL_RNAV[i % len(_RFL_RNAV)] if rr.get("rnav") else _RFL_NON[i % len(_RFL_NON)]
+            route_pts = (
+                [(adep, la1, lo1)]
+                + [(f, la, lo) for (f, la, lo) in cc]
+                + [(ades, la2, lo2)]
+            )
+            routes_out.append({
+                "flight_key": f"{callsign}_{stamp}_R{ri}",
+                "route_str": rr["route"],
+                "rfl": rfl,
+                "route_pts": route_pts,
+                "samples": sample_points(route_pts, eobt, rfl * 100.0, e1, e2),
+            })
+            if len(routes_out) >= 3:
+                break
         flights.append({
             "callsign": callsign, "actype": actype, "adep": adep, "ades": ades,
-            "rfl": rfl, "eobt": eobt, "route_str": r["route"],
-            "flight_key": f"{callsign}_{eobt.strftime('%Y%m%dT%H%MZ')}",
-            "route_pts": route_pts, "samples": samples,
+            "eobt": eobt, "sid": sid, "star": star, "routes": routes_out,
         })
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ---- combined CSV (stacked FLIGHT n of N blocks) ----
-    total = len(flights)
+    # ---- combined CSV (one block per route; multi-route flights repeat
+    # the callsign across their R1/R2/R3 blocks, which the importer folds). --
+    all_routes = [(fl, rt) for fl in flights for rt in fl["routes"]]
+    total = len(all_routes)
     blocks = []
-    for i, fl in enumerate(flights, start=1):
+    for i, (fl, rt) in enumerate(all_routes, start=1):
         banner = (
             "=" * 64
-            + f"\nFLIGHT {i} of {total}  -  {fl['flight_key']}\n"
+            + f"\nFLIGHT {i} of {total}  -  {rt['flight_key']}\n"
             + "=" * 64
             + "\n\n"
         )
@@ -237,7 +315,8 @@ def main() -> None:
             banner
             + csv_block(
                 fl["callsign"], fl["actype"], fl["adep"], fl["ades"],
-                fl["rfl"], fl["route_str"], fl["eobt"], fl["samples"],
+                rt["rfl"], rt["route_str"], fl["eobt"], rt["samples"],
+                sid=fl["sid"], star=fl["star"],
             )
         )
     csv_path = OUT_DIR / "dummy_100_flights.csv"
@@ -246,57 +325,62 @@ def main() -> None:
     # ---- combined GeoJSON ----
     features = []
     for fl in flights:
-        features.append({
-            "type": "Feature",
-            "properties": {
-                "feature_type": "route",
-                "flight_key": fl["flight_key"],
-                "route": fl["route_str"],
-                "callsign": fl["callsign"],
-                "aircraft_type": fl["actype"],
-                "adep": fl["adep"],
-                "ades": fl["ades"],
-                "rfl": fl["rfl"],
-                "eobt": fl["eobt"].isoformat(),
-                "idents": [p[0] for p in fl["route_pts"]],
-            },
-            "geometry": {
-                "type": "LineString",
-                "coordinates": [[p[2], p[1]] for p in fl["route_pts"]],
-            },
-        })
-        for s in fl["samples"]:
+        for rt in fl["routes"]:
             features.append({
                 "type": "Feature",
                 "properties": {
-                    "flight_key": fl["flight_key"],
+                    "feature_type": "route",
+                    "flight_key": rt["flight_key"],
+                    "route": rt["route_str"],
                     "callsign": fl["callsign"],
                     "aircraft_type": fl["actype"],
                     "adep": fl["adep"],
                     "ades": fl["ades"],
-                    "epoch_ts": s["ts"].strftime("%Y-%m-%d %H:%M:%S+00:00"),
-                    "altitude_ft": round(s["alt_ft"], 1),
-                    "tas_kt": None,
-                    "gs_kt": float(s["gs"]),
-                    "track_deg": s["trk"],
-                    "phase": s["phase"],
+                    "rfl": rt["rfl"],
+                    "sid": fl["sid"],
+                    "star": fl["star"],
+                    "eobt": fl["eobt"].isoformat(),
+                    "idents": [p[0] for p in rt["route_pts"]],
                 },
                 "geometry": {
-                    "type": "Point",
-                    "coordinates": [
-                        round(s["lon"], 6), round(s["lat"], 6),
-                        round(s["alt_ft"] * 0.3048, 1),
-                    ],
+                    "type": "LineString",
+                    "coordinates": [[p[2], p[1]] for p in rt["route_pts"]],
                 },
             })
+            for s in rt["samples"]:
+                features.append({
+                    "type": "Feature",
+                    "properties": {
+                        "flight_key": rt["flight_key"],
+                        "callsign": fl["callsign"],
+                        "aircraft_type": fl["actype"],
+                        "adep": fl["adep"],
+                        "ades": fl["ades"],
+                        "epoch_ts": s["ts"].strftime("%Y-%m-%d %H:%M:%S+00:00"),
+                        "altitude_ft": round(s["alt_ft"], 1),
+                        "tas_kt": None,
+                        "gs_kt": float(s["gs"]),
+                        "track_deg": s["trk"],
+                        "phase": s["phase"],
+                    },
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [
+                            round(s["lon"], 6), round(s["lat"], 6),
+                            round(s["alt_ft"] * 0.3048, 1),
+                        ],
+                    },
+                })
     geojson_path = OUT_DIR / "dummy_100_flights.geojson"
     geojson_path.write_text(
         json.dumps({"type": "FeatureCollection", "features": features}),
         encoding="utf-8",
     )
 
-    print(f"Flights: {total} (AIP: {total - manual_used}, manual: {manual_used})")
-    print(f"  usable AIP routes available: {len(usable)}")
+    multi = sum(1 for fl in flights if len(fl["routes"]) > 1)
+    proc = sum(1 for fl in flights if fl["sid"] or fl["star"])
+    print(f"Flights: {len(flights)} | routes: {total} | "
+          f"multi-route: {multi} | with SID/STAR: {proc}")
     print(f"CSV:     {csv_path}")
     print(f"GeoJSON: {geojson_path}")
 
