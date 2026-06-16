@@ -176,6 +176,8 @@ function parseTrajectoryBlock(block: string): FlightRecord | null {
   const fl = field("FL"); // "F330"
   const rfl = fl ? numOrUndef(fl.replace(/^F/i, "")) : undefined;
   const eobt = normEobt(field("ATD"));
+  const sid = field("SID")?.toUpperCase();
+  const star = field("STAR")?.toUpperCase();
 
   // Callsign lives in column 3 of the first data row under the table header.
   let callsign: string | undefined;
@@ -192,7 +194,7 @@ function parseTrajectoryBlock(block: string): FlightRecord | null {
 
   // Skip a block that yielded nothing identifiable.
   if (!route && !adep && !ades && !actype) return null;
-  return { callsign, actype, adep, ades, eobt, rfl, route };
+  return { callsign, actype, adep, ades, eobt, rfl, route, sid, star };
 }
 
 /** True when the text is one of the tool's trajectory CSV exports rather

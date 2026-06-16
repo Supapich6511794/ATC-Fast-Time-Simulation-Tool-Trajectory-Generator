@@ -72,6 +72,15 @@ interface DownloadInfo {
   geojson: string;
 }
 
+/** One queued route + its terminal procedures = one generated flight.
+ *  A plan's queue holds these combos so a single FPL can fly several
+ *  (SID × route × STAR) combinations. Empty sid/star = direct / no procedure. */
+interface RouteCombo {
+  route: string;
+  sid: string;
+  star: string;
+}
+
 /** One editable flight plan in the multi-plan tab strip. The active tab's
  *  values live in the scalar editor state below; inactive tabs are stored
  *  as snapshots here, so the whole single-plan editor JSX is reused
@@ -88,8 +97,10 @@ interface PlanDraft {
   routeMode: RouteMode;
   routeStr: string;
   builtWpts: string[];
-  routes: string[];
-  /** SID name (spliced at ADEP) / STAR name (spliced at ADES). "" = none. */
+  /** Queued (SID × route × STAR) combinations — each becomes one flight. */
+  routes: RouteCombo[];
+  /** SID name (spliced at ADEP) / STAR name (spliced at ADES). "" = none.
+   *  The editor's current pick; queued combos carry their own sid/star. */
   sid: string;
   star: string;
 }
@@ -116,18 +127,19 @@ function blankPlan(): PlanDraft {
   };
 }
 
-/** The route strings a draft will fly: queued routes, else the single
- *  effective route, else none. CSV mode is one server-resolved route. */
-function draftRouteList(d: PlanDraft): string[] {
-  if (d.routeMode === "csv") return [""];
+/** The (route, sid, star) combos a draft will fly: the queued combos, else
+ *  a single combo from the current editor route + sid/star, else none. CSV
+ *  mode is one server-resolved route. */
+function draftCombos(d: PlanDraft): RouteCombo[] {
   if (d.routes.length > 0) return d.routes;
+  if (d.routeMode === "csv") return [{ route: "", sid: d.sid, star: d.star }];
   const eff =
     d.routeMode === "build"
       ? d.builtWpts.length
         ? `DCT ${d.builtWpts.join(" DCT ")} DCT`
         : ""
       : d.routeStr.trim();
-  return eff ? [eff] : [];
+  return eff ? [{ route: eff, sid: d.sid, star: d.star }] : [];
 }
 
 /** Short tab label for a plan. */
@@ -243,7 +255,7 @@ function GeneratorPanel({
   const [routeStr, setRouteStr] = useState("");
   const [builtWpts, setBuiltWpts] = useState<string[]>([]);
   /** Extra Item-15 routes to fly together (capped at #possible routes). */
-  const [routes, setRoutes] = useState<string[]>([]);
+  const [routes, setRoutes] = useState<RouteCombo[]>([]);
   // SID/STAR terminal procedures to splice (empty = none). Their option
   // lists are fetched per ADEP/ADES below.
   const [sid, setSid] = useState("");
@@ -316,7 +328,7 @@ function GeneratorPanel({
     const a = d.adep.trim().toUpperCase();
     const b = d.ades.trim().toUpperCase();
     const norm = (s: string) => s.trim().toUpperCase().replace(/\s+/g, " ");
-    const rt = norm(d.routes?.[0] ?? d.routeStr ?? "");
+    const rt = norm(d.routes?.[0]?.route ?? d.routeStr ?? "");
     if (!rt) return d.builtWpts.length > 0 ? "manual" : "aip";
     return aipRoutes.some(
       (r) =>
@@ -398,7 +410,7 @@ function GeneratorPanel({
   const liveActive = snapshotActive();
   const allDrafts = plans.map((p) => (p.id === activeId ? liveActive : p));
   const totalRoutes = allDrafts.reduce(
-    (n, d) => n + draftRouteList(d).length,
+    (n, d) => n + draftCombos(d).length,
     0,
   );
   const uniqueAirports = useMemo(() => {
@@ -665,7 +677,38 @@ function GeneratorPanel({
   const effectiveRoute =
     routeMode === "build" ? builtRoute : routeStr.trim();
   // Can't queue more routes than there are distinct possible ones.
-  const routeCap = Math.max(1, bestRoutes.length);
+  // Per-route SID/STAR options: the procedures whose name connects to the
+  // route's first / last fix (Thai naming convention, e.g. OLVUK→OLVU*).
+  const routeProcs = (routeText: string) => {
+    const known = new Set(allFixes.map((f) => f.ident));
+    const toks = routeText
+      .toUpperCase()
+      .split(/\s+/)
+      .map((t) => (t.includes("/") ? t.split("/")[0] : t))
+      .filter((t) => t && t !== "DCT" && known.has(t));
+    const first = toks[0] ?? null;
+    const last = toks[toks.length - 1] ?? null;
+    const pref = (n: string) => n.match(/^[A-Z]+/)?.[0] ?? n;
+    return {
+      sids: first ? sidOptions.filter((n) => first.startsWith(pref(n))) : [],
+      stars: last ? starOptions.filter((n) => last.startsWith(pref(n))) : [],
+    };
+  };
+
+  // Total possible combinations across the listed AIP routes:
+  // Σ (SID+1) × (STAR+1). This is the queue cap and the "(n/total)" counter.
+  const routeTotal = useMemo(() => {
+    if (bestRoutes.length === 0) return 1;
+    let t = 0;
+    for (const r of bestRoutes) {
+      const { sids, stars } = routeProcs(r.text);
+      t += (sids.length + 1) * (stars.length + 1);
+    }
+    return Math.max(1, t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bestRoutes, sidOptions, starOptions, allFixes]);
+
+  const comboKey = (c: RouteCombo) => `${c.sid}|${c.route}|${c.star}`;
 
   // SID/STAR filtered to procedures that actually connect to the chosen
   // route's terminal fixes: a SID must reach the route's FIRST en-route fix,
@@ -704,25 +747,47 @@ function GeneratorPanel({
     );
     return m.length > 0 ? m : starOptions;
   }, [starOptions, routeEndFixes]);
-  const addRoute = () => {
-    const r = effectiveRoute.trim();
-    if (!r || routes.includes(r) || routes.length >= routeCap) return;
-    setRoutes((xs) => [...xs, r]);
-    // Reset the active input so the route is owned only by the queue
-    // entry — removing it via ✕ then takes its preview line off the
-    // map too, instead of leaving an orphan from the unchanged input.
-    if (routeMode === "build") setBuiltWpts([]);
-    else if (routeMode === "fpl") setRouteStr("");
+  /** Queue one (route, SID, STAR) combination (deduped + capped). */
+  const addCombo = (c: RouteCombo) => {
+    if (!c.route.trim()) return;
+    setRoutes((xs) =>
+      xs.length >= routeTotal || xs.some((x) => comboKey(x) === comboKey(c))
+        ? xs
+        : [...xs, c],
+    );
   };
 
-  /** Queue a specific route in ONE click (clicking a route in the AIP list) —
-   *  no separate "+ Add route" press. Deduped + capped like addRoute. */
-  const addRouteText = (text: string) => {
-    const r = text.trim();
-    if (!r) return;
-    setRoutes((xs) =>
-      xs.includes(r) || xs.length >= routeCap ? xs : [...xs, r],
-    );
+  /** "+ Add route" — queue the CURRENT selection: the picked/typed route
+   *  with the currently-chosen SID/STAR. (Workflow: pick route, then
+   *  SID/STAR, then add.) */
+  const addCurrent = () => {
+    const route = effectiveRoute.trim();
+    if (!route) return;
+    addCombo({ route, sid, star });
+  };
+
+  /** "Add all combinations" — every listed route × (its SIDs + no-SID) ×
+   *  (its STARs + no-STAR), up to the total cap. */
+  const addAllCombos = () => {
+    const all: RouteCombo[] = [];
+    for (const r of bestRoutes) {
+      const { sids, stars } = routeProcs(r.text);
+      for (const s of ["", ...sids])
+        for (const t of ["", ...stars])
+          all.push({ route: r.text, sid: s, star: t });
+    }
+    setRoutes((prev) => {
+      const seen = new Set(prev.map(comboKey));
+      const merged = [...prev];
+      for (const c of all) {
+        const k = comboKey(c);
+        if (!seen.has(k)) {
+          seen.add(k);
+          merged.push(c);
+        }
+      }
+      return merged.slice(0, routeTotal);
+    });
   };
 
   /** Drop the active tab's route selection — the queue, the typed Item-15
@@ -784,7 +849,7 @@ function GeneratorPanel({
     if (allFixes.length === 0) return [];
     if (routeMode === "build") {
       const trimmed = builtRoute.trim();
-      return trimmed && !routes.includes(trimmed)
+      return trimmed && !routes.some((c) => c.route === trimmed)
         ? resolvePreviewFromIdents(builtWpts, allFixes)
         : [];
     }
@@ -794,7 +859,7 @@ function GeneratorPanel({
         : [];
     }
     const trimmed = routeStr.trim();
-    return trimmed && !routes.includes(trimmed)
+    return trimmed && !routes.some((c) => c.route === trimmed)
       ? resolveRoutePreview(trimmed, allFixes, airwaysMap)
       : [];
   }, [
@@ -815,8 +880,8 @@ function GeneratorPanel({
   const currentPreview = useMemo<PreviewPoint[][]>(() => {
     if (allFixes.length === 0) return [];
     const out: PreviewPoint[][] = [];
-    for (const r of routes) {
-      const pts = resolveRoutePreview(r, allFixes, airwaysMap);
+    for (const c of routes) {
+      const pts = resolveRoutePreview(c.route, allFixes, airwaysMap);
       if (pts.length > 0) out.push(pts);
     }
     if (inProgressPreview.length > 0) out.push(inProgressPreview);
@@ -841,8 +906,8 @@ function GeneratorPanel({
     for (const p of plans) {
       // Active tab: only its queued routes here — the route being typed is
       // appended once below (avoids a double-draw).
-      if (p.id === activeId) resolveAll(routes);
-      else resolveAll(draftRouteList(p));
+      if (p.id === activeId) resolveAll(routes.map((c) => c.route));
+      else resolveAll(draftCombos(p).map((c) => c.route));
     }
     if (inProgressPreview.length > 0) out.push(inProgressPreview);
     return out;
@@ -871,7 +936,12 @@ function GeneratorPanel({
     if (r.star) p.star = r.star;
     // A multi-route flight rebuilds as ONE plan with a route queue; a
     // single-route flight fills the Item-15 box.
-    if (r.routes && r.routes.length > 0) p.routes = r.routes;
+    if (r.routes && r.routes.length > 0)
+      p.routes = r.routes.map((rt) => ({
+        route: rt,
+        sid: r.sid ?? "",
+        star: r.star ?? "",
+      }));
     else if (r.route) p.routeStr = r.route;
     return p;
   }
@@ -1005,13 +1075,13 @@ function GeneratorPanel({
           skipped.push(`${planLabel(d, drafts.indexOf(d))}: set distinct ADEP/ADES`);
           continue;
         }
-        const list = draftRouteList(d);
+        const list = draftCombos(d);
         if (list.length === 0) {
           skipped.push(`${planLabel(d, drafts.indexOf(d))}: no route`);
           continue;
         }
         const isCsv = d.routeMode === "csv";
-        for (const r of list) {
+        for (const c of list) {
           built.push({
             input: {
               source: isCsv ? "csv" : "fpl",
@@ -1019,17 +1089,17 @@ function GeneratorPanel({
               adep: dp,
               ades: ds,
               actype: d.actype,
-              route: isCsv ? "" : r,
+              route: isCsv ? "" : c.route,
               callsign: d.callsign || "FLT",
               eobt: d.eobt,
               gs_kt: d.gsKt,
               rfl: d.rfl,
               output_every_s: outputEveryS,
               // ...overrides, // DISABLED: speed schedule (advanced)
-              ...(d.sid ? { sid: d.sid } : {}),
-              ...(d.star ? { star: d.star } : {}),
+              ...(c.sid ? { sid: c.sid } : {}),
+              ...(c.star ? { star: c.star } : {}),
             },
-            label: isCsv ? `Airway CSV · ${dp}→${ds}` : r || "(route)",
+            label: isCsv ? `Airway CSV · ${dp}→${ds}` : c.route || "(route)",
           });
         }
       }
@@ -1156,30 +1226,26 @@ function GeneratorPanel({
         throw new Error("Enter an Item-15 route string.");
       }
 
-      // One trajectory per route. CSV mode is always a single route;
-      // otherwise fly the queued list, or the single box if none queued.
-      const list =
+      // One trajectory per (route, SID, STAR) combo. CSV mode is a single
+      // route; otherwise fly the queued combos, or the single box if none
+      // queued (carrying the editor's current SID/STAR).
+      const comboList: RouteCombo[] =
         apiSource === "csv"
-          ? [""]
+          ? [{ route: "", sid, star }]
           : routes.length > 0
             ? routes
-            : [apiRoute];
-      const multi = list.length > 1;
-
-      // Speed-schedule overrides — only include fields the user actually
-      // set, so empty inputs keep the airframe default server-side.
-      // --- DISABLED: speed schedule (advanced) — kept for future use. ---
-      // const speedOverrides = buildSpeedOverrides();
+            : [{ route: apiRoute, sid, star }];
+      const multi = comboList.length > 1;
 
       const settled = await Promise.all(
-        list.map((r, i) =>
+        comboList.map((c, i) =>
           generateTrajectory({
             source: apiSource,
             vtsp_to_vtbs: vtspToVtbs,
             adep: dep,
             ades: des,
             actype,
-            route: r,
+            route: c.route,
             // Callsign stays exactly what the user typed (or "FLT" as
             // the default for an unfilled field). Multi-route requests
             // disambiguate via flight_index instead, so the Callsign
@@ -1189,9 +1255,8 @@ function GeneratorPanel({
             gs_kt: gsKt,
             rfl,
             output_every_s: outputEveryS,
-            // ...speedOverrides, // DISABLED: speed schedule (advanced)
-            ...(sid ? { sid } : {}),
-            ...(star ? { star } : {}),
+            ...(c.sid ? { sid: c.sid } : {}),
+            ...(c.star ? { star: c.star } : {}),
             ...(multi ? { flight_index: i } : {}),
           }),
         ),
@@ -1204,7 +1269,9 @@ function GeneratorPanel({
         route:
           apiSource === "csv"
             ? `Airway CSV · ${dep}→${des}`
-            : list[i] || "(route)",
+            : [comboList[i].sid, comboList[i].route || "(route)", comboList[i].star]
+                .filter(Boolean)
+                .join(" · "),
         gpkg: s.downloads.gpkg,
         csv: s.downloads.csv,
         geojson: s.downloads.geojson,
@@ -1589,9 +1656,10 @@ function GeneratorPanel({
                           : r.passed === false
                             ? " · FAIL"
                             : "";
-                      const queued = routes.includes(r.text);
+                      const queued = routes.some((c) => c.route === r.text);
+                      const selected = routeStr === r.text;
                       const cls = [
-                        queued ? "rt-best" : "",
+                        selected ? "rt-best" : "",
                         r.passed === true ? "rt-pass" : "",
                         r.passed === false ? "rt-fail" : "",
                       ]
@@ -1602,8 +1670,8 @@ function GeneratorPanel({
                           key={r.text}
                           type="button"
                           className={cls || undefined}
-                          onClick={() => addRouteText(r.text)}
-                          title={`${r.distanceNm} NM · ~${Math.round(r.simMin)} min — click to add`}
+                          onClick={() => setRouteStr(r.text)}
+                          title={`${r.distanceNm} NM · ~${Math.round(r.simMin)} min — select, then pick SID/STAR and Add`}
                         >
                           {r.caps?.includes(true) && (
                             <span className="rt-cap">RNAV</span>
@@ -1611,7 +1679,7 @@ function GeneratorPanel({
                           {r.caps?.includes(false) && (
                             <span className="rt-cap non">NON-RNAV</span>
                           )}
-                          {queued && <span className="rt-cap added">✓</span>}
+                          {queued && <span className="rt-cap added">✓ queued</span>}
                           {r.text} · {r.distanceNm} NM · ~
                           {Math.round(r.simMin)} min{passTag}
                         </button>
@@ -1706,43 +1774,6 @@ function GeneratorPanel({
               </p>
             )}
 
-            {routeMode !== "csv" && (
-              <div className="rt-multi">
-                <button
-                  type="button"
-                  className="rt-add"
-                  onClick={addRoute}
-                  disabled={
-                    !effectiveRoute.trim() || routes.length >= routeCap
-                  }
-                  title={`Fly several routes together — max ${routeCap} (the number of possible routes)`}
-                >
-                  + Add route ({routes.length}/{routeCap})
-                </button>
-                {routes.length > 0 && (
-                  <ul className="rt-queue">
-                    {routes.map((r, i) => (
-                      <li key={`${r}-${i}`}>
-                        <span>
-                          {i + 1}. {r}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setRoutes((xs) =>
-                              xs.filter((_, k) => k !== i),
-                            )
-                          }
-                          title="Remove"
-                        >
-                          ✕
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
           </div>
 
           {/* Terminal procedures — splice a SID at ADEP / STAR at ADES into
@@ -1798,6 +1829,67 @@ function GeneratorPanel({
                   : `No coded STAR for ${des}.`}
             </p>
           )}
+
+          {/* Queue of (route × SID × STAR) combinations — one flight each.
+              Workflow: pick a route + SID/STAR above, then Add; or Add all.
+              Total = Σ (SID+1) × (STAR+1) over the listed routes. */}
+          <div className="rt-multi">
+            <div className="rt-multi-btns">
+              <button
+                type="button"
+                className="rt-add"
+                onClick={addCurrent}
+                disabled={!effectiveRoute.trim() || routes.length >= routeTotal}
+                title="Queue the selected route with the chosen SID / STAR"
+              >
+                + Add route ({routes.length}/{routeTotal})
+              </button>
+              {usingAip && routeTotal > 1 && (
+                <button
+                  type="button"
+                  className="rt-add-all"
+                  onClick={addAllCombos}
+                  disabled={routes.length >= routeTotal}
+                  title="Queue every SID × route × STAR combination"
+                >
+                  Add all ({routeTotal})
+                </button>
+              )}
+              {routes.length > 0 && (
+                <button
+                  type="button"
+                  className="rt-clear"
+                  onClick={() => setRoutes([])}
+                  title="Clear the queue"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            {routes.length > 0 && (
+              <ul className="rt-queue">
+                {routes.map((c, i) => (
+                  <li key={`${comboKey(c)}-${i}`}>
+                    <span>
+                      {i + 1}.{" "}
+                      {c.sid && <span className="rt-cap">{c.sid}</span>}
+                      {c.route}
+                      {c.star && <span className="rt-cap non">{c.star}</span>}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setRoutes((xs) => xs.filter((_, k) => k !== i))
+                      }
+                      title="Remove"
+                    >
+                      ✕
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
 
           <div className="fpl-prev">
             <span>PREVIEW FPL STRING</span>
