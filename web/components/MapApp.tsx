@@ -17,6 +17,10 @@ import AltitudeLegend from "@/components/AltitudeLegend";
 import DownloadModal, {
   type DownloadInfo,
 } from "@/components/DownloadModal";
+import FilterPanel, {
+  EMPTY_FILTER,
+  type FlightFilter,
+} from "@/components/FilterPanel";
 import FlightTagsMenu, { type TagFields } from "@/components/FlightTagsMenu";
 import GeneratorPanel from "@/components/GeneratorPanel";
 import MapOverlay from "@/components/MapOverlay";
@@ -68,7 +72,7 @@ import type {
   ProcedureWaypointCollection,
   Waypoint,
 } from "@/lib/types";
-import { useSimPlayback } from "@/lib/useSimPlayback";
+import { aircraftAt, toSamples, useSimPlayback } from "@/lib/useSimPlayback";
 
 const LeafletMap = dynamic(() => import("@/components/LeafletMap"), {
   ssr: false,
@@ -168,6 +172,22 @@ export default function MapApp() {
   // stays single-instance — only the source changes.
   const [playbackIdx, setPlaybackIdx] = useState<number | "all">(0);
 
+  // Camera follow: the map keeps ONE chosen aircraft centred and shows a
+  // live detail card over it, with that aircraft highlighted. The followed
+  // flight (followIdx) is independent of the playback source — so following
+  // a flight while the source is "all" keeps every route animating; the
+  // camera just tracks the picked one. Triggered by clicking a Results row.
+  const [followActive, setFollowActive] = useState(false);
+  const [followIdx, setFollowIdx] = useState(0);
+  const selectFlight = useCallback((i: number) => {
+    setFollowIdx(i);
+    setFollowActive(true);
+    // In single-route playback, switch the animated aircraft to the picked
+    // one (otherwise it wouldn't be moving to follow). In "all" mode leave
+    // the source untouched so every route keeps animating.
+    setPlaybackIdx((idx) => (idx === "all" ? "all" : i));
+  }, []);
+
   // Which fields show in each aircraft's map label, toggled by the Flight
   // Tags menu. Defaults to all on (matching the reference design).
   const [tagFields, setTagFields] = useState<TagFields>({
@@ -226,6 +246,32 @@ export default function MapApp() {
   const allRoutesHidden =
     trajectories.length > 0 &&
     trajectories.every((t) => hiddenKeys.has(t.meta.flightKey));
+  // Visibility helpers for the filter panel (Show All / Hide All / Invert).
+  const showAllRoutes = useCallback(() => setHiddenKeys(new Set()), []);
+  const hideAllRoutes = useCallback(
+    () => setHiddenKeys(new Set(trajectories.map((t) => t.meta.flightKey))),
+    [trajectories],
+  );
+  const invertRoutes = useCallback(() => {
+    setHiddenKeys((prev) => {
+      const next = new Set<string>();
+      for (const t of trajectories)
+        if (!prev.has(t.meta.flightKey)) next.add(t.meta.flightKey);
+      return next;
+    });
+  }, [trajectories]);
+  const applyHidden = useCallback(
+    (hidden: Set<string>) => setHiddenKeys(hidden),
+    [],
+  );
+
+  // Full filter panel (FlightRadar-style) — open state + filter criteria.
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [filter, setFilter] = useState<FlightFilter>(EMPTY_FILTER);
+  const patchFilter = useCallback(
+    (p: Partial<FlightFilter>) => setFilter((f) => ({ ...f, ...p })),
+    [],
+  );
 
   // Leaflet map instance, captured via MapRefBridge inside LeafletMap.
   // Used to drive the custom +/− zoom buttons in MapOverlay (the
@@ -401,6 +447,39 @@ export default function MapApp() {
   const activeTrajectory =
     safePlaybackIdx === "all" ? longest : trajectories[safePlaybackIdx] ?? null;
   const sim = useSimPlayback(activeTrajectory?.points);
+
+  // The followed flight + its live position. We interpolate the followed
+  // route at the SAME shared sim clock the map uses, so in "all" mode the
+  // camera tracks the picked aircraft while every route keeps animating.
+  const followTraj =
+    followActive && trajectories[followIdx] ? trajectories[followIdx] : null;
+  const followSamples = useMemo(
+    () => (followTraj ? toSamples(followTraj.points) : []),
+    [followTraj],
+  );
+  const followAircraft = followTraj ? aircraftAt(followSamples, sim.simT) : null;
+
+  // Camera follow — keep the followed aircraft centred. The pan effect runs
+  // every animation frame (followAircraft is fresh each tick) but panTo with
+  // animate:false is a cheap centre-set.
+  const followLat = followAircraft?.lat ?? null;
+  const followLon = followAircraft?.lon ?? null;
+  useEffect(() => {
+    if (!mapInstance || followLat == null || followLon == null) return;
+    mapInstance.panTo([followLat, followLon], { animate: false });
+  }, [mapInstance, followLat, followLon]);
+  // Zoom in when a flight is picked (follow turns on or the target changes),
+  // framing the aircraft. Frame-by-frame panning is the effect above, which
+  // must not re-zoom.
+  useEffect(() => {
+    if (!mapInstance || !followActive) return;
+    const ac = aircraftAt(followSamples, sim.simT);
+    if (!ac) return;
+    mapInstance.setView([ac.lat, ac.lon], Math.max(mapInstance.getZoom(), 8), {
+      animate: true,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [followActive, followIdx, mapInstance]);
 
   // Spacebar toggles play/pause (like a media player), except while typing
   // in a form field or focusing a button, so the generator inputs, the
@@ -1046,8 +1125,33 @@ export default function MapApp() {
                     </>
                   )}
                 </div>
+                <button
+                  type="button"
+                  className={`map-filter-btn${filterOpen ? " active" : ""}`}
+                  onClick={() => setFilterOpen((v) => !v)}
+                  aria-pressed={filterOpen}
+                  title="Filter flights"
+                >
+                  ⚲ Filter
+                </button>
               </div>
             )}
+            <FilterPanel
+              open={filterOpen && trajectories.length > 0}
+              onClose={() => setFilterOpen(false)}
+              trajectories={trajectories}
+              aircraftTypes={aircraftTypes}
+              filter={filter}
+              onFilterChange={patchFilter}
+              hiddenKeys={hiddenKeys}
+              onApplyHidden={applyHidden}
+              onShowAll={showAllRoutes}
+              onHideAll={hideAllRoutes}
+              onInvert={invertRoutes}
+              onToggleHidden={toggleRouteHidden}
+              onSelectFlight={selectFlight}
+              activeIndex={followActive ? followIdx : safePlaybackIdx}
+            />
             <DownloadModal
               open={downloadOpen}
               onClose={closeDownload}
@@ -1153,6 +1257,7 @@ export default function MapApp() {
               }
               simT={sim.simT}
               playbackIdx={safePlaybackIdx}
+              followKey={followTraj?.meta.flightKey}
               onMapReady={onMapReady}
             />
             {previewRoutes.length > 0 && (
@@ -1213,6 +1318,59 @@ export default function MapApp() {
               onToggleAllRoutes={toggleAllRoutesHidden}
             />
             {trajectories.length > 0 && <AltitudeLegend />}
+
+            {/* Follow card — live readout anchored over the tracked aircraft
+                (which camera-follow keeps at the map centre). Click the header
+                to unlock and stop following. */}
+            {followActive && followTraj && followAircraft && (
+              <div className="follow-card" role="dialog">
+                <button
+                  type="button"
+                  className="follow-card-head"
+                  onClick={() => setFollowActive(false)}
+                  title="Click to unlock (stop following)"
+                >
+                  <span className="follow-card-key">
+                    {followTraj.meta.flightKey}
+                  </span>
+                  <span className="follow-card-unlock">🔒 click to unlock</span>
+                </button>
+                <dl className="follow-card-body">
+                  <div>
+                    <dt>ACID</dt>
+                    <dd>{followTraj.meta.callsign}</dd>
+                  </div>
+                  <div>
+                    <dt>Type</dt>
+                    <dd>{followTraj.meta.aircraftType || "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Route</dt>
+                    <dd>
+                      {followTraj.meta.adep} → {followTraj.meta.ades}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>FL</dt>
+                    <dd>
+                      {followAircraft.altitudeFt != null
+                        ? `FL${String(
+                            Math.round(followAircraft.altitudeFt / 100),
+                          ).padStart(3, "0")}`
+                        : "—"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>GS</dt>
+                    <dd>{Math.round(followAircraft.gsKt)} kt</dd>
+                  </div>
+                  <div>
+                    <dt>HDG</dt>
+                    <dd>{Math.round(followAircraft.track)}°</dd>
+                  </div>
+                </dl>
+              </div>
+            )}
 
             {/* Procedure inspector — legs + constraints for a clicked
                 SID/STAR track. */}

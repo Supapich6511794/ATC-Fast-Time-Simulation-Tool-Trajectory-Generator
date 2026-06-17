@@ -106,6 +106,9 @@ interface Props {
    *  index renders only that aircraft; ``"all"`` renders every aircraft
    *  on the longest-route clock (legacy behaviour). */
   playbackIdx?: number | "all";
+  /** flightKey of the aircraft the camera is following — drawn with a
+   *  pulsing highlight ring so it stands out from the rest. */
+  followKey?: string;
   /** Bubbles the underlying Leaflet map instance up so the parent can
    *  drive zoom buttons rendered outside MapContainer (e.g. the +/− on
    *  the floating top-right toolbar). */
@@ -386,12 +389,19 @@ function matchesAcType(
 
 /** A small SVG plane icon, rotated to the current heading and tinted by
  *  aircraft type. */
-function planeIcon(track: number, color: string): L.DivIcon {
+function planeIcon(
+  track: number,
+  color: string,
+  highlight = false,
+): L.DivIcon {
+  const ring = highlight
+    ? `<span class="aircraft-ring"></span>`
+    : "";
   return L.divIcon({
-    className: "aircraft-icon",
+    className: `aircraft-icon${highlight ? " followed" : ""}`,
     iconSize: [20, 20],
     iconAnchor: [10, 10],
-    html: `<div style="transform: rotate(${track}deg)">
+    html: `${ring}<div style="transform: rotate(${track}deg)">
       <svg viewBox="0 0 24 24" width="20" height="20" fill="${color}"
            stroke="#0f172a" stroke-width="1.2">
         <path d="M12 2 L14 10 L22 14 L22 16 L14 13 L13 20 L16 22 L16 23
@@ -548,6 +558,7 @@ export default function LeafletMap({
   tagFields,
   simT,
   playbackIdx,
+  followKey,
   onMapReady,
 }: Props) {
   const tiles = BASEMAPS[basemap];
@@ -1089,7 +1100,12 @@ export default function LeafletMap({
           <Marker
             key={`ac-${t.meta.flightKey}`}
             position={[ac.lat, ac.lon]}
-            icon={planeIcon(Math.round(ac.track), aircraftColor(t.meta.aircraftType))}
+            icon={planeIcon(
+              Math.round(ac.track),
+              aircraftColor(t.meta.aircraftType),
+              t.meta.flightKey === followKey,
+            )}
+            zIndexOffset={t.meta.flightKey === followKey ? 1000 : 0}
           >
             {tagText && (
               <Tooltip

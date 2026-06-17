@@ -3742,6 +3742,369 @@ body {
 }
 
 /* Procedure inspector panel — legs + constraints for a clicked SID/STAR. */
+/* Follow card — live readout anchored over the camera-tracked aircraft.
+   Camera-follow keeps that aircraft at the map centre, so the card is pinned
+   just to the lower-right of centre (matching the reference popup). */
+.follow-card {
+  position: absolute;
+  top: calc(50% - 6px);
+  left: calc(50% + 14px);
+  z-index: 1000;
+  width: 216px;
+  background: #0b1f33ee;
+  border: 1px solid #38bdf8aa;
+  border-radius: 10px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5), 0 0 0 1px #38bdf833;
+  overflow: hidden;
+  pointer-events: auto;
+}
+.follow-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-bottom: 1px solid #ffffff1a;
+  font-size: 13px;
+  color: #e2e8f0;
+  background: #11314f;
+  cursor: pointer;
+  text-align: left;
+}
+.follow-card-head:hover {
+  background: #163a5e;
+}
+.follow-card-key {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.follow-card-unlock {
+  flex: none;
+  font-size: 10px;
+  color: #93c5fd;
+  white-space: nowrap;
+}
+.follow-card-body {
+  margin: 0;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #cbd5e1;
+}
+.follow-card-body > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.follow-card-body dt {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #7b8ca5;
+}
+.follow-card-body dd {
+  margin: 0;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: #e2e8f0;
+}
+
+/* Pulsing highlight ring on the followed aircraft. */
+.aircraft-icon.followed {
+  z-index: 1000;
+}
+.aircraft-ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 30px;
+  height: 30px;
+  margin: -15px 0 0 -15px;
+  border: 2px solid #38bdf8;
+  border-radius: 50%;
+  box-shadow: 0 0 8px #38bdf8;
+  animation: aircraft-ring-pulse 1.6s ease-out infinite;
+  pointer-events: none;
+}
+@keyframes aircraft-ring-pulse {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+
+/* Filter button in the top bar (opens the FlightRadar-style panel). */
+.map-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid #33415588;
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.map-filter-btn:hover {
+  border-color: #38bdf855;
+}
+.map-filter-btn.active {
+  background: #38bdf8;
+  color: #06121f;
+  border-color: #38bdf8;
+}
+
+/* FlightRadar-style filter panel (right side). */
+.filter-panel {
+  position: absolute;
+  top: 64px;
+  right: 12px;
+  z-index: 1100;
+  width: 280px;
+  max-height: calc(100vh - 160px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid #33415588;
+  border-radius: 12px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+.fp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid #33415588;
+}
+.fp-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.fp-close {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+}
+.fp-close:hover {
+  color: var(--text);
+}
+.fp-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px 0;
+}
+.fp-tabs button {
+  flex: 1;
+  padding: 6px 8px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.fp-tabs button.active {
+  color: #38bdf8;
+  border-bottom-color: #38bdf8;
+}
+.fp-body {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-bottom: 1px solid #33415588;
+}
+.fp-section-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.fp-input {
+  width: 100%;
+  height: 32px;
+  padding: 0 9px;
+  border: 1px solid #33415588;
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+}
+select.fp-input {
+  cursor: pointer;
+}
+.fp-checks {
+  display: flex;
+  gap: 14px;
+  font-size: 12px;
+  color: var(--text);
+}
+.fp-checks label,
+.fp-airlines label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+.fp-slider-row {
+  display: grid;
+  grid-template-columns: 30px 1fr 36px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.fp-slider-row input[type="range"] {
+  width: 100%;
+}
+.fp-slider-val {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.fp-airlines {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  max-height: 140px;
+  overflow-y: auto;
+  font-size: 12px;
+  color: var(--text);
+}
+.fp-empty {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 4px 0;
+}
+.fp-actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px 0;
+}
+.fp-actions button {
+  flex: 1;
+  height: 30px;
+  border: 1px solid #33415588;
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.fp-actions button:hover {
+  border-color: #38bdf855;
+}
+.fp-apply {
+  background: #38bdf8 !important;
+  color: #06121f !important;
+  border-color: #38bdf8 !important;
+  font-weight: 600;
+}
+.fp-results-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 4px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.fp-results-head > span {
+  flex: none;
+}
+.fp-results-search {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid #33415588;
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.fp-results {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 8px;
+  overflow-y: auto;
+  flex: 1;
+}
+.fp-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 8px;
+}
+.fp-row.active {
+  background: #38bdf81f;
+}
+.fp-row.hidden {
+  opacity: 0.45;
+}
+.fp-row-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+.fp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #475569;
+  flex: none;
+}
+.fp-dot.match {
+  background: #34d399;
+  box-shadow: 0 0 6px #34d39988;
+}
+.fp-row-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+.fp-row-key {
+  font-size: 13px;
+  color: var(--text);
+}
+.fp-row-route {
+  font-size: 11px;
+  color: var(--muted);
+}
+.fp-row-eye {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 4px;
+}
+
 .proc-panel {
   position: absolute;
   top: 64px;
