@@ -106,6 +106,9 @@ interface Props {
    *  index renders only that aircraft; ``"all"`` renders every aircraft
    *  on the longest-route clock (legacy behaviour). */
   playbackIdx?: number | "all";
+  /** flightKeys whose animated aircraft icon is hidden (toggled from the
+   *  filter panel's eye). Distinct from hiddenKeys, which hides route lines. */
+  hiddenAircraft?: Set<string>;
   /** flightKey of the aircraft the camera is following — drawn with a
    *  pulsing highlight ring so it stands out from the rest. */
   followKey?: string;
@@ -300,10 +303,10 @@ function buildWaypointLayer(
 function airportIcon(): L.DivIcon {
   return L.divIcon({
     className: "airport-icon",
-    iconSize: [30, 38],
-    iconAnchor: [15, 36], // tip of the pin sits on the coordinate
+    iconSize: [22, 28],
+    iconAnchor: [11, 26], // tip of the pin sits on the coordinate
     html: `<span class="airport-pulse"></span><span class="airport-pin">
-      <svg viewBox="0 0 24 24" width="14" height="14" fill="#fff">
+      <svg viewBox="0 0 24 24" width="10" height="10" fill="#fff">
         <path d="M12 2 L14 10 L22 14 L22 16 L14 13 L13 20 L16 22 L16 23
                  L12 22 L8 23 L8 22 L11 20 L10 13 L2 16 L2 14 L10 10 Z"/>
       </svg></span>`,
@@ -558,6 +561,7 @@ export default function LeafletMap({
   tagFields,
   simT,
   playbackIdx,
+  hiddenAircraft,
   followKey,
   onMapReady,
 }: Props) {
@@ -1080,8 +1084,9 @@ export default function LeafletMap({
         // Top-center aircraft-type filter hides the icon too, so a filtered
         // map shows only the searched type (line + plane).
         if (!matchesAcType(typeFilter, t.meta.aircraftType)) return null;
-        // NB: a hidden route hides only its line (see trajectoryLayer) — the
-        // aircraft icon stays visible so the flight can still be tracked.
+        // The filter panel's eye hides the animated aircraft icon (the route
+        // line, controlled by hiddenKeys, is independent).
+        if (hiddenAircraft?.has(t.meta.flightKey)) return null;
         const ac = aircraftAt(samplesByRoute[ti] ?? [], simT);
         if (!ac) return null;
         // Configurable flight tag — only the fields enabled in the Flight

@@ -106,6 +106,34 @@ export function resolveRoutePreview(
   return out;
 }
 
+/**
+ * Splice a SID before and a STAR after the en-route preview points so the
+ * live highlight shows the WHOLE flown path the moment a procedure is
+ * picked — whether the SID/STAR joins the route on an airway or by a direct
+ * leg. The procedure points come pre-resolved (the server's
+ * `/api/procedures` waypoints, one chosen runway/transition) so the preview
+ * matches what will actually be flown.
+ *
+ * The SID's enroute-transition fix and the route's first fix are
+ * conventionally the same ident (e.g. OLVUK), as are the route's last fix
+ * and the STAR's entry fix; consecutive duplicate idents are collapsed,
+ * mirroring the server's `splice_procedures` boundary de-dup.
+ */
+export function splicePreviewProcedures(
+  routePts: PreviewPoint[],
+  sidPts?: PreviewPoint[] | null,
+  starPts?: PreviewPoint[] | null,
+): PreviewPoint[] {
+  const merged = [...(sidPts ?? []), ...routePts, ...(starPts ?? [])];
+  const out: PreviewPoint[] = [];
+  for (const p of merged) {
+    const last = out[out.length - 1];
+    if (last && last.ident === p.ident) continue;
+    out.push(p);
+  }
+  return out;
+}
+
 /** Convenience: turn an ordered list of idents (RouteBuilder output)
  *  into preview points. No airway expansion — the user already picked
  *  the fixes they want. */

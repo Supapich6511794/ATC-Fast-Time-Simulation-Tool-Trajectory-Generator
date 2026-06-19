@@ -183,16 +183,21 @@ _FIXUPS = {"DORNAW32": "DORNA W32"}
 def _route_options(cell: str) -> list[tuple[str, str | None]]:
     """(route, condition) options from a ROUTE cell.
 
-    Splits numbered "(1) … or (2) …" variants, lifts EVERY parenthetical
-    note (incl. nested, e.g. "(MON-FRI … (Excluding …))" and "(for jet
-    aircraft)") out of the route into the condition, collapses slash-separated
-    airway alternatives ("Y22/Y23" → "Y22"), and drops overfly ellipses.
-    Returns [] when nothing usable remains.
+    Splits numbered "(1) … or (2) …" variants AND inline "(OR)" alternatives,
+    lifts EVERY parenthetical note (incl. nested, e.g. "(MON-FRI … (Excluding
+    …))" and "(for jet aircraft)") out of the route into the condition,
+    collapses slash-separated airway alternatives ("Y22/Y23" → "Y22"), and
+    drops overfly ellipses. Returns [] when nothing usable remains.
+
+    An AIP "(OR)" inside a ROUTE cell separates two ALTERNATIVE filed routes
+    (e.g. "NOBER W21 SURGU (OR) ALBOS R474 CMP W21 SURGU" = two routes), not a
+    continuation — so it delimits options exactly like the numbered markers.
     """
     cell = cell.strip()
     if not cell:
         return []
-    parts = re.split(r"\(\s*\d+\s*\)", cell)  # numbered option markers
+    # Option delimiters: numbered "(1)/(2)" markers and the inline "(OR)".
+    parts = re.split(r"\(\s*\d+\s*\)|\(\s*or\s*\)", cell, flags=re.I)
     chunks = [p for p in (s.strip() for s in parts) if p]
     out: list[tuple[str, str | None]] = []
     for ch in chunks:

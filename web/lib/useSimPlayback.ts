@@ -57,6 +57,18 @@ export interface SimPlayback {
   seek: (t: number) => void;
 }
 
+/** Total elapsed seconds of a trajectory (last epoch − first epoch). This is
+ *  the real flight duration the playback clock runs to — use it for arrival
+ *  checks rather than the rounded `stats.timeMinutes`, which can exceed it. */
+export function totalSeconds(points: TrajectoryPoint[] | undefined): number {
+  if (!points || points.length < 2) return 0;
+  return (
+    (new Date(points[points.length - 1].epoch_ts).getTime() -
+      new Date(points[0].epoch_ts).getTime()) /
+    1000
+  );
+}
+
 /** Build the elapsed-seconds sample table for a trajectory. */
 export function toSamples(points: TrajectoryPoint[] | undefined): Sample[] {
   if (!points || points.length === 0) return [];

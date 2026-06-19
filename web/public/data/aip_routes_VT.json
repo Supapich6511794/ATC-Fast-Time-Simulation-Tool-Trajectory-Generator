@@ -294,8 +294,7 @@
       "adep": "VTBD",
       "ades": "VTUD",
       "rnav": true,
-      "route": "NOBER W21 SURGU ALBOS R474 CMP W21 SURGU",
-      "condition": "OR"
+      "route": "ALBOS R474 CMP W21 SURGU"
     },
     {
       "adep": "VTBD",
@@ -314,8 +313,7 @@
       "adep": "VTBD",
       "ades": "VTUD",
       "rnav": false,
-      "route": "NOBER W21 SURGU ALBOS R474 CMP W21 SURGU",
-      "condition": "OR"
+      "route": "ALBOS R474 CMP W21 SURGU"
     },
     {
       "adep": "VTBD",
@@ -767,8 +765,7 @@
       "adep": "VTBS",
       "ades": "VTUD",
       "rnav": true,
-      "route": "NOBER W21 SURGU ALBOS R474 CMP W21 SURGU",
-      "condition": "OR"
+      "route": "ALBOS R474 CMP W21 SURGU"
     },
     {
       "adep": "VTBS",
@@ -787,8 +784,7 @@
       "adep": "VTBS",
       "ades": "VTUD",
       "rnav": false,
-      "route": "NOBER W21 SURGU ALBOS R474 CMP W21 SURGU",
-      "condition": "OR"
+      "route": "ALBOS R474 CMP W21 SURGU"
     },
     {
       "adep": "VTBS",

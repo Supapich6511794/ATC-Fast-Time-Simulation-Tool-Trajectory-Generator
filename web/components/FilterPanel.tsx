@@ -19,12 +19,12 @@
 import { useMemo, useState } from "react";
 
 import type { TrajectoryResult } from "@/lib/trajectory/types";
+import { totalSeconds } from "@/lib/useSimPlayback";
 
 export interface FlightFilter {
   search: string;
   byKey: boolean;
   byAcid: boolean;
-  type: string;
   flMin: number;
   flMax: number;
   adep: string;
@@ -36,7 +36,6 @@ export const EMPTY_FILTER: FlightFilter = {
   search: "",
   byKey: true,
   byAcid: true,
-  type: "",
   flMin: 0,
   flMax: 450,
   adep: "",
@@ -58,10 +57,15 @@ function airlineCode(t: TrajectoryResult): string {
   return m ? m[0].toUpperCase() : "—";
 }
 
-function matches(t: TrajectoryResult, f: FlightFilter): boolean {
+function matches(
+  t: TrajectoryResult,
+  f: FlightFilter,
+  typeQuery: string,
+): boolean {
   const fl = flightLevel(t);
   if (fl < f.flMin || fl > f.flMax) return false;
-  if (f.type && !(t.meta.aircraftType ?? "").toUpperCase().includes(f.type.toUpperCase()))
+  const tq = typeQuery.trim().toUpperCase();
+  if (tq && !(t.meta.aircraftType ?? "").toUpperCase().includes(tq))
     return false;
   if (f.adep && t.meta.adep.toUpperCase() !== f.adep.toUpperCase()) return false;
   if (f.ades && t.meta.ades.toUpperCase() !== f.ades.toUpperCase()) return false;
@@ -84,6 +88,10 @@ interface FilterPanelProps {
   aircraftTypes: string[];
   filter: FlightFilter;
   onFilterChange: (patch: Partial<FlightFilter>) => void;
+  /** Live aircraft-type search (substring) — also drives the map's type
+   *  filter, so typing hides non-matching aircraft immediately. */
+  typeQuery: string;
+  onTypeQueryChange: (value: string) => void;
   /** flightKeys currently hidden on the map. */
   hiddenKeys: Set<string>;
   /** Hide every flight whose key is in the set, show the rest (Apply). */
@@ -96,6 +104,9 @@ interface FilterPanelProps {
   onSelectFlight: (index: number) => void;
   /** Index of the flight currently driving playback (highlighted). */
   activeIndex: number | "all";
+  /** Shared playback clock (seconds) — drives each row's arrived/en-route
+   *  status against the flight's total time. */
+  simT: number;
 }
 
 export default function FilterPanel({
@@ -105,6 +116,8 @@ export default function FilterPanel({
   aircraftTypes,
   filter,
   onFilterChange,
+  typeQuery,
+  onTypeQueryChange,
   hiddenKeys,
   onApplyHidden,
   onShowAll,
@@ -113,6 +126,7 @@ export default function FilterPanel({
   onToggleHidden,
   onSelectFlight,
   activeIndex,
+  simT,
 }: FilterPanelProps) {
   const [tab, setTab] = useState<Tab>("filter");
   // Quick filter for the Results list — searches by ICAO designator
@@ -120,13 +134,30 @@ export default function FilterPanel({
   const [resultQuery, setResultQuery] = useState("");
 
   // Distinct ADEP / ADES / airline codes from the generated flights.
+  // ADEP and ADES are kept consistent: picking one narrows the other to the
+  // city pairs that actually exist among the flights, so the dropdowns never
+  // offer a dead-end ADEP→ADES combination that would match zero flights.
   const adeps = useMemo(
-    () => Array.from(new Set(trajectories.map((t) => t.meta.adep))).sort(),
-    [trajectories],
+    () =>
+      Array.from(
+        new Set(
+          trajectories
+            .filter((t) => !filter.ades || t.meta.ades === filter.ades)
+            .map((t) => t.meta.adep),
+        ),
+      ).sort(),
+    [trajectories, filter.ades],
   );
   const adess = useMemo(
-    () => Array.from(new Set(trajectories.map((t) => t.meta.ades))).sort(),
-    [trajectories],
+    () =>
+      Array.from(
+        new Set(
+          trajectories
+            .filter((t) => !filter.adep || t.meta.adep === filter.adep)
+            .map((t) => t.meta.ades),
+        ),
+      ).sort(),
+    [trajectories, filter.adep],
   );
   const airlines = useMemo(
     () => Array.from(new Set(trajectories.map(airlineCode))).sort(),
@@ -137,9 +168,10 @@ export default function FilterPanel({
   // count and the Results dots.
   const matchedKeys = useMemo(() => {
     const s = new Set<string>();
-    for (const t of trajectories) if (matches(t, filter)) s.add(t.meta.flightKey);
+    for (const t of trajectories)
+      if (matches(t, filter, typeQuery)) s.add(t.meta.flightKey);
     return s;
-  }, [trajectories, filter]);
+  }, [trajectories, filter, typeQuery]);
 
   // Rows shown in the Results list — the quick ICAO-designator search
   // narrows them without touching the Apply filter / map visibility.
@@ -223,18 +255,20 @@ export default function FilterPanel({
             </div>
 
             <label className="fp-section-label">Aircraft type</label>
-            <select
+            <input
+              type="text"
               className="fp-input"
-              value={filter.type}
-              onChange={(e) => onFilterChange({ type: e.target.value })}
-            >
-              <option value="">ACTYPE — any</option>
+              list="fp-actype-list"
+              value={typeQuery}
+              onChange={(e) => onTypeQueryChange(e.target.value)}
+              placeholder="Filter by aircraft type — e.g. A320, B789"
+              aria-label="Filter by aircraft type"
+            />
+            <datalist id="fp-actype-list">
               {aircraftTypes.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
+                <option key={t} value={t} />
               ))}
-            </select>
+            </datalist>
 
             <label className="fp-section-label">Flight level</label>
             <div className="fp-slider-row">
@@ -278,7 +312,17 @@ export default function FilterPanel({
             <select
               className="fp-input"
               value={filter.adep}
-              onChange={(e) => onFilterChange({ adep: e.target.value })}
+              onChange={(e) => {
+                const adep = e.target.value;
+                // Drop a now-unreachable destination so the pair stays valid.
+                const keepAdes =
+                  !filter.ades ||
+                  !adep ||
+                  trajectories.some(
+                    (t) => t.meta.adep === adep && t.meta.ades === filter.ades,
+                  );
+                onFilterChange(keepAdes ? { adep } : { adep, ades: "" });
+              }}
             >
               <option value="">Any departure</option>
               {adeps.map((a) => (
@@ -291,7 +335,17 @@ export default function FilterPanel({
             <select
               className="fp-input"
               value={filter.ades}
-              onChange={(e) => onFilterChange({ ades: e.target.value })}
+              onChange={(e) => {
+                const ades = e.target.value;
+                // Drop a now-unreachable departure so the pair stays valid.
+                const keepAdep =
+                  !filter.adep ||
+                  !ades ||
+                  trajectories.some(
+                    (t) => t.meta.ades === ades && t.meta.adep === filter.adep,
+                  );
+                onFilterChange(keepAdep ? { ades } : { ades, adep: "" });
+              }}
             >
               <option value="">Any destination</option>
               {adess.map((a) => (
@@ -339,7 +393,14 @@ export default function FilterPanel({
         <button
           type="button"
           className="fp-clear"
-          onClick={() => onFilterChange(EMPTY_FILTER)}
+          onClick={() => {
+            // Clear resets every criterion AND restores full visibility, so
+            // one click returns the map to "all aircraft shown".
+            onFilterChange(EMPTY_FILTER);
+            onTypeQueryChange("");
+            setResultQuery("");
+            onShowAll();
+          }}
         >
           Clear
         </button>
@@ -372,8 +433,8 @@ export default function FilterPanel({
         {shown.map(({ t, i }) => {
           const key = t.meta.flightKey;
           const hidden = hiddenKeys.has(key);
-          const matched = matchedKeys.has(key);
           const active = activeIndex === i;
+          const arrived = simT >= totalSeconds(t.points) - 1;
           return (
             <li
               key={key}
@@ -386,7 +447,7 @@ export default function FilterPanel({
                 title="Centre and follow this aircraft"
               >
                 <span
-                  className={`fp-dot${matched ? " match" : ""}`}
+                  className={`fp-dot ${arrived ? "arrived" : "enroute"}`}
                   aria-hidden
                 />
                 <span className="fp-row-text">
@@ -395,12 +456,21 @@ export default function FilterPanel({
                     {t.meta.adep} → {t.meta.ades}
                   </span>
                 </span>
+                <span
+                  className={`fp-status ${arrived ? "arrived" : "enroute"}`}
+                >
+                  {arrived ? "Arrived" : "En route"}
+                </span>
               </button>
               <button
                 type="button"
                 className={`fp-row-eye${hidden ? " off" : ""}`}
                 aria-pressed={!hidden}
-                title={hidden ? "Show on map" : "Hide on map"}
+                title={
+                  hidden
+                    ? "Show this aircraft on the map"
+                    : "Hide this aircraft on the map"
+                }
                 onClick={() => onToggleHidden(key)}
               >
                 {hidden ? "🚫" : "👁"}

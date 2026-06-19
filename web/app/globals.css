@@ -3365,15 +3365,15 @@ body {
 }
 .airport-pin {
   position: absolute;
-  top: 2px;
-  left: 3px;
-  width: 24px;
-  height: 24px;
+  top: 1px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: #2f9bff;
-  border: 2px solid #0b3a6b;
+  border: 1.5px solid #0b3a6b;
   border-radius: 50% 50% 50% 0;
   transform: rotate(-45deg);
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.45);
@@ -3385,8 +3385,8 @@ body {
 /* Faint cyan glow that pulses while hovering an airport. */
 .airport-pulse {
   position: absolute;
-  top: 14px;
-  left: 15px;
+  top: 10px;
+  left: 11px;
   width: 0;
   height: 0;
   border-radius: 50%;
@@ -4084,6 +4084,30 @@ select.fp-input {
   background: #34d399;
   box-shadow: 0 0 6px #34d39988;
 }
+/* Status dot: green pulse = airborne, grey = arrived/parked. */
+.fp-dot.enroute {
+  background: #34d399;
+  box-shadow: 0 0 6px #34d39988;
+}
+.fp-dot.arrived {
+  background: #64748b;
+}
+.fp-status {
+  flex: none;
+  margin-left: auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.fp-status.enroute {
+  background: #34d3991f;
+  color: #34d399;
+}
+.fp-status.arrived {
+  background: #64748b2e;
+  color: #94a3b8;
+}
 .fp-row-text {
   display: flex;
   flex-direction: column;
@@ -4226,7 +4250,7 @@ select.fp-input {
 }
 
 .aircraft-icon svg {
-  filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.6));
+  display: block;
 }
 
 /* ============================================================= *

@@ -14,7 +14,7 @@
  *                       RouteBuilder, or the pre-resolved airway CSV.
  */
 
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import IdentCombobox, { type ComboOption } from "@/components/IdentCombobox";
 import RouteBuilder from "@/components/RouteBuilder";
@@ -26,6 +26,7 @@ import {
   type Fix,
 } from "@/lib/aip";
 import {
+  fetchProcedure,
   generateBatch,
   generateTrajectory,
   listProcedures,
@@ -43,6 +44,7 @@ import {
   resolvePreviewFromIdents,
   resolvePreviewFullY8,
   resolveRoutePreview,
+  splicePreviewProcedures,
   type PreviewPoint,
 } from "@/lib/routePreview";
 import {
@@ -145,6 +147,11 @@ function draftCombos(d: PlanDraft): RouteCombo[] {
 /** Short tab label for a plan. */
 function planLabel(d: PlanDraft, i: number): string {
   return d.callsign.trim() || `Plan ${i + 1}`;
+}
+
+/** Cache key for a resolved procedure's preview geometry. */
+function procKey(airport: string, type: "SID" | "STAR", name: string): string {
+  return `${airport.trim().toUpperCase()}|${type}|${name.trim().toUpperCase()}`;
 }
 
 interface Props {
@@ -626,6 +633,87 @@ function GeneratorPanel({
     };
   }, [des]);
 
+  // Resolved SID/STAR geometry (the server-picked runway/transition fixes),
+  // cached by `${airport}|${type}|${name}` and spliced into the live route
+  // preview so picking a procedure immediately extends the highlight line.
+  // Scoped to the flight being composed (editor pick + this tab's queued
+  // combos) so a bulk import doesn't fan out into hundreds of fetches.
+  const [procCache, setProcCache] = useState<Map<string, PreviewPoint[]>>(
+    () => new Map(),
+  );
+  useEffect(() => {
+    const need = new Set<string>();
+    if (dep && sid) need.add(procKey(dep, "SID", sid));
+    if (des && star) need.add(procKey(des, "STAR", star));
+    for (const c of routes) {
+      if (dep && c.sid) need.add(procKey(dep, "SID", c.sid));
+      if (des && c.star) need.add(procKey(des, "STAR", c.star));
+    }
+    const missing = [...need].filter((k) => !procCache.has(k));
+    if (missing.length === 0) return;
+    let cancelled = false;
+    Promise.all(
+      missing.map(async (k) => {
+        const [airport, type, name] = k.split("|");
+        try {
+          const dto = await fetchProcedure(airport, name, { type });
+          const pts: PreviewPoint[] = dto.waypoints.map((w) => ({
+            ident: w.ident,
+            lat: w.lat,
+            lon: w.lon,
+            fromUser: false,
+          }));
+          return [k, pts] as const;
+        } catch {
+          return [k, [] as PreviewPoint[]] as const; // cache the miss; don't refetch
+        }
+      }),
+    ).then((entries) => {
+      if (cancelled) return;
+      setProcCache((prev) => {
+        const m = new Map(prev);
+        for (const [k, v] of entries) m.set(k, v);
+        return m;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [dep, des, sid, star, routes, procCache]);
+
+  // Look up a procedure's cached preview points (null = not a real pick or
+  // not yet loaded — the splice then leaves the route line unchanged).
+  const procPts = useCallback(
+    (airport: string, type: "SID" | "STAR", name: string) =>
+      name ? procCache.get(procKey(airport, type, name)) ?? null : null,
+    [procCache],
+  );
+
+  // Aerodrome anchor point for a "None (direct)" end: a single point at the
+  // ADEP/ADES so the preview draws the direct leg from the airport to the
+  // first fix (or last fix to the airport) instead of starting mid-route.
+  const anchorPts = useCallback(
+    (airport: string): PreviewPoint[] | null => {
+      const code = airport.trim().toUpperCase();
+      const ll = airportLL.get(code);
+      return ll ? [{ ident: code, lat: ll.lat, lon: ll.lon, fromUser: false }] : null;
+    },
+    [airportLL],
+  );
+
+  // SID end of the splice: the picked procedure's fixes, or the ADEP anchor
+  // when "None (direct)". STAR end is symmetric for the arrival.
+  const sidEnd = useCallback(
+    (airport: string, name: string) =>
+      name ? procPts(airport, "SID", name) : anchorPts(airport),
+    [procPts, anchorPts],
+  );
+  const starEnd = useCallback(
+    (airport: string, name: string) =>
+      name ? procPts(airport, "STAR", name) : anchorPts(airport),
+    [procPts, anchorPts],
+  );
+
   // CAT62 reference table (loaded once) for pre-screening candidate
   // routes against the city-pair reference time.
   const [cat62, setCat62] = useState<Cat62Table | null>(null);
@@ -668,10 +756,17 @@ function GeneratorPanel({
 
   const passingRoutes = rankedRoutes.filter((r) => r.passed === true);
   const hasReference = pairRefMin != null;
-  // Prefer passing routes; if none pass, show everything so the user can
-  // still pick + then tune (never a dead end).
+  // Published AIP routes are filed VERBATIM — every one is a legitimate
+  // alternative, so NEVER hide one for deviating from the reference time
+  // (e.g. a short direct entry like ALBOS R474 CMP W21 SURGU runs a few
+  // minutes under the longer airway route, but is still a valid filed route).
+  // The PASS/FAIL badge stays for information. The time filter only prunes
+  // the COMPUTED graph-search candidates: prefer passing routes, but if none
+  // pass show everything so the user can still pick + tune (never a dead end).
   const shownRoutes =
-    hasReference && passingRoutes.length > 0 ? passingRoutes : rankedRoutes;
+    !usingAip && hasReference && passingRoutes.length > 0
+      ? passingRoutes
+      : rankedRoutes;
 
   // The route the Item-15 box currently resolves to (typed or built).
   const effectiveRoute =
@@ -847,10 +942,14 @@ function GeneratorPanel({
   // drawing it twice. Folded into both preview scopes below.
   const inProgressPreview = useMemo<PreviewPoint[]>(() => {
     if (allFixes.length === 0) return [];
+    // Splice the editor's SID/STAR around the typed route — or, when an end
+    // is "None (direct)", anchor it at the ADEP/ADES so the direct leg shows.
+    const withProc = (pts: PreviewPoint[]) =>
+      splicePreviewProcedures(pts, sidEnd(dep, sid), starEnd(des, star));
     if (routeMode === "build") {
       const trimmed = builtRoute.trim();
       return trimmed && !routes.some((c) => c.route === trimmed)
-        ? resolvePreviewFromIdents(builtWpts, allFixes)
+        ? withProc(resolvePreviewFromIdents(builtWpts, allFixes))
         : [];
     }
     if (routeMode === "csv") {
@@ -860,7 +959,7 @@ function GeneratorPanel({
     }
     const trimmed = routeStr.trim();
     return trimmed && !routes.some((c) => c.route === trimmed)
-      ? resolveRoutePreview(trimmed, allFixes, airwaysMap)
+      ? withProc(resolveRoutePreview(trimmed, allFixes, airwaysMap))
       : [];
   }, [
     routeMode,
@@ -871,6 +970,11 @@ function GeneratorPanel({
     allFixes,
     airwaysMap,
     dep,
+    des,
+    sid,
+    star,
+    sidEnd,
+    starEnd,
     isY8Corridor,
   ]);
 
@@ -882,11 +986,18 @@ function GeneratorPanel({
     const out: PreviewPoint[][] = [];
     for (const c of routes) {
       const pts = resolveRoutePreview(c.route, allFixes, airwaysMap);
-      if (pts.length > 0) out.push(pts);
+      if (pts.length === 0) continue;
+      out.push(
+        splicePreviewProcedures(
+          pts,
+          sidEnd(dep, c.sid),
+          starEnd(des, c.star),
+        ),
+      );
     }
     if (inProgressPreview.length > 0) out.push(inProgressPreview);
     return out;
-  }, [routes, allFixes, airwaysMap, inProgressPreview]);
+  }, [routes, allFixes, airwaysMap, inProgressPreview, dep, des, sidEnd, starEnd]);
 
   // "Full" preview scope — every route across EVERY plan/tab, not just the
   // active one, so a duplicated/previous flight's routes stay previewed
@@ -895,23 +1006,45 @@ function GeneratorPanel({
   const previewRoutes = useMemo<PreviewPoint[][]>(() => {
     if (allFixes.length === 0) return [];
     const out: PreviewPoint[][] = [];
-    const resolveAll = (strs: string[]) => {
-      for (const r of strs) {
-        const s = r.trim();
+    // Each combo's SID/STAR is spliced in (from the cache); a procedure not
+    // yet loaded — e.g. an inactive tab we haven't fetched — just leaves that
+    // route's line unchanged until it loads.
+    const resolveAll = (combos: RouteCombo[], a: string, b: string) => {
+      for (const c of combos) {
+        const s = c.route.trim();
         if (!s) continue;
         const pts = resolveRoutePreview(s, allFixes, airwaysMap);
-        if (pts.length > 0) out.push(pts);
+        if (pts.length === 0) continue;
+        out.push(
+          splicePreviewProcedures(pts, sidEnd(a, c.sid), starEnd(b, c.star)),
+        );
       }
     };
     for (const p of plans) {
       // Active tab: only its queued routes here — the route being typed is
       // appended once below (avoids a double-draw).
-      if (p.id === activeId) resolveAll(routes.map((c) => c.route));
-      else resolveAll(draftCombos(p).map((c) => c.route));
+      if (p.id === activeId) resolveAll(routes, dep, des);
+      else
+        resolveAll(
+          draftCombos(p),
+          p.adep.trim().toUpperCase(),
+          p.ades.trim().toUpperCase(),
+        );
     }
     if (inProgressPreview.length > 0) out.push(inProgressPreview);
     return out;
-  }, [plans, activeId, routes, allFixes, airwaysMap, inProgressPreview]);
+  }, [
+    plans,
+    activeId,
+    routes,
+    allFixes,
+    airwaysMap,
+    inProgressPreview,
+    dep,
+    des,
+    sidEnd,
+    starEnd,
+  ]);
 
   useEffect(() => {
     onPreviewChange?.(previewRoutes);

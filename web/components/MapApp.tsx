@@ -72,7 +72,12 @@ import type {
   ProcedureWaypointCollection,
   Waypoint,
 } from "@/lib/types";
-import { aircraftAt, toSamples, useSimPlayback } from "@/lib/useSimPlayback";
+import {
+  aircraftAt,
+  toSamples,
+  totalSeconds,
+  useSimPlayback,
+} from "@/lib/useSimPlayback";
 
 const LeafletMap = dynamic(() => import("@/components/LeafletMap"), {
   ssr: false,
@@ -189,12 +194,13 @@ export default function MapApp() {
   }, []);
 
   // Which fields show in each aircraft's map label, toggled by the Flight
-  // Tags menu. Defaults to all on (matching the reference design).
+  // Tags menu. Off by default — a freshly generated map stays uncluttered;
+  // the user opts into labels via the Flight Tags menu.
   const [tagFields, setTagFields] = useState<TagFields>({
-    callsign: true,
-    fl: true,
-    ias: true,
-    hdg: true,
+    callsign: false,
+    fl: false,
+    ias: false,
+    hdg: false,
   });
 
   // Top-center aircraft-type filter. When non-empty, the map shows only
@@ -211,14 +217,6 @@ export default function MapApp() {
       ).sort(),
     [trajectories],
   );
-  // How many flights match the active filter (for the inline count hint).
-  const acMatchCount = useMemo(() => {
-    const q = acTypeQuery.trim().toUpperCase();
-    if (!q) return trajectories.length;
-    return trajectories.filter((t) =>
-      (t.meta.aircraftType ?? "").toUpperCase().includes(q),
-    ).length;
-  }, [trajectories, acTypeQuery]);
 
   // Per-route line visibility, keyed by flightKey (stable across removals,
   // unlike an index). A key in the set = that route is hidden on the map.
@@ -265,6 +263,37 @@ export default function MapApp() {
     [],
   );
 
+  // Per-aircraft icon visibility (separate from the route-line hiddenKeys).
+  // The filter panel's eye / Show-Hide-Invert / Apply toggle the *animated
+  // plane*, not its route line — so you can declutter the moving aircraft
+  // while keeping (or dropping) their drawn paths.
+  const [hiddenAircraft, setHiddenAircraft] = useState<Set<string>>(new Set());
+  const toggleAircraftHidden = useCallback((flightKey: string) => {
+    setHiddenAircraft((prev) => {
+      const next = new Set(prev);
+      if (next.has(flightKey)) next.delete(flightKey);
+      else next.add(flightKey);
+      return next;
+    });
+  }, []);
+  const showAllAircraft = useCallback(() => setHiddenAircraft(new Set()), []);
+  const hideAllAircraft = useCallback(
+    () => setHiddenAircraft(new Set(trajectories.map((t) => t.meta.flightKey))),
+    [trajectories],
+  );
+  const invertAircraft = useCallback(() => {
+    setHiddenAircraft((prev) => {
+      const next = new Set<string>();
+      for (const t of trajectories)
+        if (!prev.has(t.meta.flightKey)) next.add(t.meta.flightKey);
+      return next;
+    });
+  }, [trajectories]);
+  const applyAircraftHidden = useCallback(
+    (hidden: Set<string>) => setHiddenAircraft(hidden),
+    [],
+  );
+
   // Full filter panel (FlightRadar-style) — open state + filter criteria.
   const [filterOpen, setFilterOpen] = useState(false);
   const [filter, setFilter] = useState<FlightFilter>(EMPTY_FILTER);
@@ -305,14 +334,18 @@ export default function MapApp() {
         setProfileFlightQuery("");
         setProfileRouteQuery("");
         setSidebarOpen(true);
-        // Fresh generation: every new route starts visible.
+        // Fresh generation: every new route + aircraft starts visible.
         setHiddenKeys(new Set());
+        setHiddenAircraft(new Set());
         // Hide the faint live preview now the real trajectory is drawn (it
         // sat under the generated line). The standalone button brings it back.
         setPreviewHidden(true);
-        // Reset playback source to R1 so the clock starts on the newly
-        // generated flight instead of replaying an older route's timeline.
-        setPlaybackIdx(0);
+        // Start playback on "all routes" so a fresh generation animates every
+        // flight together (single-route playback is still one click away in
+        // the source picker).
+        setPlaybackIdx("all");
+        // Any prior camera-follow ends with the new generation.
+        setFollowActive(false);
       }
     },
     [],
@@ -331,7 +364,7 @@ export default function MapApp() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Reference-layer toggles (shown by default on load).
-  const [showAirways, setShowAirways] = useState(true);
+  const [showAirways, setShowAirways] = useState(false);
   const [showWaypoints, setShowWaypoints] = useState(false);
 
   // FIR layer (lazy — the file is ~15 MB).
@@ -1085,46 +1118,11 @@ export default function MapApp() {
               onGeneratedOpenChange={setGeneratedOpen}
               onOpenDownload={openDownload}
             />
-            {/* Top-center toolbar: Flight Tags menu (left) + aircraft-type
-                search (right). Shown once at least one flight is generated. */}
+            {/* Top-center toolbar: Flight Tags menu + the Filter-panel
+                toggle. The aircraft-type search now lives inside the panel. */}
             {trajectories.length > 0 && (
               <div className="map-topbar">
                 <FlightTagsMenu fields={tagFields} onChange={setTagFields} />
-                <div className="actype-search">
-                  <span className="actype-search-ico" aria-hidden>
-                    🔎
-                  </span>
-                  <input
-                    type="text"
-                    className="actype-search-input"
-                    list="actype-options"
-                    value={acTypeQuery}
-                    onChange={(e) => setAcTypeQuery(e.target.value)}
-                    placeholder="Filter by aircraft type — e.g. A320, B789"
-                    aria-label="Filter map by aircraft type"
-                  />
-                  <datalist id="actype-options">
-                    {aircraftTypes.map((t) => (
-                      <option key={t} value={t} />
-                    ))}
-                  </datalist>
-                  {acTypeQuery.trim() !== "" && (
-                    <>
-                      <span className="actype-search-count">
-                        {acMatchCount} of {trajectories.length}
-                      </span>
-                      <button
-                        type="button"
-                        className="actype-search-clear"
-                        onClick={() => setAcTypeQuery("")}
-                        aria-label="Clear aircraft-type filter"
-                        title="Clear filter"
-                      >
-                        ×
-                      </button>
-                    </>
-                  )}
-                </div>
                 <button
                   type="button"
                   className={`map-filter-btn${filterOpen ? " active" : ""}`}
@@ -1143,14 +1141,17 @@ export default function MapApp() {
               aircraftTypes={aircraftTypes}
               filter={filter}
               onFilterChange={patchFilter}
-              hiddenKeys={hiddenKeys}
-              onApplyHidden={applyHidden}
-              onShowAll={showAllRoutes}
-              onHideAll={hideAllRoutes}
-              onInvert={invertRoutes}
-              onToggleHidden={toggleRouteHidden}
+              typeQuery={acTypeQuery}
+              onTypeQueryChange={setAcTypeQuery}
+              hiddenKeys={hiddenAircraft}
+              onApplyHidden={applyAircraftHidden}
+              onShowAll={showAllAircraft}
+              onHideAll={hideAllAircraft}
+              onInvert={invertAircraft}
+              onToggleHidden={toggleAircraftHidden}
               onSelectFlight={selectFlight}
               activeIndex={followActive ? followIdx : safePlaybackIdx}
+              simT={sim.simT}
             />
             <DownloadModal
               open={downloadOpen}
@@ -1246,6 +1247,7 @@ export default function MapApp() {
               onProcedureClick={handleProcedureClick}
               trajectories={trajectories}
               hiddenKeys={hiddenKeys}
+              hiddenAircraft={hiddenAircraft}
               typeFilter={acTypeQuery}
               tagFields={tagFields}
               previewRoutes={
@@ -1367,6 +1369,14 @@ export default function MapApp() {
                   <div>
                     <dt>HDG</dt>
                     <dd>{Math.round(followAircraft.track)}°</dd>
+                  </div>
+                  <div>
+                    <dt>Status</dt>
+                    <dd>
+                      {sim.simT >= totalSeconds(followTraj.points) - 1
+                        ? "Arrived"
+                        : "En route"}
+                    </dd>
                   </div>
                 </dl>
               </div>
