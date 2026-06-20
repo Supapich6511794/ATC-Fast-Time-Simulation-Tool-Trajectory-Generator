@@ -87,8 +87,7 @@ function buildProcedureNameIndex(): Promise<
  * Offline fallback for the SID/STAR picker: the procedure NAMES published at
  * an aerodrome, derived from the statically-bundled procedure-waypoint
  * GeoJSON (no backend). Used by `listProcedures` when the engine API is
- * unreachable so the dropdowns still populate; the resolved leg geometry
- * (preview / generate) still needs the API.
+ * unreachable so the dropdowns still populate.
  */
 export async function staticProcedureNames(
   airport: string,
@@ -101,6 +100,103 @@ export async function staticProcedureNames(
     SID: e ? [...e.SID].sort() : [],
     STAR: e ? [...e.STAR].sort() : [],
   };
+}
+
+export interface ProcedureFix {
+  ident: string;
+  lat: number;
+  lon: number;
+}
+
+/** First coordinate of a Point / MultiPoint geometry, or null when empty
+ *  (e.g. a course-to-altitude leg that carries no fix). */
+function firstCoord(geom: { type?: string; coordinates?: unknown }):
+  | [number, number]
+  | null {
+  const c = geom?.coordinates;
+  if (geom?.type === "MultiPoint") {
+    const first = Array.isArray(c) ? (c[0] as number[] | undefined) : undefined;
+    return first && first.length >= 2 ? [first[0], first[1]] : null;
+  }
+  return Array.isArray(c) && c.length >= 2
+    ? [c[0] as number, c[1] as number]
+    : null;
+}
+
+// Memoised `${airport}|${type}|${name}` -> ordered named fixes, derived from
+// the bundled procedure-waypoint GeoJSON. Per procedure we pick the single
+// transition with the most named, coordinate-bearing fixes (the most complete
+// path) and order it by seqno — a best-effort match for the engine's resolved
+// waypoints, used only as the no-backend preview fallback.
+let _procGeomIndex: Promise<Map<string, ProcedureFix[]>> | null = null;
+
+function buildProcedureGeomIndex(): Promise<Map<string, ProcedureFix[]>> {
+  if (!_procGeomIndex) {
+    _procGeomIndex = Promise.all([fetchSidWaypoints(), fetchStarWaypoints()])
+      .then(([sid, star]) => {
+        const out = new Map<string, ProcedureFix[]>();
+        const ingest = (
+          fc: ProcedureWaypointCollection,
+          kind: "SID" | "STAR",
+        ) => {
+          // Group rows by airport|type|proc|transition, then keep the longest.
+          const groups = new Map<
+            string,
+            { seq: number; fix: ProcedureFix }[]
+          >();
+          for (const f of fc.features) {
+            const p = f.properties;
+            const a = p.airport_identifier;
+            const n = p.procedure_identifier;
+            const ident = p.waypoint_identifier;
+            if (!a || !n || !ident) continue;
+            const ll = firstCoord(f.geometry);
+            if (!ll) continue;
+            const seq = Number((p as { seqno?: number }).seqno ?? 0);
+            const gkey = `${a}|${kind}|${n}|${p.transition_identifier ?? ""}`;
+            const row = { seq, fix: { ident, lat: ll[1], lon: ll[0] } };
+            const arr = groups.get(gkey);
+            if (arr) arr.push(row);
+            else groups.set(gkey, [row]);
+          }
+          for (const [gkey, rows] of groups) {
+            rows.sort((x, y) => x.seq - y.seq);
+            const pts = rows.map((r) => r.fix);
+            const procKey = gkey.split("|").slice(0, 3).join("|");
+            const prev = out.get(procKey);
+            if (!prev || pts.length > prev.length) out.set(procKey, pts);
+          }
+        };
+        ingest(sid, "SID");
+        ingest(star, "STAR");
+        return out;
+      })
+      .catch(() => {
+        _procGeomIndex = null;
+        return new Map();
+      });
+  }
+  return _procGeomIndex;
+}
+
+/**
+ * Offline fallback for the SID/STAR PREVIEW geometry: the ordered fixes of a
+ * procedure, derived from the bundled GeoJSON (no backend). Best-effort — one
+ * transition path — used by the generator preview when the engine API is
+ * unreachable. Generation itself still resolves the real legs server-side.
+ */
+export async function staticProcedureWaypoints(
+  airport: string,
+  type: "SID" | "STAR",
+  name: string,
+): Promise<ProcedureFix[]> {
+  if (!airport || !name) return [];
+  const idx = await buildProcedureGeomIndex();
+  return (
+    idx.get(
+      `${airport.trim().toUpperCase()}|${type}|${name.trim().toUpperCase()}`,
+    ) ?? []
+  );
 }
 
 /**

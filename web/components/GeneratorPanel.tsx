@@ -25,6 +25,7 @@ import {
   type AirportOption,
   type Fix,
 } from "@/lib/aip";
+import { staticProcedureWaypoints } from "@/lib/geojson";
 import {
   fetchProcedure,
   generateBatch,
@@ -654,18 +655,34 @@ function GeneratorPanel({
     let cancelled = false;
     Promise.all(
       missing.map(async (k) => {
-        const [airport, type, name] = k.split("|");
-        try {
-          const dto = await fetchProcedure(airport, name, { type });
-          const pts: PreviewPoint[] = dto.waypoints.map((w) => ({
+        const [airport, type, name] = k.split("|") as [
+          string,
+          "SID" | "STAR",
+          string,
+        ];
+        const toPts = (ws: { ident: string; lat: number; lon: number }[]) =>
+          ws.map((w) => ({
             ident: w.ident,
             lat: w.lat,
             lon: w.lon,
             fromUser: false,
           }));
-          return [k, pts] as const;
+        // Engine API first; fall back to the bundled GeoJSON geometry when it
+        // is unreachable/empty (e.g. a deploy with no backend) so the SID/STAR
+        // preview still draws. Cache the miss either way; don't refetch.
+        try {
+          const dto = await fetchProcedure(airport, name, { type });
+          if (dto.waypoints.length > 0) return [k, toPts(dto.waypoints)] as const;
         } catch {
-          return [k, [] as PreviewPoint[]] as const; // cache the miss; don't refetch
+          /* fall through to the static fallback */
+        }
+        try {
+          return [
+            k,
+            toPts(await staticProcedureWaypoints(airport, type, name)),
+          ] as const;
+        } catch {
+          return [k, [] as PreviewPoint[]] as const;
         }
       }),
     ).then((entries) => {
