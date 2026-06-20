@@ -9,6 +9,7 @@
  * uvicorn dev server).
  */
 
+import { staticProcedureNames } from "@/lib/geojson";
 import type {
   Phase,
   RouteWaypoint,
@@ -374,23 +375,33 @@ export interface ProcedureList {
  */
 export async function listProcedures(airport: string): Promise<ProcedureList> {
   const code = airport.trim().toUpperCase();
-  const empty: ProcedureList = { airport: code, SID: [], STAR: [] };
-  if (!code) return empty;
+  if (!code) return { airport: code, SID: [], STAR: [] };
+  // Fallback to the statically-bundled procedure GeoJSON (same source the
+  // engine indexes) so the SID/STAR dropdowns still populate when the API is
+  // unreachable — e.g. a Vercel deploy whose backend is asleep or whose
+  // NEXT_PUBLIC_API_BASE isn't set. Leg geometry still needs the API.
+  const fromStatic = async (): Promise<ProcedureList> => {
+    const s = await staticProcedureNames(code);
+    return { airport: code, SID: s.SID, STAR: s.STAR };
+  };
   let res: Response;
   try {
     res = await fetch(
       `${API_BASE}/api/procedures/${encodeURIComponent(code)}`,
     );
   } catch {
-    return empty;
+    return fromStatic();
   }
-  if (!res.ok) return empty;
+  if (!res.ok) return fromStatic();
   const j = (await res.json()) as Partial<ProcedureList>;
-  return {
+  const out: ProcedureList = {
     airport: j.airport ?? code,
     SID: j.SID ?? [],
     STAR: j.STAR ?? [],
   };
+  // API reachable but returned nothing for a known aerodrome — still try the
+  // bundled data before showing an empty picker.
+  return out.SID.length === 0 && out.STAR.length === 0 ? fromStatic() : out;
 }
 
 /**

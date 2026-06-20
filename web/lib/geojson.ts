@@ -41,6 +41,68 @@ export function fetchStarWaypoints(): Promise<ProcedureWaypointCollection> {
   return fetchJson<ProcedureWaypointCollection>(STAR_WPTS_URL);
 }
 
+// Memoised airport -> distinct SID/STAR procedure names, derived from the
+// bundled procedure-waypoint GeoJSON (same source the engine indexes). Built
+// once, only when the offline fallback below is first needed.
+let _procNameIndex:
+  | Promise<Map<string, { SID: Set<string>; STAR: Set<string> }>>
+  | null = null;
+
+function buildProcedureNameIndex(): Promise<
+  Map<string, { SID: Set<string>; STAR: Set<string> }>
+> {
+  if (!_procNameIndex) {
+    _procNameIndex = Promise.all([fetchSidWaypoints(), fetchStarWaypoints()])
+      .then(([sid, star]) => {
+        const m = new Map<string, { SID: Set<string>; STAR: Set<string> }>();
+        const add = (
+          fc: ProcedureWaypointCollection,
+          kind: "SID" | "STAR",
+        ) => {
+          for (const f of fc.features) {
+            const a = f.properties.airport_identifier;
+            const n = f.properties.procedure_identifier;
+            if (!a || !n) continue;
+            let e = m.get(a);
+            if (!e) {
+              e = { SID: new Set(), STAR: new Set() };
+              m.set(a, e);
+            }
+            e[kind].add(n);
+          }
+        };
+        add(sid, "SID");
+        add(star, "STAR");
+        return m;
+      })
+      .catch(() => {
+        _procNameIndex = null; // let a later call retry the fetch
+        return new Map();
+      });
+  }
+  return _procNameIndex;
+}
+
+/**
+ * Offline fallback for the SID/STAR picker: the procedure NAMES published at
+ * an aerodrome, derived from the statically-bundled procedure-waypoint
+ * GeoJSON (no backend). Used by `listProcedures` when the engine API is
+ * unreachable so the dropdowns still populate; the resolved leg geometry
+ * (preview / generate) still needs the API.
+ */
+export async function staticProcedureNames(
+  airport: string,
+): Promise<{ SID: string[]; STAR: string[] }> {
+  const code = airport.trim().toUpperCase();
+  if (!code) return { SID: [], STAR: [] };
+  const idx = await buildProcedureNameIndex();
+  const e = idx.get(code);
+  return {
+    SID: e ? [...e.SID].sort() : [],
+    STAR: e ? [...e.STAR].sort() : [],
+  };
+}
+
 /**
  * Fetch the drawn SID (departure) procedure tracks. Loaded lazily when the
  * user enables the SID layer — these are the DFD `*_line` exports, just the
