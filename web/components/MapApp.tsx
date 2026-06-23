@@ -22,6 +22,10 @@ import FilterPanel, {
   type FlightFilter,
 } from "@/components/FilterPanel";
 import FlightTagsMenu, { type TagFields } from "@/components/FlightTagsMenu";
+import TrailsMenu, {
+  DEFAULT_TRAIL_OPTS,
+  type TrailOpts,
+} from "@/components/TrailsMenu";
 import GeneratorPanel from "@/components/GeneratorPanel";
 import MapOverlay from "@/components/MapOverlay";
 import NavToolbar, { type NavView } from "@/components/NavToolbar";
@@ -37,11 +41,18 @@ import SearchCombo from "@/components/SearchCombo";
 import {
   deriveWaypoints,
   fetchAirways,
+  fetchAirwayReporting,
+  fetchAirwayVor,
   fetchFir,
+  fetchSector,
   fetchSidLines,
   fetchSidWaypoints,
   fetchStarLines,
   fetchStarWaypoints,
+  SECTORS,
+  type AirwayPointCollection,
+  type SectorCollection,
+  type SectorKey,
 } from "@/lib/geojson";
 import { fetchProcedure, type ProcedureDto } from "@/lib/api";
 import {
@@ -59,6 +70,7 @@ import {
 import type { ProcedureSelection } from "@/components/LeafletMap";
 import LayerOptions, {
   DEFAULT_PROC_LAYER,
+  type AirwayExtra,
   type ProcLayerState,
 } from "@/components/LayerOptions";
 import { fetchCsvRouteIdents } from "@/lib/routeCsv";
@@ -202,6 +214,8 @@ export default function MapApp() {
     ias: false,
     hdg: false,
   });
+  // Trail drawing options (the Trails menu).
+  const [trailOpts, setTrailOpts] = useState<TrailOpts>(DEFAULT_TRAIL_OPTS);
 
   // Top-center aircraft-type filter. When non-empty, the map shows only
   // flights whose type matches (case-insensitive substring) — every other
@@ -371,6 +385,34 @@ export default function MapApp() {
   const [firOn, setFirOn] = useState(false);
   const [fir, setFir] = useState<FirCollection | null>(null);
   const [firLoading, setFirLoading] = useState(false);
+
+  // Airspace sector overlays (BACC / subsector / CTR / TMA / PDR) — each
+  // lazily loaded the first time its layer is toggled on.
+  const [sectorsOn, setSectorsOn] = useState<Record<SectorKey, boolean>>(
+    () =>
+      Object.fromEntries(SECTORS.map((s) => [s.key, false])) as Record<
+        SectorKey,
+        boolean
+      >,
+  );
+  const [sectorData, setSectorData] = useState<
+    Partial<Record<SectorKey, SectorCollection>>
+  >({});
+  const toggleSector = useCallback(
+    (k: SectorKey) => setSectorsOn((prev) => ({ ...prev, [k]: !prev[k] })),
+    [],
+  );
+
+  // Airway reference layers (the Airway tab): VOR + reporting points, lazily
+  // loaded when toggled, plus a shared opacity for the lines + points.
+  const [airwayExtra, setAirwayExtra] = useState<AirwayExtra>({
+    vor: false,
+    reporting: false,
+    opacity: 0.7,
+  });
+  const [airwayVor, setAirwayVor] = useState<AirwayPointCollection | null>(null);
+  const [airwayReporting, setAirwayReporting] =
+    useState<AirwayPointCollection | null>(null);
 
   // Airports + runways layers (the Layer Options "Airports" tab). Airport
   // markers are controlled per-airport by the list (no master toggle).
@@ -583,6 +625,28 @@ export default function MapApp() {
       )
       .finally(() => setFirLoading(false));
   }, [firOn, fir, firLoading]);
+
+  // Fetch each sector overlay once, the first time its layer is enabled.
+  useEffect(() => {
+    for (const s of SECTORS) {
+      if (sectorsOn[s.key] && !sectorData[s.key]) {
+        fetchSector(s.key)
+          .then((d) => setSectorData((prev) => ({ ...prev, [s.key]: d })))
+          .catch((e: unknown) =>
+            setError(
+              e instanceof Error ? e.message : `Failed to load ${s.label}`,
+            ),
+          );
+      }
+    }
+  }, [sectorsOn, sectorData]);
+
+  // Fetch the airway VOR / reporting points once, on first enable.
+  useEffect(() => {
+    if (airwayExtra.vor && !airwayVor) fetchAirwayVor().then(setAirwayVor).catch(() => {});
+    if (airwayExtra.reporting && !airwayReporting)
+      fetchAirwayReporting().then(setAirwayReporting).catch(() => {});
+  }, [airwayExtra.vor, airwayExtra.reporting, airwayVor, airwayReporting]);
 
   // Airport list for the Layer Options "Airports" tab + map markers.
   useEffect(() => {
@@ -1122,6 +1186,23 @@ export default function MapApp() {
                 toggle. The aircraft-type search now lives inside the panel. */}
             {trajectories.length > 0 && (
               <div className="map-topbar">
+                <TrailsMenu
+                  opts={trailOpts}
+                  onChange={setTrailOpts}
+                  flightTagsOn={
+                    tagFields.callsign ||
+                    tagFields.fl ||
+                    tagFields.ias ||
+                    tagFields.hdg
+                  }
+                  onFlightTagsToggle={(on) =>
+                    setTagFields(
+                      on
+                        ? { callsign: true, fl: true, ias: false, hdg: false }
+                        : { callsign: false, fl: false, ias: false, hdg: false },
+                    )
+                  }
+                />
                 <FlightTagsMenu fields={tagFields} onChange={setTagFields} />
                 <button
                   type="button"
@@ -1188,6 +1269,12 @@ export default function MapApp() {
               onShowRunways={setShowRunways}
               gatesOn={gatesOn}
               onGatesOn={setGatesOn}
+              airwaysOn={showAirways}
+              onAirwaysOn={setShowAirways}
+              airway={airwayExtra}
+              onAirwayChange={setAirwayExtra}
+              sectorsOn={sectorsOn}
+              onToggleSector={toggleSector}
               onProcHighlight={setHighlightProc}
               sid={{
                 state: sid,
@@ -1225,8 +1312,19 @@ export default function MapApp() {
             <LeafletMap
               basemap={basemap}
               airways={showAirways ? airways : null}
+              airwayPts={{
+                vor: airwayExtra.vor ? airwayVor : null,
+                reporting: airwayExtra.reporting ? airwayReporting : null,
+                opacity: airwayExtra.opacity,
+              }}
               waypoints={showWaypoints ? waypoints : null}
               fir={firOn ? fir : null}
+              sectors={Object.fromEntries(
+                SECTORS.filter((s) => sectorsOn[s.key]).map((s) => [
+                  s.key,
+                  sectorData[s.key] ?? null,
+                ]),
+              )}
               sidLines={sidLines}
               starLines={starLines}
               sidWpts={sidWpts}
@@ -1246,6 +1344,10 @@ export default function MapApp() {
               highlightProc={highlightProc}
               onProcedureClick={handleProcedureClick}
               trajectories={trajectories}
+              showTrails={trailOpts.show}
+              flColorTrails={trailOpts.flColor}
+              fullTrails={trailOpts.full}
+              trailDecaySec={trailOpts.decaySec}
               hiddenKeys={hiddenKeys}
               hiddenAircraft={hiddenAircraft}
               typeFilter={acTypeQuery}

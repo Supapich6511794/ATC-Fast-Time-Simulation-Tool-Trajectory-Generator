@@ -12,6 +12,7 @@
 import { memo, useMemo, useState } from "react";
 
 import type { PanelAirport } from "@/lib/atcLayers";
+import { SECTORS, type SectorKey } from "@/lib/geojson";
 import type { ProcedureDto } from "@/lib/api";
 
 /** Visibility + style state for one procedure layer (SID or STAR). */
@@ -35,15 +36,35 @@ export const DEFAULT_PROC_LAYER: ProcLayerState = {
   thickness: 2,
 };
 
-type TabKey = "airports" | "gates" | "sid" | "star" | "pbn" | "ils";
+type TabKey =
+  | "airports"
+  | "gates"
+  | "sid"
+  | "star"
+  | "pbn"
+  | "ils"
+  | "airway"
+  | "sectors";
 
-// Only Airports / SID / STAR are exposed for now. Gates / PBN / ILS are
-// implemented (and their data is present) but hidden until needed — add their
-// entries back here to re-enable.
+/** Airway-tab layer flags (lines opacity is shared with the points). */
+export interface AirwayExtra {
+  vor: boolean;
+  reporting: boolean;
+  opacity: number;
+}
+
+// Full layer set (matches the flight-animation viewer): Airports, Gates, SID,
+// STAR, PBN, ILS terminal procedures, Airway reference layers, plus the
+// airspace Sectors tab.
 const TABS: { key: TabKey; icon: string; label: string }[] = [
   { key: "airports", icon: "✈", label: "Airports" },
+  { key: "gates", icon: "🚪", label: "Gates" },
   { key: "sid", icon: "🛫", label: "SID" },
   { key: "star", icon: "🛬", label: "STAR" },
+  { key: "pbn", icon: "📍", label: "PBN" },
+  { key: "ils", icon: "📡", label: "ILS" },
+  { key: "airway", icon: "🛩", label: "Airway" },
+  { key: "sectors", icon: "▱", label: "Sectors" },
 ];
 
 /** One procedure-style layer's wiring (shared by SID/STAR/PBN/ILS). */
@@ -76,6 +97,14 @@ interface Props {
   // Gates
   gatesOn: boolean;
   onGatesOn: (on: boolean) => void;
+  // Airway reference layers
+  airwaysOn: boolean;
+  onAirwaysOn: (on: boolean) => void;
+  airway: AirwayExtra;
+  onAirwayChange: (s: AirwayExtra) => void;
+  // Airspace sectors (BACC / subsector / CTR / TMA / PDR)
+  sectorsOn: Record<SectorKey, boolean>;
+  onToggleSector: (key: SectorKey) => void;
   /** Highlight a looked-up procedure on the map (null clears it). */
   onProcHighlight: (data: ProcedureDto | null) => void;
   // Procedure layers
@@ -97,6 +126,12 @@ function LayerOptions({
   onShowRunways,
   gatesOn,
   onGatesOn,
+  airwaysOn,
+  onAirwaysOn,
+  airway,
+  onAirwayChange,
+  sectorsOn,
+  onToggleSector,
   onProcHighlight,
   sid,
   star,
@@ -152,14 +187,92 @@ function LayerOptions({
           />
         )}
         {tab === "gates" && (
-          <label className="lo-check">
-            <span>Show Gates</span>
-            <input
-              type="checkbox"
-              checked={gatesOn}
-              onChange={(e) => onGatesOn(e.target.checked)}
+          <>
+            <label className="lo-check">
+              <span>Show Gates</span>
+              <input
+                type="checkbox"
+                checked={gatesOn}
+                onChange={(e) => onGatesOn(e.target.checked)}
+              />
+            </label>
+            <p className="lo-empty">
+              Gates are displayed at airports when zoomed in. Toggle visibility
+              above.
+            </p>
+          </>
+        )}
+        {tab === "airway" && (
+          <>
+            <label className="lo-check">
+              <span>Airways</span>
+              <input
+                type="checkbox"
+                checked={airwaysOn}
+                onChange={(e) => onAirwaysOn(e.target.checked)}
+              />
+            </label>
+            <label className="lo-check">
+              <span>VOR</span>
+              <input
+                type="checkbox"
+                checked={airway.vor}
+                onChange={(e) =>
+                  onAirwayChange({ ...airway, vor: e.target.checked })
+                }
+              />
+            </label>
+            <label className="lo-check">
+              <span>Reporting</span>
+              <input
+                type="checkbox"
+                checked={airway.reporting}
+                onChange={(e) =>
+                  onAirwayChange({ ...airway, reporting: e.target.checked })
+                }
+              />
+            </label>
+            <Slider
+              label="OPACITY"
+              value={Math.round(airway.opacity * 100)}
+              min={10}
+              max={100}
+              step={5}
+              suffix="%"
+              onChange={(v) => onAirwayChange({ ...airway, opacity: v / 100 })}
             />
-          </label>
+            <p className="lo-empty">
+              Reporting points (~35k) appear only when zoomed in.
+            </p>
+          </>
+        )}
+        {tab === "sectors" && (
+          <>
+            {SECTORS.map((s) => (
+              <label key={s.key} className="lo-check">
+                <span>
+                  <span
+                    aria-hidden
+                    style={{
+                      display: "inline-block",
+                      width: 10,
+                      height: 10,
+                      marginRight: 8,
+                      borderRadius: 2,
+                      background: s.color,
+                      verticalAlign: "middle",
+                    }}
+                  />
+                  {s.label}
+                </span>
+                <input
+                  type="checkbox"
+                  checked={sectorsOn[s.key]}
+                  onChange={() => onToggleSector(s.key)}
+                />
+              </label>
+            ))}
+          </>
         )}
         {(tab === "sid" || tab === "star" || tab === "pbn" || tab === "ils") && (
           <ProcTab
@@ -299,6 +412,19 @@ function ProcTab({
           onChange={(e) => set({ waypoints: e.target.checked })}
         />
       </label>
+
+      <MultiSelect
+        label="AIRPORT"
+        options={airportOpts}
+        selected={state.airports}
+        onChange={(s) => set({ airports: s })}
+      />
+      <MultiSelect
+        label="PROCEDURE"
+        options={procOpts}
+        selected={state.procedures}
+        onChange={(s) => set({ procedures: s })}
+      />
 
       <Slider
         label="OPACITY"

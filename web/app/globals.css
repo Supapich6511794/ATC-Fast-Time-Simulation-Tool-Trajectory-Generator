@@ -3220,6 +3220,32 @@ body {
   accent-color: var(--accent);
 }
 
+/* Trail Decay dropdown row in the Trails menu. */
+.flight-tags-decay {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px 2px;
+}
+.flight-tags-decay-label {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.flight-tags-decay select {
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid #33415588;
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+}
+.flight-tags-decay select:disabled {
+  opacity: 0.5;
+}
+
 /* The rectangular aircraft label ("THA123 FL350 280kt 225°") drawn beside
  * each plane — a clean dark pill with no Leaflet arrow. */
 .leaflet-tooltip.aircraft-tag {
@@ -4918,6 +4944,42 @@ select.fp-input {
 }
 
 /* Underline-style plan tabs. */
+.plans-search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.plans-search {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid #33415588;
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.plans-search-count {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.plans-nomatch {
+  flex: 0 0 auto;
+  align-self: center;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 0 6px;
+}
+
 .plans-tabs {
   display: flex;
   align-items: center;

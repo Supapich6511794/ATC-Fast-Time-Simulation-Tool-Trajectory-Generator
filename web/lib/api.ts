@@ -412,12 +412,20 @@ export async function listProcedures(airport: string): Promise<ProcedureList> {
 export async function fetchProcedure(
   airport: string,
   name: string,
-  opts: { type?: string; runway?: string; transition?: string } = {},
+  opts: {
+    type?: string;
+    runway?: string;
+    transition?: string;
+    /** Enroute route string — lets the server pick the transition the flight
+     *  actually flies (e.g. NAKO1B via BLAFF, not ALBOS). */
+    route?: string;
+  } = {},
 ): Promise<ProcedureDto> {
   const q = new URLSearchParams();
   if (opts.type) q.set("type", opts.type);
   if (opts.runway) q.set("runway", opts.runway);
   if (opts.transition) q.set("transition", opts.transition);
+  if (opts.route) q.set("route", opts.route);
   const url = `${API_BASE}/api/procedures/${encodeURIComponent(
     airport,
   )}/${encodeURIComponent(name)}?${q.toString()}`;

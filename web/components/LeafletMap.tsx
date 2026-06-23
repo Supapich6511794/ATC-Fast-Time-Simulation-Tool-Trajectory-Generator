@@ -16,7 +16,13 @@
  */
 
 import L from "leaflet";
-import { Fragment, type ReactNode, useEffect, useMemo } from "react";
+import {
+  Fragment,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   CircleMarker,
   GeoJSON,
@@ -27,6 +33,7 @@ import {
   TileLayer,
   Tooltip,
   useMap,
+  useMapEvents,
 } from "react-leaflet";
 
 import { BASEMAPS, type Basemap } from "@/lib/mapPrefs";
@@ -42,15 +49,32 @@ import type {
 } from "@/lib/types";
 import type { AirportOption } from "@/lib/aip";
 import type { GateCollection, RunwayPoint } from "@/lib/atcLayers";
+import {
+  SECTORS,
+  type AirwayPointCollection,
+  type SectorCollection,
+  type SectorKey,
+} from "@/lib/geojson";
 import type { ProcLayerState } from "@/components/LayerOptions";
 import type { ProcedureDto } from "@/lib/api";
 
 interface Props {
   basemap: Basemap;
   airways: AirwayCollection | null;
+  /** Airway reference-point overlays (the Airway tab): VOR navaids and
+   *  reporting points, plus a shared opacity for the airway lines + points.
+   *  Reporting is large (~35 k pts) so it only draws when zoomed in. */
+  airwayPts?: {
+    vor?: AirwayPointCollection | null;
+    reporting?: AirwayPointCollection | null;
+    opacity?: number;
+  };
   /** Reference waypoint layer (all fixes), or null to hide. */
   waypoints: Waypoint[] | null;
   fir: FirCollection | null;
+  /** Airspace sector overlays (BACC / subsector / CTR / TMA / PDR), each
+   *  present only when its layer is toggled on. */
+  sectors?: Partial<Record<SectorKey, SectorCollection | null>>;
   /** SID/STAR procedure tracks + fixes (full collections; visibility,
    *  filtering and styling are driven by `sid`/`star`). */
   sidLines?: ProcedureLineCollection | null;
@@ -83,6 +107,15 @@ interface Props {
   onProcedureClick?: (sel: ProcedureSelection) => void;
   /** One or more generated routes, all shown/animated together. */
   trajectories: TrajectoryResult[];
+  /** Trail drawing (the Trails menu): `showTrails` off draws the aircraft
+   *  without its path line; `flColorTrails` off draws a flat per-route colour
+   *  instead of the altitude (flight-level) gradient; `fullTrails` off draws
+   *  only the recent trail behind the aircraft, limited to `trailDecaySec` of
+   *  flight time (0 = the whole flown path). show/flColor/full default on. */
+  showTrails?: boolean;
+  flColorTrails?: boolean;
+  fullTrails?: boolean;
+  trailDecaySec?: number;
   /** flightKeys whose route *line* is hidden on the map. The aircraft icon
    *  stays visible, so the user can declutter the lines mid-simulation while
    *  still tracking each flight. */
@@ -130,6 +163,13 @@ function MapRefBridge({
     onReady(map);
     return () => onReady(null);
   }, [map, onReady]);
+  return null;
+}
+
+/** Reports the live map zoom up to the parent (for zoom-gated layers). */
+function ZoomWatcher({ onZoom }: { onZoom: (z: number) => void }) {
+  const map = useMapEvents({ zoomend: () => onZoom(map.getZoom()) });
+  useEffect(() => onZoom(map.getZoom()), [map, onZoom]);
   return null;
 }
 
@@ -534,8 +574,10 @@ function EndpointMarker({
 export default function LeafletMap({
   basemap,
   airways,
+  airwayPts,
   waypoints,
   fir,
+  sectors,
   sidLines,
   starLines,
   sidWpts,
@@ -554,6 +596,10 @@ export default function LeafletMap({
   runways,
   highlightProc,
   trajectories,
+  showTrails = true,
+  flColorTrails = true,
+  fullTrails = true,
+  trailDecaySec = 0,
   hiddenKeys,
   previewRoutes,
   typeFilter,
@@ -572,6 +618,11 @@ export default function LeafletMap({
     () => trajectories.map((t) => toSamples(t.points)),
     [trajectories],
   );
+
+  // Current map zoom — gates the heavy airway "reporting" point layer. Kept
+  // in sync by <ZoomWatcher> (a MapContainer child; this component is its
+  // parent so it can't call useMapEvents directly).
+  const [mapZoom, setMapZoom] = useState(6);
 
   const firLayer = useMemo(
     () =>
@@ -600,10 +651,81 @@ export default function LeafletMap({
         <GeoJSON
           key={`airways-${airways.features.length}`}
           data={airways}
-          style={() => ({ color: "#f59e0b", weight: 1, opacity: 0.35 })}
+          style={() => ({
+            color: "#f59e0b",
+            weight: 1,
+            opacity: airwayPts?.opacity ?? 0.35,
+          })}
         />
       ),
-    [airways],
+    [airways, airwayPts?.opacity],
+  );
+
+  // Airway reference points: VOR navaids + reporting points (the Airway tab),
+  // drawn as small canvas circles. Reporting is huge (~35 k pts) so it only
+  // renders past zoom 8 to keep the map responsive.
+  const airwayPointLayers = useMemo(() => {
+    if (!airwayPts) return null;
+    const op = airwayPts.opacity ?? 0.7;
+    const ptLayer = (
+      data: AirwayPointCollection | null | undefined,
+      color: string,
+      radius: number,
+      key: string,
+    ) =>
+      data ? (
+        <GeoJSON
+          key={`${key}-${data.features.length}`}
+          data={data}
+          pointToLayer={(_f, latlng) =>
+            L.circleMarker(latlng, {
+              radius,
+              weight: 0,
+              color,
+              fillColor: color,
+              fillOpacity: op,
+              interactive: false,
+            })
+          }
+        />
+      ) : null;
+    return (
+      <>
+        {ptLayer(airwayPts.vor, "#fbbf24", 3, "aw-vor")}
+        {mapZoom >= 8 ? ptLayer(airwayPts.reporting, "#94a3b8", 1.5, "aw-rep") : null}
+      </>
+    );
+  }, [airwayPts, mapZoom]);
+
+  // Airspace sector overlays — one dashed, lightly-filled <GeoJSON> per
+  // toggled-on sector (BACC / subsector / CTR / TMA / PDR), each in its own
+  // colour with a name popup.
+  const sectorLayers = useMemo(
+    () =>
+      SECTORS.map((s) => {
+        const data = sectors?.[s.key];
+        if (!data) return null;
+        return (
+          <GeoJSON
+            key={`sector-${s.key}-${data.features.length}`}
+            data={data}
+            style={() => ({
+              color: s.color,
+              weight: 1,
+              opacity: 0.8,
+              fillColor: s.color,
+              fillOpacity: 0.06,
+              dashArray: "8 4",
+            })}
+            onEachFeature={(f, layer) => {
+              const p = (f.properties ?? {}) as Record<string, unknown>;
+              const name = p.name ?? p.ident ?? s.label;
+              layer.bindPopup(`<strong>${name}</strong> · ${s.label}`);
+            }}
+          />
+        );
+      }).filter(Boolean),
+    [sectors],
   );
 
   // SID/STAR procedure tracks. Filtered by the Layer Options airport +
@@ -941,20 +1063,41 @@ export default function LeafletMap({
 
         return (
           <Fragment key={kp}>
-            {/* Faint dark casing under the altitude-coloured segments so
-                the route stays readable over both light and dark tiles. */}
-            <Polyline
-              positions={line}
-              interactive={false}
-              pathOptions={{
-                color: "#0f172a",
-                weight: 5,
-                opacity: 0.45,
-                lineCap: "round",
-                lineJoin: "round",
-              }}
-            />
-            {altSegments}
+            {/* The FULL route line — drawn when "Show Trails" + "Full Trails"
+                are on (aircraft + fixes always stay). FL Color Trails on =
+                altitude gradient; off = one flat per-route colour. A faint
+                dark casing keeps it readable. With Full Trails off, this
+                static line is replaced by the per-frame decaying trail. */}
+            {showTrails && fullTrails && (
+              <>
+                <Polyline
+                  positions={line}
+                  interactive={false}
+                  pathOptions={{
+                    color: "#0f172a",
+                    weight: 5,
+                    opacity: 0.45,
+                    lineCap: "round",
+                    lineJoin: "round",
+                  }}
+                />
+                {flColorTrails ? (
+                  altSegments
+                ) : (
+                  <Polyline
+                    positions={line}
+                    interactive={false}
+                    pathOptions={{
+                      color,
+                      weight: 3,
+                      opacity: 0.95,
+                      lineCap: "round",
+                      lineJoin: "round",
+                    }}
+                  />
+                )}
+              </>
+            )}
 
             {/* Every published route fix as a dot (OLVUK … MARNI). The
                 ADEP/ADES aerodromes are drawn separately by the endpoint
@@ -1038,7 +1181,7 @@ export default function LeafletMap({
           </Fragment>
         );
       }),
-    [trajectories, multiRoute, hiddenKeys, typeFilter],
+    [trajectories, multiRoute, hiddenKeys, typeFilter, showTrails, flColorTrails, fullTrails],
   );
 
   return (
@@ -1056,8 +1199,11 @@ export default function LeafletMap({
       <TileLayer key={basemap} attribution={tiles.attribution} url={tiles.url} />
       {onMapReady && <MapRefBridge onReady={onMapReady} />}
 
+      <ZoomWatcher onZoom={setMapZoom} />
       {firLayer}
+      {sectorLayers}
       {airwayLayer}
+      {airwayPointLayers}
       {sidLayer}
       {starLayer}
       {pbnLayer}
@@ -1089,6 +1235,79 @@ export default function LeafletMap({
         if (hiddenAircraft?.has(t.meta.flightKey)) return null;
         const ac = aircraftAt(samplesByRoute[ti] ?? [], simT);
         if (!ac) return null;
+
+        // Decaying trail (Full Trails off): the flown path within the decay
+        // window [simT − decay, simT], capped + tinted like the static line.
+        // Re-rendered every frame here so it follows the aircraft.
+        let decayTrail: ReactNode = null;
+        if (showTrails && !fullTrails) {
+          const samples = samplesByRoute[ti] ?? [];
+          const lo = trailDecaySec > 0 ? simT - trailDecaySec : -Infinity;
+          const win = samples.filter((s) => s.t <= simT && s.t >= lo);
+          const trailPts = [
+            ...win,
+            { lat: ac.lat, lon: ac.lon, altitudeFt: ac.altitudeFt, t: simT },
+          ];
+          if (trailPts.length >= 2) {
+            // Decimate so a long flown path stays ~120 segments per frame.
+            const stepT = Math.max(1, Math.ceil((trailPts.length - 1) / 120));
+            const keep = trailPts.filter(
+              (_, i) => i % stepT === 0 || i === trailPts.length - 1,
+            );
+            const trailColor = ROUTE_COLORS[ti % ROUTE_COLORS.length];
+            decayTrail = (
+              <>
+                <Polyline
+                  positions={keep.map((s) => [s.lat, s.lon])}
+                  interactive={false}
+                  pathOptions={{
+                    color: "#0f172a",
+                    weight: 5,
+                    opacity: 0.4,
+                    lineCap: "round",
+                    lineJoin: "round",
+                  }}
+                />
+                {flColorTrails ? (
+                  keep.slice(0, -1).map((a, i) => {
+                    const b = keep[i + 1];
+                    const altMid =
+                      ((a.altitudeFt ?? 0) + (b.altitudeFt ?? 0)) / 2;
+                    return (
+                      <Polyline
+                        key={`trail-${t.meta.flightKey}-${i}`}
+                        positions={[
+                          [a.lat, a.lon],
+                          [b.lat, b.lon],
+                        ]}
+                        interactive={false}
+                        pathOptions={{
+                          color: altitudeColor(altMid),
+                          weight: 3,
+                          opacity: 0.95,
+                          lineCap: "round",
+                          lineJoin: "round",
+                        }}
+                      />
+                    );
+                  })
+                ) : (
+                  <Polyline
+                    positions={keep.map((s) => [s.lat, s.lon])}
+                    interactive={false}
+                    pathOptions={{
+                      color: trailColor,
+                      weight: 3,
+                      opacity: 0.95,
+                      lineCap: "round",
+                      lineJoin: "round",
+                    }}
+                  />
+                )}
+              </>
+            );
+          }
+        }
         // Configurable flight tag — only the fields enabled in the Flight
         // Tags menu, in screenshot order: callsign · FL · IAS · HDG. Updates
         // live as the checkboxes toggle (re-rendered every frame anyway).
@@ -1102,27 +1321,29 @@ export default function LeafletMap({
         if (tf.hdg) tagParts.push(`${Math.round(ac.track)}°`);
         const tagText = tagParts.join(" ");
         return (
-          <Marker
-            key={`ac-${t.meta.flightKey}`}
-            position={[ac.lat, ac.lon]}
-            icon={planeIcon(
-              Math.round(ac.track),
-              aircraftColor(t.meta.aircraftType),
-              t.meta.flightKey === followKey,
-            )}
-            zIndexOffset={t.meta.flightKey === followKey ? 1000 : 0}
-          >
-            {tagText && (
-              <Tooltip
-                permanent
-                direction="right"
-                offset={[10, 0]}
-                className="aircraft-tag"
-              >
-                {tagText}
-              </Tooltip>
-            )}
-          </Marker>
+          <Fragment key={`ac-${t.meta.flightKey}`}>
+            {decayTrail}
+            <Marker
+              position={[ac.lat, ac.lon]}
+              icon={planeIcon(
+                Math.round(ac.track),
+                aircraftColor(t.meta.aircraftType),
+                t.meta.flightKey === followKey,
+              )}
+              zIndexOffset={t.meta.flightKey === followKey ? 1000 : 0}
+            >
+              {tagText && (
+                <Tooltip
+                  permanent
+                  direction="right"
+                  offset={[10, 0]}
+                  className="aircraft-tag"
+                >
+                  {tagText}
+                </Tooltip>
+              )}
+            </Marker>
+          </Fragment>
         );
       })}
 

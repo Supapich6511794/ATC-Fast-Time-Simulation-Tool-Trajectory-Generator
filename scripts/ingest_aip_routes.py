@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import ssl
 import urllib.request
@@ -176,6 +177,56 @@ def _airports(tokens: str, known: set[str]) -> list[str]:
     return out
 
 
+# "Overfly BKK" / "Overflying GOLUD" → the fix overflown (uppercase ident only,
+# so "Overfly Bangkok FIR" — lower-case — is ignored).
+_OVF_RE = re.compile(r"[Oo]verfl(?:y|ying)\s+([A-Z][A-Z0-9]{2,4})\b")
+
+
+def _overfly_hubs(cell: str, waypoints: set[str]) -> list[str]:
+    """Overfly hub fixes named in a FROM/TO cell ("Overfly BKK" → BKK), kept
+    only when the fix is a known waypoint (drops "Bangkok FIR" etc.)."""
+    out: list[str] = []
+    for m in _OVF_RE.finditer(cell):
+        h = m.group(1).upper()
+        if h in waypoints and h not in out:
+            out.append(h)
+    return out
+
+
+def _dist_nm(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Great-circle distance (NM) between two (lat, lon) points."""
+    r = 3440.065
+    p1, p2 = math.radians(a[0]), math.radians(b[0])
+    dphi = math.radians(b[0] - a[0])
+    dlmb = math.radians(b[1] - a[1])
+    h = (
+        math.sin(dphi / 2) ** 2
+        + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
+    )
+    return 2 * r * math.asin(min(1.0, math.sqrt(h)))
+
+
+# An overfly-mix join is kept only when going via the hub is at most this much
+# longer than the direct ADEP→ADES great circle — rejects nonsensical detours
+# (e.g. VTBD→VTBS "via" far-off TIDAR/HTY) while keeping a hub that genuinely
+# lies en route (VTCC→VTSP via BKK).
+_MIX_MAX_DETOUR = 1.6
+
+
+def _join_overfly(arr_route: str, dep_route: str, hub: str) -> str | None:
+    """Splice an ``A → Overfly H`` arrival half (ends at the hub fix) with an
+    ``Overfly H → B`` departure half (starts at it) at their shared hub —
+    e.g. "PANTA Y7 BKK" + "BKK Y8 SAVSA" → "PANTA Y7 BKK Y8 SAVSA". ``None``
+    when the hub fix isn't actually on both halves."""
+    at = [t for t in arr_route.split() if t not in ("...", "…")]
+    dt = [t for t in dep_route.split() if t not in ("...", "…")]
+    if hub not in at or hub not in dt:
+        return None
+    a_end = len(at) - 1 - at[::-1].index(hub)  # last hub in the arrival half
+    d_start = dt.index(hub)  # first hub in the departure half
+    return " ".join(at[: a_end + 1] + dt[d_start + 1:])
+
+
 # Source typos in the AIP where a fix and airway got concatenated.
 _FIXUPS = {"DORNAW32": "DORNA W32"}
 
@@ -236,8 +287,17 @@ def main() -> None:
         else _fetch(args.airac)
     )
 
-    known = set(json.loads(_AIP.read_text(encoding="utf-8")).get("airports", {}))
-    print(f"  known aerodromes: {len(known)}")
+    aip = json.loads(_AIP.read_text(encoding="utf-8"))
+    known = set(aip.get("airports", {}))
+    waypoints = set(aip.get("waypoints", {}))
+    # (lat, lon) for aerodromes and fixes — for the overfly-mix detour check.
+    coord: dict[str, tuple[float, float]] = {}
+    for icao, a in aip.get("airports", {}).items():
+        if "lat" in a and "lon" in a:
+            coord[icao] = (float(a["lat"]), float(a["lon"]))
+    for ident, w in aip.get("waypoints", {}).items():
+        coord[ident] = (float(w["lat"]), float(w["lon"]))
+    print(f"  known aerodromes: {len(known)} | waypoints: {len(waypoints)}")
 
     p = _TableParser()
     p.feed(html)
@@ -245,6 +305,12 @@ def main() -> None:
 
     routes: list[dict[str, object]] = []
     seen: set[tuple[str, str, bool, str]] = set()
+    direct_pairs: set[tuple[str, str]] = set()
+    # Overfly half-routes for the mix step: hub fix + RNAV → list of
+    # (aerodrome, route). `arr` = aerodrome → Overfly hub (ends at the hub);
+    # `dep` = Overfly hub → aerodrome (starts at it).
+    arr_halves: dict[tuple[str, bool], list[tuple[str, str]]] = {}
+    dep_halves: dict[tuple[str, bool], list[tuple[str, str]]] = {}
     route_tables = 0
     for grid, rnav in zip(p.tables, modes):
         if rnav is None or not grid:
@@ -259,13 +325,15 @@ def main() -> None:
                 continue
             froms = _airports(row[fi], known)
             tos = _airports(row[ti], known)
-            if not froms or not tos:
-                continue
+            from_hubs = _overfly_hubs(row[fi], waypoints)
+            to_hubs = _overfly_hubs(row[ti], waypoints)
             for route, cond in _route_options(row[ri]):
+                # Direct aerodrome → aerodrome (the published filed route).
                 for a in froms:
                     for b in tos:
                         if a == b:
                             continue
+                        direct_pairs.add((a, b))
                         key = (a, b, rnav, route)
                         if key in seen:
                             continue
@@ -279,10 +347,67 @@ def main() -> None:
                         if cond:
                             entry["condition"] = cond
                         routes.append(entry)
+                # Overfly half-routes — collected for the join step below.
+                for a in froms:
+                    for hub in to_hubs:
+                        arr_halves.setdefault((hub, rnav), []).append((a, route))
+                for hub in from_hubs:
+                    for b in tos:
+                        dep_halves.setdefault((hub, rnav), []).append((b, route))
+
+    # Overfly MIX (gap-fill): join an `A → Overfly H` arrival half with an
+    # `Overfly H → B` departure half at the shared hub, for every overfly hub,
+    # but ONLY for pairs with no published direct route (e.g. VTCC → VTSP via
+    # BKK). Tagged ``via`` so a synthesized route is distinguishable from a
+    # filed one.
+    mixed = 0
+    mseen: set[tuple[str, str, bool, str]] = set()
+    for (hub, rnav), arrs in arr_halves.items():
+        deps = dep_halves.get((hub, rnav), [])
+        for a_apt, a_rt in arrs:
+            for b_apt, b_rt in deps:
+                if a_apt == b_apt or (a_apt, b_apt) in direct_pairs:
+                    continue
+                joined = _join_overfly(a_rt, b_rt, hub)
+                if not joined:
+                    continue
+                toks = joined.split()
+                # Reject a join that revisits a fix (an out-and-back loop).
+                fixes = [t for t in toks if t in waypoints]
+                if len(fixes) != len(set(fixes)):
+                    continue
+                # Reject a geographic detour: via-hub must be ≤ _MIX_MAX_DETOUR
+                # × the direct ADEP→ADES distance (kills VTBD→VTBS "via" a
+                # far-off hub; keeps a hub that's truly en route).
+                ll_a, ll_b, ll_h = (
+                    coord.get(a_apt),
+                    coord.get(b_apt),
+                    coord.get(hub),
+                )
+                if ll_a and ll_b and ll_h:
+                    direct_d = _dist_nm(ll_a, ll_b)
+                    via_d = _dist_nm(ll_a, ll_h) + _dist_nm(ll_h, ll_b)
+                    if direct_d <= 0 or via_d > _MIX_MAX_DETOUR * direct_d:
+                        continue
+                key = (a_apt, b_apt, rnav, joined)
+                if key in mseen:
+                    continue
+                mseen.add(key)
+                routes.append(
+                    {
+                        "adep": a_apt,
+                        "ades": b_apt,
+                        "rnav": rnav,
+                        "route": joined,
+                        "via": hub,
+                    }
+                )
+                mixed += 1
 
     routes.sort(key=lambda r: (r["adep"], r["ades"], not r["rnav"]))
     print(f"  route tables parsed: {route_tables}")
-    print(f"  aerodrome-aerodrome routes: {len(routes)}")
+    direct = len(routes) - mixed
+    print(f"  routes: {len(routes)} (direct: {direct} | overfly-mix: {mixed})")
     rn = sum(1 for r in routes if r["rnav"])
     print(f"    RNAV: {rn} | Non-RNAV: {len(routes) - rn}")
     pairs = {(r["adep"], r["ades"]) for r in routes}
@@ -300,7 +425,10 @@ def main() -> None:
             "Predefined AIP flight-planning routes (ENR 1.10), scraped by "
             "scripts/ingest_aip_routes.py. route = published fixes/airways "
             "only (no ADEP/ADES ICAO); directional; rnav split; conditional "
-            "options carry a 'condition' note."
+            "options carry a 'condition' note. Entries with a 'via' field are "
+            "overfly-mix routes — synthesized for a pair with no direct filed "
+            "route by joining its two halves at the named overfly hub fix "
+            "(e.g. VTCC->VTSP = PANTA Y7 BKK Y8 SAVSA, via BKK)."
         ),
         "airac": args.airac,
         "routes": routes,

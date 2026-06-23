@@ -1,5 +1,5 @@
 {
-  "_comment": "Predefined AIP flight-planning routes (ENR 1.10), scraped by scripts/ingest_aip_routes.py. route = published fixes/airways only (no ADEP/ADES ICAO); directional; rnav split; conditional options carry a 'condition' note.",
+  "_comment": "Predefined AIP flight-planning routes (ENR 1.10), scraped by scripts/ingest_aip_routes.py. route = published fixes/airways only (no ADEP/ADES ICAO); directional; rnav split; conditional options carry a 'condition' note. Entries with a 'via' field are overfly-mix routes — synthesized for a pair with no direct filed route by joining its two halves at the named overfly hub fix (e.g. VTCC->VTSP = PANTA Y7 BKK Y8 SAVSA, via BKK).",
   "airac": "2026-06-11",
   "routes": [
     {
@@ -945,6 +945,118 @@
       "route": "PANTA W9 BLAFF DCT NORTA"
     },
     {
+      "adep": "VTCC",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "PANTA Y7 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCC",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "PANTA W9 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCC",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "PANTA Y7 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCC",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "PANTA Y7 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCC",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "PANTA W9 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCC",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "PANTA W9 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCC",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "PANTA Y7 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCC",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "PANTA W9 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCC",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "PANTA Y7 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCC",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "PANTA W9 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCC",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "PANTA Y7 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCC",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "PANTA W9 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCC",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "PANTA Y7 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCC",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "PANTA W9 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCC",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "PANTA Y7 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCC",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "PANTA W9 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
       "adep": "VTCL",
       "ades": "VTBD",
       "rnav": true,
@@ -967,6 +1079,118 @@
       "ades": "VTBS",
       "rnav": false,
       "route": "VENAG W23 PSL W9 BLAFF DCT NORTA"
+    },
+    {
+      "adep": "VTCL",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "VENAG W23 PSL Y28 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCL",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "VENAG W23 PSL W9 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCL",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "VENAG W23 PSL Y28 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCL",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "VENAG W23 PSL Y28 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCL",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "VENAG W23 PSL W9 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCL",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "VENAG W23 PSL W9 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCL",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "VENAG W23 PSL Y28 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCL",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "VENAG W23 PSL W9 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCL",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "VENAG W23 PSL Y28 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCL",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "VENAG W23 PSL W9 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCL",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "VENAG W23 PSL Y28 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCL",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "VENAG W23 PSL W9 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCL",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "VENAG W23 PSL Y28 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCL",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "VENAG W23 PSL W9 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCL",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "VENAG W23 PSL Y28 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCL",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "VENAG W23 PSL W9 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
     },
     {
       "adep": "VTCN",
@@ -993,6 +1217,118 @@
       "route": "W29 PSL W9 BLAFF DCT NORTA"
     },
     {
+      "adep": "VTCN",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "W29 PSL Y28 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCN",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "W29 PSL W9 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCN",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "W29 PSL Y28 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCN",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "W29 PSL Y28 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCN",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W29 PSL W9 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCN",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W29 PSL W9 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCN",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "W29 PSL Y28 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCN",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "W29 PSL W9 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCN",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "W29 PSL Y28 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCN",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "W29 PSL W9 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCN",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "W29 PSL Y28 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCN",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "W29 PSL W9 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCN",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "W29 PSL Y28 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCN",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "W29 PSL W9 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCN",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "W29 PSL Y28 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCN",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "W29 PSL W9 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
       "adep": "VTCP",
       "ades": "VTBD",
       "rnav": true,
@@ -1015,6 +1351,118 @@
       "ades": "VTBS",
       "rnav": false,
       "route": "IDKOR W22 PSL W9 BLAFF DCT NORTA"
+    },
+    {
+      "adep": "VTCP",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "IDKOR W22 PSL Y28 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCP",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "IDKOR W22 PSL W9 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCP",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "IDKOR W22 PSL Y28 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCP",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "IDKOR W22 PSL Y28 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCP",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "IDKOR W22 PSL W9 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCP",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "IDKOR W22 PSL W9 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCP",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "IDKOR W22 PSL Y28 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCP",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "IDKOR W22 PSL W9 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCP",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "IDKOR W22 PSL Y28 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCP",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "IDKOR W22 PSL W9 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCP",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "IDKOR W22 PSL Y28 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCP",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "IDKOR W22 PSL W9 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCP",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "IDKOR W22 PSL Y28 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCP",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "IDKOR W22 PSL W9 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCP",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "IDKOR W22 PSL Y28 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCP",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "IDKOR W22 PSL W9 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
     },
     {
       "adep": "VTCT",
@@ -1041,6 +1489,118 @@
       "route": "DUBEN W29 PSL W9 BLAFF DCT NORTA"
     },
     {
+      "adep": "VTCT",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "DUBEN Y28 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCT",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "DUBEN W29 PSL W9 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCT",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "DUBEN Y28 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCT",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "DUBEN Y28 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCT",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "DUBEN W29 PSL W9 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCT",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "DUBEN W29 PSL W9 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCT",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "DUBEN Y28 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCT",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "DUBEN W29 PSL W9 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCT",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "DUBEN Y28 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCT",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "DUBEN W29 PSL W9 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCT",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "DUBEN Y28 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCT",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "DUBEN W29 PSL W9 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCT",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "DUBEN Y28 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCT",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "DUBEN W29 PSL W9 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCT",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "DUBEN Y28 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTCT",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "DUBEN W29 PSL W9 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
       "adep": "VTPB",
       "ades": "VTBD",
       "rnav": true,
@@ -1091,6 +1651,230 @@
       "ades": "VTBS",
       "rnav": false,
       "route": "W39 NOBER DCT NORTA"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "W26 CMP W21 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "W39 NOBER W21 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "W26 CMP W21 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "W39 NOBER W21 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "W26 CMP W21 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "W26 CMP W21 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "W39 NOBER W21 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "W39 NOBER W21 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W26 CMP W21 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W26 CMP W21 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W39 NOBER W21 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W39 NOBER W21 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "W26 CMP W21 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "W39 NOBER W21 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "W26 CMP W21 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "W39 NOBER W21 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "W26 CMP W21 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "W39 NOBER W21 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "W26 CMP W21 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "W39 NOBER W21 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "W26 CMP W21 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "W39 NOBER W21 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "W26 CMP W21 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "W39 NOBER W21 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "W26 CMP W21 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "W39 NOBER W21 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "W26 CMP W21 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "W39 NOBER W21 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "W26 CMP W21 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "W39 NOBER W21 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "W26 CMP W21 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPB",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "W39 NOBER W21 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
     },
     {
       "adep": "VTPH",
@@ -1136,6 +1920,118 @@
       "route": "KADAV W26 PSL W9 BLAFF DCT NORTA"
     },
     {
+      "adep": "VTPM",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "KADAV W26 IGPOP Y7 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPM",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "KADAV W26 PSL W9 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPM",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "KADAV W26 IGPOP Y7 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPM",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "KADAV W26 IGPOP Y7 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPM",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "KADAV W26 PSL W9 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPM",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "KADAV W26 PSL W9 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPM",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "KADAV W26 IGPOP Y7 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPM",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "KADAV W26 PSL W9 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPM",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "KADAV W26 IGPOP Y7 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPM",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "KADAV W26 PSL W9 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPM",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "KADAV W26 IGPOP Y7 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPM",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "KADAV W26 PSL W9 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPM",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "KADAV W26 IGPOP Y7 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPM",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "KADAV W26 PSL W9 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPM",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "KADAV W26 IGPOP Y7 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPM",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "KADAV W26 PSL W9 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
       "adep": "VTPO",
       "ades": "VTBD",
       "rnav": true,
@@ -1160,6 +2056,118 @@
       "route": "PEBLI W9 BLAFF DCT NORTA"
     },
     {
+      "adep": "VTPO",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "PEBLI Y28 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPO",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "PEBLI W9 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPO",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "PEBLI Y28 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPO",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "PEBLI Y28 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPO",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "PEBLI W9 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPO",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "PEBLI W9 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPO",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "PEBLI Y28 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPO",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "PEBLI W9 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPO",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "PEBLI Y28 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPO",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "PEBLI W9 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPO",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "PEBLI Y28 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPO",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "PEBLI W9 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPO",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "PEBLI Y28 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPO",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "PEBLI W9 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPO",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "PEBLI Y28 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPO",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "PEBLI W9 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
       "adep": "VTPP",
       "ades": "VTBD",
       "rnav": true,
@@ -1182,6 +2190,118 @@
       "ades": "VTBS",
       "rnav": false,
       "route": "PEBLI W9 BLAFF DCT NORTA"
+    },
+    {
+      "adep": "VTPP",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "PEBLI Y28 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPP",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "PEBLI W9 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPP",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "PEBLI Y28 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPP",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "PEBLI Y28 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPP",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "PEBLI W9 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPP",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "PEBLI W9 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPP",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "PEBLI Y28 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPP",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "PEBLI W9 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPP",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "PEBLI Y28 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPP",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "PEBLI W9 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPP",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "PEBLI Y28 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPP",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "PEBLI W9 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPP",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "PEBLI Y28 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPP",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "PEBLI W9 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPP",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "PEBLI Y28 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPP",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "PEBLI W9 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
     },
     {
       "adep": "VTPT",
@@ -1206,6 +2326,118 @@
       "ades": "VTBS",
       "rnav": false,
       "route": "W26 PSL W9 BLAFF DCT NORTA"
+    },
+    {
+      "adep": "VTPT",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "W26 IGPOP Y7 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPT",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "W26 PSL W9 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPT",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "W26 IGPOP Y7 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPT",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "W26 IGPOP Y7 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPT",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W26 PSL W9 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPT",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W26 PSL W9 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPT",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "W26 IGPOP Y7 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPT",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "W26 PSL W9 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPT",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "W26 IGPOP Y7 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPT",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "W26 PSL W9 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPT",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "W26 IGPOP Y7 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPT",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "W26 PSL W9 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPT",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "W26 IGPOP Y7 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPT",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "W26 PSL W9 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPT",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "W26 IGPOP Y7 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTPT",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "W26 PSL W9 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
     },
     {
       "adep": "VTSB",
@@ -1722,6 +2954,286 @@
       "route": "SURGU W21 NOBER DCT NORTA"
     },
     {
+      "adep": "VTUD",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "Y1 UBLOD Y20 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "SURGU W21 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "SURGU W21 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "Y1 UBLOD Y20 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "Y1 UBLOD Y20 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "SURGU W21 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "SURGU W21 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "SURGU W21 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "SURGU W21 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "Y1 UBLOD Y20 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "SURGU W21 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "SURGU W21 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "Y1 UBLOD Y20 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "SURGU W21 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "SURGU W21 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "Y1 UBLOD Y20 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "SURGU W21 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "SURGU W21 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "Y1 UBLOD Y20 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "SURGU W21 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "SURGU W21 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "Y1 UBLOD Y20 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "SURGU W21 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUD",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "SURGU W21 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
       "adep": "VTUI",
       "ades": "VTBD",
       "rnav": true,
@@ -1744,6 +3256,118 @@
       "ades": "VTBS",
       "rnav": false,
       "route": "W5/W6 KKN W6 KRT W1 UBLOD DCT EASTE"
+    },
+    {
+      "adep": "VTUI",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUI",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUI",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUI",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUI",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUI",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUI",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUI",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUI",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUI",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUI",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUI",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUI",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUI",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUI",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUI",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
     },
     {
       "adep": "VTUK",
@@ -1782,6 +3406,174 @@
       "route": "W5/W6 KKN W6 KRT W1 UBLOD DCT EASTE"
     },
     {
+      "adep": "VTUK",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "Y2 UBLOD Y20 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "Y2 UBLOD Y20 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "Y2 UBLOD Y20 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "Y2 UBLOD Y20 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "Y2 UBLOD Y20 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "Y2 UBLOD Y20 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "Y2 UBLOD Y20 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "Y2 UBLOD Y20 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUK",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
       "adep": "VTUL",
       "ades": "VTBD",
       "rnav": true,
@@ -1832,6 +3624,230 @@
       "ades": "VTBS",
       "rnav": false,
       "route": "DUBOL W39 NOBER DCT NORTA"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "BOVGO B218 CMP W21 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "DUBOL W39 NOBER W21 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "BOVGO B218 CMP W21 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "DUBOL W39 NOBER W21 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "BOVGO B218 CMP W21 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "BOVGO B218 CMP W21 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "DUBOL W39 NOBER W21 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "DUBOL W39 NOBER W21 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "BOVGO B218 CMP W21 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "BOVGO B218 CMP W21 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "DUBOL W39 NOBER W21 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "DUBOL W39 NOBER W21 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "BOVGO B218 CMP W21 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "DUBOL W39 NOBER W21 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "BOVGO B218 CMP W21 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "DUBOL W39 NOBER W21 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "BOVGO B218 CMP W21 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "DUBOL W39 NOBER W21 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "BOVGO B218 CMP W21 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "DUBOL W39 NOBER W21 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "BOVGO B218 CMP W21 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "DUBOL W39 NOBER W21 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "BOVGO B218 CMP W21 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "DUBOL W39 NOBER W21 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "BOVGO B218 CMP W21 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "DUBOL W39 NOBER W21 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "BOVGO B218 CMP W21 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "DUBOL W39 NOBER W21 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "BOVGO B218 CMP W21 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "DUBOL W39 NOBER W21 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "BOVGO B218 CMP W21 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUL",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "DUBOL W39 NOBER W21 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
     },
     {
       "adep": "VTUN",
@@ -1858,6 +3874,118 @@
       "route": "W5/W6 KKN W6 KRT W1 UBLOD DCT EASTE"
     },
     {
+      "adep": "VTUN",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUN",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUN",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUN",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUN",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUN",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUN",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUN",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUN",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUN",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUN",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUN",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUN",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUN",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUN",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUN",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
       "adep": "VTUO",
       "ades": "VTBD",
       "rnav": true,
@@ -1880,6 +4008,118 @@
       "ades": "VTBS",
       "rnav": false,
       "route": "W38 RAMEI W1 UBLOD DCT EASTE"
+    },
+    {
+      "adep": "VTUO",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "W38 RAMEI Y20 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUO",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "W38 RAMEI W1 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUO",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "W38 RAMEI Y20 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUO",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "W38 RAMEI Y20 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUO",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W38 RAMEI W1 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUO",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W38 RAMEI W1 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUO",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "W38 RAMEI Y20 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUO",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "W38 RAMEI W1 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUO",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "W38 RAMEI Y20 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUO",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "W38 RAMEI W1 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUO",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "W38 RAMEI Y20 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUO",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "W38 RAMEI W1 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUO",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "W38 RAMEI Y20 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUO",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "W38 RAMEI W1 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUO",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "W38 RAMEI Y20 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUO",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "W38 RAMEI W1 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
     },
     {
       "adep": "VTUU",
@@ -1906,6 +4146,118 @@
       "route": "W1 UBLOD DCT EASTE"
     },
     {
+      "adep": "VTUU",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "Y20 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUU",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "W1 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUU",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "Y20 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUU",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "Y20 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUU",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W1 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUU",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W1 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUU",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "Y20 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUU",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "W1 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUU",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "Y20 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUU",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "W1 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUU",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "Y20 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUU",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "W1 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUU",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "Y20 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUU",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "W1 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUU",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "Y20 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUU",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "W1 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
       "adep": "VTUV",
       "ades": "VTBD",
       "rnav": true,
@@ -1930,6 +4282,118 @@
       "route": "W38 RAMEI W1 UBLOD DCT EASTE"
     },
     {
+      "adep": "VTUV",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "W38 RAMEI Y20 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUV",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "W38 RAMEI W1 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUV",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "W38 RAMEI Y20 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUV",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "W38 RAMEI Y20 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUV",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W38 RAMEI W1 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUV",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W38 RAMEI W1 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUV",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "W38 RAMEI Y20 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUV",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "W38 RAMEI W1 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUV",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "W38 RAMEI Y20 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUV",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "W38 RAMEI W1 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUV",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "W38 RAMEI Y20 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUV",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "W38 RAMEI W1 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUV",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "W38 RAMEI Y20 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUV",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "W38 RAMEI W1 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUV",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "W38 RAMEI Y20 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUV",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "W38 RAMEI W1 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
       "adep": "VTUW",
       "ades": "VTBD",
       "rnav": true,
@@ -1952,6 +4416,118 @@
       "ades": "VTBS",
       "rnav": false,
       "route": "W5/W6 KKN W6 KRT W1 UBLOD DCT EASTE"
+    },
+    {
+      "adep": "VTUW",
+      "ades": "VTSB",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUW",
+      "ades": "VTSB",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 IKERA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUW",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 LOSDA Y94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUW",
+      "ades": "VTSF",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 MABKO W33 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUW",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 GUPMO W94 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUW",
+      "ades": "VTSF",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 UPNEP W35 NKS",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUW",
+      "ades": "VTSG",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUW",
+      "ades": "VTSG",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 SAPUD W32 NULMA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUW",
+      "ades": "VTSM",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 MABKO W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUW",
+      "ades": "VTSM",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 UPNEP W33 SMU",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUW",
+      "ades": "VTSP",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUW",
+      "ades": "VTSP",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 SAVSA",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUW",
+      "ades": "VTSS",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK M757 OBLEX",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUW",
+      "ades": "VTSS",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK A464 PIMER",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUW",
+      "ades": "VTST",
+      "rnav": true,
+      "route": "Y22/Y23 KKN Y23 KRT Y20 BKK Y8 SAPUD W24 TRN",
+      "via": "BKK"
+    },
+    {
+      "adep": "VTUW",
+      "ades": "VTST",
+      "rnav": false,
+      "route": "W5/W6 KKN W6 KRT W1 BKK G458 SAPUD W24 TRN",
+      "via": "BKK"
     }
   ]
 }

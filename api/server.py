@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
+from typing import NamedTuple
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Response
@@ -425,6 +426,80 @@ def _navdata() -> NavData:
     )
 
 
+class _RouteCtx(NamedTuple):
+    """What the en-route route tells us about the right terminal-procedure
+    transition: every route fix ident, plus the endpoint that connects to the
+    procedure — the route's LAST fix for a STAR (its entry), FIRST for a SID."""
+
+    idents: frozenset
+    end_ident: str | None
+    end_ll: "tuple[float, float] | None"
+
+
+def _route_ctx(
+    route_pts: "list[tuple[str, float, float]]",
+    proc_type: "ProcedureType",
+) -> "_RouteCtx | None":
+    """Build the route context for picking ``proc_type``'s transition."""
+    if not route_pts:
+        return None
+    idents = frozenset(p[0].upper() for p in route_pts)
+    end = route_pts[-1] if proc_type is ProcedureType.STAR else route_pts[0]
+    return _RouteCtx(idents, end[0].upper(), (end[1], end[2]))
+
+
+def _score_transition(
+    nav: NavData,
+    airport: str,
+    name: str,
+    proc_type: "ProcedureType | None",
+    runway: str | None,
+    candidates: "list[str]",
+    ctx: "_RouteCtx",
+) -> "tuple[str | None, bool]":
+    """Pick the transition the route actually flies, scoring (highest wins):
+
+      P1  the transition name is itself a fix on the route (e.g. BLAFF)
+      P2  the transition's connecting fix == the route's endpoint fix
+      P3  any of the transition's fixes appear on the route
+      P4  shortest great-circle hop from the route endpoint to that fix
+
+    A STAR is entered on its FIRST fix, a SID re-joins enroute on its LAST.
+    Returns ``(transition, connected)`` — ``connected`` is True when P1/P2/P3
+    fired (a real route link, no assumption); a pure-P4 pick is a geographic
+    best-guess and is reported as an assumption. ``(None, False)`` if nothing
+    resolves.
+    """
+    best: str | None = None
+    best_key: "tuple[bool, bool, bool, float] | None" = None
+    for c in sorted(candidates):
+        try:
+            proc = nav.lookup_procedure(
+                airport, name, proc_type=proc_type, runway=runway, transition=c
+            )
+        except (AmbiguousProcedureError, ProcedureNotFoundError):
+            continue
+        wps = proc.waypoints()
+        ids = {w.ident.upper() for w in wps}
+        conn = None
+        if wps:
+            conn = wps[0] if proc.proc_type is ProcedureType.STAR else wps[-1]
+        p1 = c.upper() in ctx.idents
+        p2 = bool(conn and ctx.end_ident and conn.ident.upper() == ctx.end_ident)
+        p3 = bool(ids & ctx.idents)
+        dist = (
+            _sq_dist((conn.lat, conn.lon), ctx.end_ll)
+            if conn is not None and ctx.end_ll is not None
+            else float("inf")
+        )
+        key = (p1, p2, p3, -dist)
+        if best_key is None or key > best_key:
+            best_key, best = key, c
+    if best is None or best_key is None:
+        return None, False
+    return best, bool(best_key[0] or best_key[1] or best_key[2])
+
+
 def _resolve_procedure_auto(
     nav: NavData,
     airport: str,
@@ -434,6 +509,7 @@ def _resolve_procedure_auto(
     runway: str | None = None,
     transition: str | None = None,
     auto: bool = True,
+    route_ctx: "_RouteCtx | None" = None,
 ) -> "tuple[Procedure, list[dict[str, str]]]":
     """Resolve a SID/STAR, auto-picking the first candidate on ambiguity.
 
@@ -444,6 +520,12 @@ def _resolve_procedure_auto(
     ``auto`` false the :class:`AmbiguousProcedureError` propagates so the
     caller can surface the choices. :class:`ProcedureNotFoundError` always
     propagates.
+
+    ``route_ctx`` biases a TRANSITION ambiguity towards the candidate the route
+    actually flies (e.g. STAR NAKO1B entered on BLAFF for ``… DUBEN Y28 BLAFF
+    DCT NAKON``, not the alphabetically-first ALBOS) via :func:`_score_transition`.
+    A route-connected transition is the correct one, so it is NOT recorded as an
+    assumption; a pure-geographic pick or a plain first-candidate guess is.
     """
     assumptions: list[dict[str, str]] = []
     rwy, trn, pt = runway, transition, proc_type
@@ -456,6 +538,17 @@ def _resolve_procedure_auto(
         except AmbiguousProcedureError as e:
             if not auto:
                 raise
+            # Pick the transition the route flies (runway is already resolved
+            # by the time this branch is hit, so candidates resolve cleanly).
+            if e.kind == "transition" and route_ctx is not None:
+                pick, connected = _score_transition(
+                    nav, airport, name, pt, rwy, e.candidates, route_ctx
+                )
+                if pick is not None:
+                    trn = pick
+                    if not connected:  # geographic best-guess — flag it
+                        assumptions.append({"transition": pick})
+                    continue
             pick = sorted(e.candidates)[0]
             assumptions.append({e.kind: pick})
             if e.kind == "runway":
@@ -474,13 +567,15 @@ def _resolve_proc_for_splice(
     runway: str | None,
     transition: str | None,
     warnings: list[str],
+    route_ctx: "_RouteCtx | None" = None,
 ) -> "Procedure | None":
     """Resolve one SID/STAR for splicing; a miss is a warning, not an error.
 
-    Ambiguous runway/transition is auto-resolved to the first candidate (the
-    selection is reported in ``warnings``), mirroring the map's click-to-load.
-    Returns ``None`` if the procedure can't be found so generation continues
-    with the enroute route unchanged.
+    Ambiguous runway/transition is auto-resolved — the transition is the one
+    the route flies (``route_ctx``, via :func:`_score_transition`), else the
+    first candidate (reported in ``warnings``), mirroring the map's
+    click-to-load. Returns ``None`` if the procedure can't be found so
+    generation continues with the enroute route unchanged.
     """
     label = proc_type.value
     try:
@@ -491,6 +586,7 @@ def _resolve_proc_for_splice(
             proc_type=proc_type,
             runway=runway,
             transition=transition,
+            route_ctx=route_ctx,
         )
     except (ProcedureNotFoundError, AmbiguousProcedureError) as e:
         warnings.append(f"{label} {name!r} at {airport}: {e} — skipped.")
@@ -522,10 +618,15 @@ def _splice_terminal_procedures(
         return route_pts
 
     nav = _navdata()
+    # The route's own fixes pick the right terminal-procedure transition when
+    # several exist (a SID leaves on the route's first fix, a STAR is entered
+    # on its last) — so NAKO1B on "… BLAFF DCT NAKON" uses the BLAFF transition
+    # instead of the alphabetically-first ALBOS.
     sid_proc = (
         _resolve_proc_for_splice(
             nav, adep, sid_name, ProcedureType.SID,
             req.sid_runway, req.sid_transition, warnings,
+            route_ctx=_route_ctx(route_pts, ProcedureType.SID),
         )
         if sid_name
         else None
@@ -534,6 +635,7 @@ def _splice_terminal_procedures(
         _resolve_proc_for_splice(
             nav, ades, star_name, ProcedureType.STAR,
             req.star_runway, req.star_transition, warnings,
+            route_ctx=_route_ctx(route_pts, ProcedureType.STAR),
         )
         if star_name
         else None
@@ -588,6 +690,7 @@ def get_procedure(
     runway: str | None = None,
     transition: str | None = None,
     auto: bool = True,
+    route: str | None = None,
 ) -> dict[str, object]:
     """Resolve a SID/STAR to ordered legs carrying altitude/speed constraints.
 
@@ -595,10 +698,24 @@ def get_procedure(
     runway/transition ambiguity is resolved by picking the first candidate and
     reporting it in ``assumptions`` — so a single click always yields legs.
     Set ``auto=false`` to get a 409 listing the choices instead.
+
+    ``route`` (the enroute Item-15 string) lets the resolver pick the
+    transition the flight actually flies — STAR NAKO1B with ``… BLAFF DCT
+    NAKON`` resolves to the BLAFF transition, not the first-listed ALBOS — so
+    the map preview matches what generation will splice.
     """
     response.headers["Cache-Control"] = _STATIC_CACHE
     nav = _navdata()
     proc_type = _parse_proc_type(type)
+    route_ctx: "_RouteCtx | None" = None
+    if route and route.strip() and proc_type is not None:
+        idx = _airway_waypoint_index()
+        pts = [
+            (i, *idx[i])
+            for i in parse_route(_expand_airways(route))
+            if i in idx
+        ]
+        route_ctx = _route_ctx(pts, proc_type)
     try:
         proc, assumptions = _resolve_procedure_auto(
             nav,
@@ -608,6 +725,7 @@ def get_procedure(
             runway=runway,
             transition=transition,
             auto=auto,
+            route_ctx=route_ctx,
         )
     except ProcedureNotFoundError as e:
         raise HTTPException(

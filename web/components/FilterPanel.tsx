@@ -129,7 +129,7 @@ export default function FilterPanel({
   simT,
 }: FilterPanelProps) {
   const [tab, setTab] = useState<Tab>("filter");
-  // Quick filter for the Results list — searches by ICAO designator
+  // Quick filter for the Results list — searches by ACID
   // (callsign / flight key). Independent of the Apply filter above.
   const [resultQuery, setResultQuery] = useState("");
 
@@ -173,7 +173,7 @@ export default function FilterPanel({
     return s;
   }, [trajectories, filter, typeQuery]);
 
-  // Rows shown in the Results list — the quick ICAO-designator search
+  // Rows shown in the Results list — the quick ACID search
   // narrows them without touching the Apply filter / map visibility.
   const shown = useMemo(() => {
     const q = resultQuery.trim().toUpperCase();
@@ -424,8 +424,8 @@ export default function FilterPanel({
           className="fp-results-search"
           value={resultQuery}
           onChange={(e) => setResultQuery(e.target.value)}
-          placeholder="ICAO designator…"
-          aria-label="Search results by ICAO designator"
+          placeholder="ACID"
+          aria-label="Search results by ACID"
         />
       </div>
       <ul className="fp-results">

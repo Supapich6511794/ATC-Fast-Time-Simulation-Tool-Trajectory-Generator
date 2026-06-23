@@ -25,7 +25,11 @@ import {
   type AirportOption,
   type Fix,
 } from "@/lib/aip";
-import { staticProcedureWaypoints } from "@/lib/geojson";
+import {
+  staticProcedureRunways,
+  staticProcedureWaypoints,
+  staticRunways,
+} from "@/lib/geojson";
 import {
   fetchProcedure,
   generateBatch,
@@ -106,6 +110,10 @@ interface PlanDraft {
    *  The editor's current pick; queued combos carry their own sid/star. */
   sid: string;
   star: string;
+  /** Departure runway at ADEP / arrival runway at ADES (e.g. "RW21L").
+   *  "" = let the engine auto-pick the procedure's first runway. */
+  depRwy: string;
+  arrRwy: string;
 }
 
 let _planSeq = 0;
@@ -127,6 +135,8 @@ function blankPlan(): PlanDraft {
     routes: [],
     sid: "",
     star: "",
+    depRwy: "",
+    arrRwy: "",
   };
 }
 
@@ -150,9 +160,15 @@ function planLabel(d: PlanDraft, i: number): string {
   return d.callsign.trim() || `Plan ${i + 1}`;
 }
 
-/** Cache key for a resolved procedure's preview geometry. */
-function procKey(airport: string, type: "SID" | "STAR", name: string): string {
-  return `${airport.trim().toUpperCase()}|${type}|${name.trim().toUpperCase()}`;
+/** Cache key for a resolved procedure's preview geometry. Includes the route
+ *  because the chosen transition (hence the fixes) depends on it. */
+function procKey(
+  airport: string,
+  type: "SID" | "STAR",
+  name: string,
+  route = "",
+): string {
+  return `${airport.trim().toUpperCase()}|${type}|${name.trim().toUpperCase()}|${route.trim().toUpperCase()}`;
 }
 
 interface Props {
@@ -268,6 +284,9 @@ function GeneratorPanel({
   // lists are fetched per ADEP/ADES below.
   const [sid, setSid] = useState("");
   const [star, setStar] = useState("");
+  // Selected runways: departure at ADEP / arrival at ADES ("" = auto-pick).
+  const [depRwy, setDepRwy] = useState("");
+  const [arrRwy, setArrRwy] = useState("");
 
   // --- Multi-plan tabs -----------------------------------------------------
   // The active tab's values live in the scalar state above. `plans` holds a
@@ -280,6 +299,8 @@ function GeneratorPanel({
     { ...blankPlan(), id: initialPlanId.current },
   ]);
   const [activeId, setActiveId] = useState<string>(initialPlanId.current);
+  /** Quick search over the FPL plan tabs (empty = show every tab). */
+  const [planQuery, setPlanQuery] = useState("");
   /** Search/filter over generated results (empty = show all). */
   // Two-scope search over generated routes: pick a flight, then optionally
   // narrow to one of its routes (empty route box = all routes of the flight).
@@ -325,6 +346,8 @@ function GeneratorPanel({
     routes,
     sid,
     star,
+    depRwy,
+    arrRwy,
   });
 
   /** Pick the route tab for a loaded plan: AIP when its route is a published
@@ -363,6 +386,8 @@ function GeneratorPanel({
     setRoutes(d.routes);
     setSid(d.sid);
     setStar(d.star);
+    setDepRwy(d.depRwy ?? "");
+    setArrRwy(d.arrRwy ?? "");
     // Auto-select AIP vs Manual based on whether the route is a filed route.
     setRouteTab(routeTabForDraft(d));
   };
@@ -417,6 +442,19 @@ function GeneratorPanel({
   // for the header counters and "Generate all".
   const liveActive = snapshotActive();
   const allDrafts = plans.map((p) => (p.id === activeId ? liveActive : p));
+
+  // Plan-tab rows after the FPL search box: each tab keeps its ORIGINAL index
+  // (so "Plan N" labels stay stable) and is matched on callsign / ADEP / ADES
+  // / route / SID / STAR — handy once a bulk import opens dozens of tabs.
+  const planTokens = planQuery.trim().toUpperCase().split(/[\s,]+/).filter(Boolean);
+  const planHay = (d: PlanDraft) =>
+    [d.callsign, d.adep, d.ades, d.routeStr, d.sid, d.star, ...d.routes.map((r) => r.route)]
+      .filter(Boolean)
+      .join(" ")
+      .toUpperCase();
+  const planTabRows = allDrafts
+    .map((d, i) => ({ d, i }))
+    .filter(({ d }) => planTokens.length === 0 || planTokens.every((t) => planHay(d).includes(t)));
   const totalRoutes = allDrafts.reduce(
     (n, d) => n + draftCombos(d).length,
     0,
@@ -634,6 +672,69 @@ function GeneratorPanel({
     };
   }, [des]);
 
+  // Runways published at the ADEP (departure) / ADES (arrival), from the
+  // procedure data — drives the runway dropdowns. Empty when the aerodrome
+  // has no coded runway transitions (the picker then shows just "Auto").
+  const [depRwyOptions, setDepRwyOptions] = useState<string[]>([]);
+  const [arrRwyOptions, setArrRwyOptions] = useState<string[]>([]);
+  useEffect(() => {
+    if (!dep) {
+      setDepRwyOptions([]);
+      return;
+    }
+    let cancelled = false;
+    staticRunways(dep)
+      .then((r) => !cancelled && setDepRwyOptions(r.SID))
+      .catch(() => !cancelled && setDepRwyOptions([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [dep]);
+  useEffect(() => {
+    if (!des) {
+      setArrRwyOptions([]);
+      return;
+    }
+    let cancelled = false;
+    staticRunways(des)
+      .then((r) => !cancelled && setArrRwyOptions(r.STAR))
+      .catch(() => !cancelled && setArrRwyOptions([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [des]);
+
+  // procedure name → runways it serves, so a selected runway can narrow the
+  // SID (ADEP) / STAR (ADES) dropdowns to that runway's procedures only.
+  const [sidProcRwy, setSidProcRwy] = useState<Record<string, string[]>>({});
+  const [starProcRwy, setStarProcRwy] = useState<Record<string, string[]>>({});
+  useEffect(() => {
+    if (!dep) {
+      setSidProcRwy({});
+      return;
+    }
+    let cancelled = false;
+    staticProcedureRunways(dep)
+      .then((r) => !cancelled && setSidProcRwy(r.sid))
+      .catch(() => !cancelled && setSidProcRwy({}));
+    return () => {
+      cancelled = true;
+    };
+  }, [dep]);
+  useEffect(() => {
+    if (!des) {
+      setStarProcRwy({});
+      return;
+    }
+    let cancelled = false;
+    staticProcedureRunways(des)
+      .then((r) => !cancelled && setStarProcRwy(r.star))
+      .catch(() => !cancelled && setStarProcRwy({}));
+    return () => {
+      cancelled = true;
+    };
+  }, [des]);
+
   // Resolved SID/STAR geometry (the server-picked runway/transition fixes),
   // cached by `${airport}|${type}|${name}` and spliced into the live route
   // preview so picking a procedure immediately extends the highlight line.
@@ -643,35 +744,35 @@ function GeneratorPanel({
     () => new Map(),
   );
   useEffect(() => {
-    const need = new Set<string>();
-    if (dep && sid) need.add(procKey(dep, "SID", sid));
-    if (des && star) need.add(procKey(des, "STAR", star));
+    // Each needed procedure carries the route it's flown on, so the server
+    // resolves the transition that route actually uses (NAKO1B via BLAFF).
+    type Need = { airport: string; type: "SID" | "STAR"; name: string; route: string };
+    const need = new Map<string, Need>();
+    const add = (airport: string, type: "SID" | "STAR", name: string, route: string) => {
+      if (airport && name) need.set(procKey(airport, type, name, route), { airport, type, name, route });
+    };
+    const editorRoute = (routeMode === "build" ? builtRoute : routeStr).trim();
+    if (dep && sid) add(dep, "SID", sid, editorRoute);
+    if (des && star) add(des, "STAR", star, editorRoute);
     for (const c of routes) {
-      if (dep && c.sid) need.add(procKey(dep, "SID", c.sid));
-      if (des && c.star) need.add(procKey(des, "STAR", c.star));
+      if (dep && c.sid) add(dep, "SID", c.sid, c.route);
+      if (des && c.star) add(des, "STAR", c.star, c.route);
     }
-    const missing = [...need].filter((k) => !procCache.has(k));
+    const missing = [...need.entries()].filter(([k]) => !procCache.has(k));
     if (missing.length === 0) return;
     let cancelled = false;
+    const toPts = (ws: { ident: string; lat: number; lon: number }[]) =>
+      ws.map((w) => ({ ident: w.ident, lat: w.lat, lon: w.lon, fromUser: false }));
     Promise.all(
-      missing.map(async (k) => {
-        const [airport, type, name] = k.split("|") as [
-          string,
-          "SID" | "STAR",
-          string,
-        ];
-        const toPts = (ws: { ident: string; lat: number; lon: number }[]) =>
-          ws.map((w) => ({
-            ident: w.ident,
-            lat: w.lat,
-            lon: w.lon,
-            fromUser: false,
-          }));
-        // Engine API first; fall back to the bundled GeoJSON geometry when it
-        // is unreachable/empty (e.g. a deploy with no backend) so the SID/STAR
-        // preview still draws. Cache the miss either way; don't refetch.
+      missing.map(async ([k, v]) => {
+        // Engine API first (route-aware transition); fall back to the bundled
+        // GeoJSON geometry when it is unreachable/empty (e.g. a deploy with no
+        // backend) so the SID/STAR preview still draws. Cache the miss too.
         try {
-          const dto = await fetchProcedure(airport, name, { type });
+          const dto = await fetchProcedure(v.airport, v.name, {
+            type: v.type,
+            route: v.route || undefined,
+          });
           if (dto.waypoints.length > 0) return [k, toPts(dto.waypoints)] as const;
         } catch {
           /* fall through to the static fallback */
@@ -679,7 +780,7 @@ function GeneratorPanel({
         try {
           return [
             k,
-            toPts(await staticProcedureWaypoints(airport, type, name)),
+            toPts(await staticProcedureWaypoints(v.airport, v.type, v.name)),
           ] as const;
         } catch {
           return [k, [] as PreviewPoint[]] as const;
@@ -689,20 +790,20 @@ function GeneratorPanel({
       if (cancelled) return;
       setProcCache((prev) => {
         const m = new Map(prev);
-        for (const [k, v] of entries) m.set(k, v);
+        for (const [k, val] of entries) m.set(k, val);
         return m;
       });
     });
     return () => {
       cancelled = true;
     };
-  }, [dep, des, sid, star, routes, procCache]);
+  }, [dep, des, sid, star, routes, routeStr, builtRoute, routeMode, procCache]);
 
   // Look up a procedure's cached preview points (null = not a real pick or
   // not yet loaded — the splice then leaves the route line unchanged).
   const procPts = useCallback(
-    (airport: string, type: "SID" | "STAR", name: string) =>
-      name ? procCache.get(procKey(airport, type, name)) ?? null : null,
+    (airport: string, type: "SID" | "STAR", name: string, route: string) =>
+      name ? procCache.get(procKey(airport, type, name, route)) ?? null : null,
     [procCache],
   );
 
@@ -721,13 +822,13 @@ function GeneratorPanel({
   // SID end of the splice: the picked procedure's fixes, or the ADEP anchor
   // when "None (direct)". STAR end is symmetric for the arrival.
   const sidEnd = useCallback(
-    (airport: string, name: string) =>
-      name ? procPts(airport, "SID", name) : anchorPts(airport),
+    (airport: string, name: string, route: string) =>
+      name ? procPts(airport, "SID", name, route) : anchorPts(airport),
     [procPts, anchorPts],
   );
   const starEnd = useCallback(
-    (airport: string, name: string) =>
-      name ? procPts(airport, "STAR", name) : anchorPts(airport),
+    (airport: string, name: string, route: string) =>
+      name ? procPts(airport, "STAR", name, route) : anchorPts(airport),
     [procPts, anchorPts],
   );
 
@@ -842,23 +943,72 @@ function GeneratorPanel({
     return { first: toks[0] ?? null, last: toks[toks.length - 1] ?? null };
   }, [usingAip, effectiveRoute, bestRoutes, allFixes]);
 
+  // True when a procedure serves the selected runway (an empty/absent runway
+  // set = no runway-specific legs, so it serves any runway).
+  const servesRwy = (procRwy: Record<string, string[]>, name: string, rwy: string) => {
+    if (!rwy) return true;
+    const rws = procRwy[name];
+    return !rws || rws.length === 0 || rws.includes(rwy);
+  };
+
   const sidShown = useMemo(() => {
+    // 1) narrow to the selected departure runway's SIDs (if a runway is set).
+    const byRwy = sidOptions.filter((n) => servesRwy(sidProcRwy, n, depRwy));
+    // 2) then to the ones connecting to the route's first fix (soft filter).
     const f = routeEndFixes.first;
-    if (!f) return sidOptions;
-    const m = sidOptions.filter((n) =>
-      f.startsWith(n.match(/^[A-Z]+/)?.[0] ?? n),
-    );
-    return m.length > 0 ? m : sidOptions;
-  }, [sidOptions, routeEndFixes]);
+    if (!f) return byRwy;
+    const m = byRwy.filter((n) => f.startsWith(n.match(/^[A-Z]+/)?.[0] ?? n));
+    return m.length > 0 ? m : byRwy;
+  }, [sidOptions, routeEndFixes, depRwy, sidProcRwy]);
 
   const starShown = useMemo(() => {
+    const byRwy = starOptions.filter((n) => servesRwy(starProcRwy, n, arrRwy));
     const f = routeEndFixes.last;
-    if (!f) return starOptions;
-    const m = starOptions.filter((n) =>
-      f.startsWith(n.match(/^[A-Z]+/)?.[0] ?? n),
-    );
-    return m.length > 0 ? m : starOptions;
-  }, [starOptions, routeEndFixes]);
+    if (!f) return byRwy;
+    const m = byRwy.filter((n) => f.startsWith(n.match(/^[A-Z]+/)?.[0] ?? n));
+    return m.length > 0 ? m : byRwy;
+  }, [starOptions, routeEndFixes, arrRwy, starProcRwy]);
+
+  // Terminal fixes of the route the user has actually SELECTED/typed (no
+  // fallback to the top suggestion) — used to drop a now-stale SID/STAR.
+  const selectedEndFixes = useMemo(() => {
+    const src = effectiveRoute.trim();
+    if (!src) return { first: null as string | null, last: null as string | null };
+    const known = new Set(allFixes.map((f) => f.ident));
+    const toks = src
+      .toUpperCase()
+      .split(/\s+/)
+      .filter((t) => t && t !== "DCT" && known.has(t));
+    return { first: toks[0] ?? null, last: toks[toks.length - 1] ?? null };
+  }, [effectiveRoute, allFixes]);
+
+  // When the SELECTED route changes, reset a SID/STAR that no longer connects
+  // to its terminal fix back to None (direct) — switching from "UGUVO Y27 …"
+  // to "SEMBO A464 …" must clear the stale UGUV1B SID so the user re-picks a
+  // SEMB* one. Scoped to an explicit route pick, so an imported plan's SID
+  // isn't cleared on load (its route may not be re-typed in the box).
+  useEffect(() => {
+    const f = selectedEndFixes.first;
+    if (sid && f && !f.startsWith(sid.match(/^[A-Z]+/)?.[0] ?? sid)) setSid("");
+  }, [selectedEndFixes.first, sid]);
+  useEffect(() => {
+    const f = selectedEndFixes.last;
+    if (star && f && !f.startsWith(star.match(/^[A-Z]+/)?.[0] ?? star))
+      setStar("");
+  }, [selectedEndFixes.last, star]);
+
+  // When the runway changes, drop a SID/STAR that doesn't serve the new
+  // runway (the picker only lists that runway's procedures, so the stale pick
+  // must clear to None too).
+  useEffect(() => {
+    if (sid && !servesRwy(sidProcRwy, sid, depRwy)) setSid("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [depRwy, sidProcRwy]);
+  useEffect(() => {
+    if (star && !servesRwy(starProcRwy, star, arrRwy)) setStar("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [arrRwy, starProcRwy]);
+
   /** Queue one (route, SID, STAR) combination (deduped + capped). */
   const addCombo = (c: RouteCombo) => {
     if (!c.route.trim()) return;
@@ -918,6 +1068,7 @@ function GeneratorPanel({
     if (nv !== adep.trim().toUpperCase()) {
       clearRouteSelection();
       setSid(""); // SID is ADEP-specific — drop it when ADEP changes.
+      setDepRwy(""); // departure runway is ADEP-specific too.
       // ADES cascades from ADEP: if the new ADEP publishes AIP destinations
       // and the current ADES isn't one of them, clear it so the dependent
       // dropdown stays consistent.
@@ -937,6 +1088,7 @@ function GeneratorPanel({
     if (v.trim().toUpperCase() !== ades.trim().toUpperCase()) {
       clearRouteSelection();
       setStar(""); // STAR is ADES-specific — drop it when ADES changes.
+      setArrRwy(""); // arrival runway is ADES-specific too.
     }
     setAdes(v);
   };
@@ -959,10 +1111,15 @@ function GeneratorPanel({
   // drawing it twice. Folded into both preview scopes below.
   const inProgressPreview = useMemo<PreviewPoint[]>(() => {
     if (allFixes.length === 0) return [];
+    const editorRoute = (routeMode === "build" ? builtRoute : routeStr).trim();
     // Splice the editor's SID/STAR around the typed route — or, when an end
     // is "None (direct)", anchor it at the ADEP/ADES so the direct leg shows.
     const withProc = (pts: PreviewPoint[]) =>
-      splicePreviewProcedures(pts, sidEnd(dep, sid), starEnd(des, star));
+      splicePreviewProcedures(
+        pts,
+        sidEnd(dep, sid, editorRoute),
+        starEnd(des, star, editorRoute),
+      );
     if (routeMode === "build") {
       const trimmed = builtRoute.trim();
       return trimmed && !routes.some((c) => c.route === trimmed)
@@ -1007,8 +1164,8 @@ function GeneratorPanel({
       out.push(
         splicePreviewProcedures(
           pts,
-          sidEnd(dep, c.sid),
-          starEnd(des, c.star),
+          sidEnd(dep, c.sid, c.route),
+          starEnd(des, c.star, c.route),
         ),
       );
     }
@@ -1033,7 +1190,11 @@ function GeneratorPanel({
         const pts = resolveRoutePreview(s, allFixes, airwaysMap);
         if (pts.length === 0) continue;
         out.push(
-          splicePreviewProcedures(pts, sidEnd(a, c.sid), starEnd(b, c.star)),
+          splicePreviewProcedures(
+            pts,
+            sidEnd(a, c.sid, c.route),
+            starEnd(b, c.star, c.route),
+          ),
         );
       }
     };
@@ -1248,6 +1409,8 @@ function GeneratorPanel({
               // ...overrides, // DISABLED: speed schedule (advanced)
               ...(c.sid ? { sid: c.sid } : {}),
               ...(c.star ? { star: c.star } : {}),
+              ...(d.depRwy ? { sid_runway: d.depRwy } : {}),
+              ...(d.arrRwy ? { star_runway: d.arrRwy } : {}),
             },
             label: isCsv ? `Airway CSV · ${dp}→${ds}` : c.route || "(route)",
           });
@@ -1407,6 +1570,8 @@ function GeneratorPanel({
             output_every_s: outputEveryS,
             ...(c.sid ? { sid: c.sid } : {}),
             ...(c.star ? { star: c.star } : {}),
+            ...(depRwy ? { sid_runway: depRwy } : {}),
+            ...(arrRwy ? { star_runway: arrRwy } : {}),
             ...(multi ? { flight_index: i } : {}),
           }),
         ),
@@ -1474,9 +1639,29 @@ function GeneratorPanel({
         </button>
       </div>
 
+      {/* Search across the FPL tabs (callsign / ADEP / ADES / route). Shown
+          once there's more than one plan — most useful after a bulk import. */}
+      {plans.length > 1 && (
+        <div className="plans-search-row">
+          <input
+            type="search"
+            className="plans-search"
+            value={planQuery}
+            onChange={(e) => setPlanQuery(e.target.value)}
+            placeholder="🔎 Search FPL — callsign / ADEP / ADES / route"
+            aria-label="Search flight plans"
+          />
+          {planQuery && (
+            <span className="plans-search-count">
+              {planTabRows.length}/{plans.length}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Plan tab strip (underline tabs). */}
       <div className="plans-tabs" role="tablist">
-        {allDrafts.map((d, i) => (
+        {planTabRows.map(({ d, i }) => (
           <div
             key={d.id}
             className={`plan-tab${d.id === activeId ? " active" : ""}`}
@@ -1501,6 +1686,9 @@ function GeneratorPanel({
             )}
           </div>
         ))}
+        {planTokens.length > 0 && planTabRows.length === 0 && (
+          <span className="plans-nomatch">No FPL matches “{planQuery}”.</span>
+        )}
         <button
           type="button"
           className="plan-add"
@@ -1926,9 +2114,51 @@ function GeneratorPanel({
 
           </div>
 
+          {/* Runway FIRST — pick the departure RWY at ADEP / arrival RWY at
+              ADES; the SID/STAR pickers below then list only that runway's
+              procedures. "Auto" = let the engine pick the first runway. */}
+          <div className="field-row">
+            <label className="field">
+              <span>Departure RWY (at {dep || "ADEP"})</span>
+              <select
+                value={depRwy}
+                onChange={(e) => setDepRwy(e.target.value)}
+                disabled={!dep || depRwyOptions.length === 0}
+              >
+                <option value="">Auto</option>
+                {depRwy && !depRwyOptions.includes(depRwy) && (
+                  <option value={depRwy}>{depRwy}</option>
+                )}
+                {depRwyOptions.map((rw) => (
+                  <option key={rw} value={rw}>
+                    {rw}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Arrival RWY (at {des || "ADES"})</span>
+              <select
+                value={arrRwy}
+                onChange={(e) => setArrRwy(e.target.value)}
+                disabled={!des || arrRwyOptions.length === 0}
+              >
+                <option value="">Auto</option>
+                {arrRwy && !arrRwyOptions.includes(arrRwy) && (
+                  <option value={arrRwy}>{arrRwy}</option>
+                )}
+                {arrRwyOptions.map((rw) => (
+                  <option key={rw} value={rw}>
+                    {rw}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
           {/* Terminal procedures — splice a SID at ADEP / STAR at ADES into
-              the enroute route. Options come from the navdata for each
-              aerodrome; "None" leaves that end as a direct leg. */}
+              the enroute route. Narrowed to the selected runway (above);
+              "None" leaves that end as a direct leg. */}
           <div className="field-row">
             <label className="field">
               <span>SID (at {dep || "ADEP"})</span>

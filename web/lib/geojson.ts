@@ -41,20 +41,27 @@ export function fetchStarWaypoints(): Promise<ProcedureWaypointCollection> {
   return fetchJson<ProcedureWaypointCollection>(STAR_WPTS_URL);
 }
 
-// Memoised airport -> distinct SID/STAR procedure names, derived from the
-// bundled procedure-waypoint GeoJSON (same source the engine indexes). Built
-// once, only when the offline fallback below is first needed.
-let _procNameIndex:
-  | Promise<Map<string, { SID: Set<string>; STAR: Set<string> }>>
-  | null = null;
+// Memoised airport -> distinct SID/STAR procedure names AND runways, derived
+// from the bundled procedure-waypoint GeoJSON (same source the engine
+// indexes). Runways are the RW* transition identifiers (SID = departure
+// runways, STAR = arrival runways). Built once, on first use.
+interface _ProcEntry {
+  SID: Set<string>;
+  STAR: Set<string>;
+  sidRwy: Set<string>;
+  starRwy: Set<string>;
+  /** procedure name → runways it serves (RW* transitions). A name with an
+   *  empty set has no runway-specific legs (it serves any runway). */
+  sidProcRwy: Map<string, Set<string>>;
+  starProcRwy: Map<string, Set<string>>;
+}
+let _procNameIndex: Promise<Map<string, _ProcEntry>> | null = null;
 
-function buildProcedureNameIndex(): Promise<
-  Map<string, { SID: Set<string>; STAR: Set<string> }>
-> {
+function buildProcedureNameIndex(): Promise<Map<string, _ProcEntry>> {
   if (!_procNameIndex) {
     _procNameIndex = Promise.all([fetchSidWaypoints(), fetchStarWaypoints()])
       .then(([sid, star]) => {
-        const m = new Map<string, { SID: Set<string>; STAR: Set<string> }>();
+        const m = new Map<string, _ProcEntry>();
         const add = (
           fc: ProcedureWaypointCollection,
           kind: "SID" | "STAR",
@@ -65,10 +72,24 @@ function buildProcedureNameIndex(): Promise<
             if (!a || !n) continue;
             let e = m.get(a);
             if (!e) {
-              e = { SID: new Set(), STAR: new Set() };
+              e = {
+                SID: new Set(),
+                STAR: new Set(),
+                sidRwy: new Set(),
+                starRwy: new Set(),
+                sidProcRwy: new Map(),
+                starProcRwy: new Map(),
+              };
               m.set(a, e);
             }
             e[kind].add(n);
+            const procRwy = kind === "SID" ? e.sidProcRwy : e.starProcRwy;
+            if (!procRwy.has(n)) procRwy.set(n, new Set());
+            const tr = f.properties.transition_identifier;
+            if (tr && /^RW/.test(tr)) {
+              (kind === "SID" ? e.sidRwy : e.starRwy).add(tr);
+              procRwy.get(n)!.add(tr);
+            }
           }
         };
         add(sid, "SID");
@@ -100,6 +121,40 @@ export async function staticProcedureNames(
     SID: e ? [...e.SID].sort() : [],
     STAR: e ? [...e.STAR].sort() : [],
   };
+}
+
+/** Runways published at an aerodrome (RW* transition idents), split by use:
+ *  ``SID`` = departure runways, ``STAR`` = arrival runways. From the bundled
+ *  procedure GeoJSON, so it works with or without the engine backend. */
+export async function staticRunways(
+  airport: string,
+): Promise<{ SID: string[]; STAR: string[] }> {
+  const code = airport.trim().toUpperCase();
+  if (!code) return { SID: [], STAR: [] };
+  const idx = await buildProcedureNameIndex();
+  const e = idx.get(code);
+  return {
+    SID: e ? [...e.sidRwy].sort() : [],
+    STAR: e ? [...e.starRwy].sort() : [],
+  };
+}
+
+/** Procedure name → the runways it serves, split SID/STAR, for an aerodrome.
+ *  An empty array means the procedure has no runway-specific legs (serves any
+ *  runway). Lets the picker show only the SID/STAR for a selected runway. */
+export async function staticProcedureRunways(
+  airport: string,
+): Promise<{ sid: Record<string, string[]>; star: Record<string, string[]> }> {
+  const code = airport.trim().toUpperCase();
+  if (!code) return { sid: {}, star: {} };
+  const idx = await buildProcedureNameIndex();
+  const e = idx.get(code);
+  const toRec = (mp?: Map<string, Set<string>>) => {
+    const o: Record<string, string[]> = {};
+    if (mp) for (const [k, v] of mp) o[k] = [...v];
+    return o;
+  };
+  return { sid: toRec(e?.sidProcRwy), star: toRec(e?.starProcRwy) };
 }
 
 export interface ProcedureFix {
@@ -238,6 +293,53 @@ export async function fetchFir(): Promise<FirCollection> {
     );
   }
   return (await res.json()) as FirCollection;
+}
+
+/**
+ * Airspace sector overlays (ported from the flight-animation viewer) — the
+ * Bangkok ACC sectors + subsectors, control zones (CTR), terminal areas (TMA)
+ * and prohibited/danger/restricted areas (PDR). All are MultiPolygon
+ * FeatureCollections under public/data/sectors/, each with a `name` (PDR uses
+ * `ident`). `color` styles the outline/fill; `label` names the toggle.
+ */
+export const SECTORS = [
+  { key: "bacc", label: "BACC Sectors", file: "bacc_geo", color: "#22d3ee" },
+  { key: "subsector", label: "BACC Subsectors", file: "bacc_subsector", color: "#818cf8" },
+  { key: "ctr", label: "Control Zones (CTR)", file: "ctr", color: "#34d399" },
+  { key: "tma", label: "Terminal Areas (TMA)", file: "tma", color: "#38bdf8" },
+  { key: "pdr", label: "Prohibited / Danger / Restricted", file: "pdr", color: "#f87171" },
+] as const;
+
+export type SectorKey = (typeof SECTORS)[number]["key"];
+export type SectorCollection = import("geojson").FeatureCollection;
+
+const _SECTOR_FILE: Record<SectorKey, string> = Object.fromEntries(
+  SECTORS.map((s) => [s.key, s.file]),
+) as Record<SectorKey, string>;
+
+/** Fetch one airspace-sector overlay. Loaded lazily when its layer is toggled
+ *  on; the file is small and rarely changes, so the HTTP cache may keep it. */
+export async function fetchSector(key: SectorKey): Promise<SectorCollection> {
+  const url = `/data/sectors/${_SECTOR_FILE[key]}.geojson`;
+  const res = await fetch(url, { cache: "force-cache" });
+  if (!res.ok) {
+    throw new Error(`Failed to load ${url}: ${res.status} ${res.statusText}`);
+  }
+  return (await res.json()) as SectorCollection;
+}
+
+/** Airway reference points (MultiPoint with `waypoint_identifier`): the VOR
+ *  navaids and the (very many) reporting points along the airways. */
+export type AirwayPointCollection = import("geojson").FeatureCollection;
+
+export function fetchAirwayVor(): Promise<AirwayPointCollection> {
+  return fetchJson<AirwayPointCollection>("/data/airways/airway_vor.geojson");
+}
+
+export function fetchAirwayReporting(): Promise<AirwayPointCollection> {
+  return fetchJson<AirwayPointCollection>(
+    "/data/airways/airways_reporting.geojson",
+  );
 }
 
 /** Fetch the raw airway-segment FeatureCollection from the source file. */

@@ -25,6 +25,9 @@ export interface AipRoute {
   route: string;
   /** Optional note for conditional routes (e.g. "when VT D60 is not active"). */
   condition?: string;
+  /** Set on an overfly-mix route synthesized for a pair with no direct filed
+   *  route, naming the hub fix its two halves were joined at (e.g. "BKK"). */
+  via?: string;
 }
 
 interface AipRoutesFile {
