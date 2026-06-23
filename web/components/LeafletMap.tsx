@@ -109,12 +109,11 @@ interface Props {
   trajectories: TrajectoryResult[];
   /** Trail drawing (the Trails menu): `showTrails` off draws the aircraft
    *  without its path line; `flColorTrails` off draws a flat per-route colour
-   *  instead of the altitude (flight-level) gradient; `fullTrails` off draws
-   *  only the recent trail behind the aircraft, limited to `trailDecaySec` of
-   *  flight time (0 = the whole flown path). show/flColor/full default on. */
+   *  instead of the altitude (flight-level) gradient. `trailDecaySec` 0 = the
+   *  whole route drawn statically; a positive value draws only a recent trail
+   *  of that many flight-time seconds following the aircraft. */
   showTrails?: boolean;
   flColorTrails?: boolean;
-  fullTrails?: boolean;
   trailDecaySec?: number;
   /** flightKeys whose route *line* is hidden on the map. The aircraft icon
    *  stays visible, so the user can declutter the lines mid-simulation while
@@ -598,7 +597,6 @@ export default function LeafletMap({
   trajectories,
   showTrails = true,
   flColorTrails = true,
-  fullTrails = true,
   trailDecaySec = 0,
   hiddenKeys,
   previewRoutes,
@@ -1063,12 +1061,12 @@ export default function LeafletMap({
 
         return (
           <Fragment key={kp}>
-            {/* The FULL route line — drawn when "Show Trails" + "Full Trails"
-                are on (aircraft + fixes always stay). FL Color Trails on =
-                altitude gradient; off = one flat per-route colour. A faint
-                dark casing keeps it readable. With Full Trails off, this
+            {/* The FULL route line — drawn when "Show Trails" is on and Trail
+                Decay is "No decay" (aircraft + fixes always stay). FL Color
+                Trails on = altitude gradient; off = one flat per-route colour.
+                A faint dark casing keeps it readable. With a finite decay this
                 static line is replaced by the per-frame decaying trail. */}
-            {showTrails && fullTrails && (
+            {showTrails && trailDecaySec === 0 && (
               <>
                 <Polyline
                   positions={line}
@@ -1181,7 +1179,7 @@ export default function LeafletMap({
           </Fragment>
         );
       }),
-    [trajectories, multiRoute, hiddenKeys, typeFilter, showTrails, flColorTrails, fullTrails],
+    [trajectories, multiRoute, hiddenKeys, typeFilter, showTrails, flColorTrails, trailDecaySec],
   );
 
   return (
@@ -1240,9 +1238,9 @@ export default function LeafletMap({
         // window [simT − decay, simT], capped + tinted like the static line.
         // Re-rendered every frame here so it follows the aircraft.
         let decayTrail: ReactNode = null;
-        if (showTrails && !fullTrails) {
+        if (showTrails && trailDecaySec > 0) {
           const samples = samplesByRoute[ti] ?? [];
-          const lo = trailDecaySec > 0 ? simT - trailDecaySec : -Infinity;
+          const lo = simT - trailDecaySec;
           const win = samples.filter((s) => s.t <= simT && s.t >= lo);
           const trailPts = [
             ...win,

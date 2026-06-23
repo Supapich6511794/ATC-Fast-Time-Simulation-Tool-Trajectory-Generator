@@ -24,18 +24,16 @@ export interface TrailOpts {
   show: boolean;
   /** Tint the path by altitude (flight level) instead of a flat colour. */
   flColor: boolean;
-  /** Draw the whole route; off = only the recent trail (see `decaySec`). */
-  full: boolean;
-  /** Recent-trail window in flight-time seconds (0 = no decay = whole flown
-   *  path). Ignored when `full` is on. */
+  /** Trail window in flight-time seconds: 0 = "No decay" = the whole route
+   *  drawn statically; a positive value = a recent trail of that length that
+   *  follows the aircraft as it flies. */
   decaySec: number;
 }
 
 export const DEFAULT_TRAIL_OPTS: TrailOpts = {
   show: true,
   flColor: true,
-  full: true,
-  decaySec: 3600,
+  decaySec: 0,
 };
 
 /** Trail-decay choices (label → seconds; 0 = no decay). */
@@ -50,10 +48,9 @@ const DECAY_OPTS: { label: string; sec: number }[] = [
   { label: "No decay", sec: 0 },
 ];
 
-const CHECKS: { key: "show" | "flColor" | "full"; label: string }[] = [
+const CHECKS: { key: "show" | "flColor"; label: string }[] = [
   { key: "show", label: "Show Trails" },
   { key: "flColor", label: "FL Color Trails" },
-  { key: "full", label: "Full Trails" },
 ];
 
 function TrailsMenu({
@@ -119,7 +116,6 @@ function TrailsMenu({
             <span className="flight-tags-decay-label">Trail Decay</span>
             <select
               value={opts.decaySec}
-              disabled={opts.full}
               onChange={(e) =>
                 onChange({ ...opts, decaySec: Number(e.target.value) })
               }

@@ -1346,7 +1346,6 @@ export default function MapApp() {
               trajectories={trajectories}
               showTrails={trailOpts.show}
               flColorTrails={trailOpts.flColor}
-              fullTrails={trailOpts.full}
               trailDecaySec={trailOpts.decaySec}
               hiddenKeys={hiddenKeys}
               hiddenAircraft={hiddenAircraft}
