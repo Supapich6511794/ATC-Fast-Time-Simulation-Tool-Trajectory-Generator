@@ -33,6 +33,7 @@ def build_trajectory_gdf(
     variable_speed: bool = True,
     wind_kt: float | None = None,
     output_every_s: float = 4.0,
+    constraints: "list | None" = None,
 ) -> gpd.GeoDataFrame:
     """Build a trajectory GeoDataFrame from a sequence of waypoints.
 
@@ -92,6 +93,7 @@ def build_trajectory_gdf(
             eobt=eobt,
             wind_kt=wind_kt,
             output_every_s=output_every_s,
+            constraints=constraints,
         )
         records = [
             {

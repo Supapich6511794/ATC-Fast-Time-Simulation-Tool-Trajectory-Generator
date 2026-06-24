@@ -34,6 +34,7 @@ from trajectory_sim.performance import (
     Phase,
     VerticalProfile,
     average_phase_tas_kt,
+    cas_to_tas_kt,
     field_elevation_ft,
     mach_to_tas_kt,
     aircraft_speeds,
@@ -42,6 +43,28 @@ from trajectory_sim.performance import (
 
 _GEOD = pyproj.Geod(ellps="WGS84")
 _M_PER_NM = 1852.0
+
+#: How far before a descent fix (NM) a procedure speed limit starts slowing the
+#: aircraft, so it crosses the fix already at/under the limit.
+_SPD_LEAD_NM = 40.0
+
+
+@dataclass(frozen=True)
+class RouteConstraint:
+    """A SID/STAR crossing restriction, mapped to its along-track distance.
+
+    Built by the server from the spliced procedure legs (see
+    ``_route_constraints``). ``phase`` is "climb" for a SID fix, "descent" for
+    a STAR fix — it sets which side of the fix the altitude/speed limit shapes.
+    """
+
+    distance_nm: float
+    phase: Phase  # "climb" | "descent"
+    # Altitude bounds in feet (None = unbounded that side).
+    alt_floor_ft: float | None = None
+    alt_ceil_ft: float | None = None
+    # Procedure speed limit (CAS kt; AT / AT-or-below only — an upper cap).
+    spd_max_kt: float | None = None
 
 
 @dataclass(frozen=True)
@@ -149,6 +172,7 @@ def build_flight_timeline(
     eobt: datetime,
     output_every_s: float = 4.0,
     wind_kt: Optional[float] = None,
+    constraints: "Optional[list[RouteConstraint]]" = None,
 ) -> FlightTimeline:
     """Construct a variable-speed flight timeline from EOBT.
 
@@ -232,6 +256,139 @@ def build_flight_timeline(
         dep_elev_ft=dep_elev,
         des_elev_ft=des_elev,
     )
+    # The corrected (longer) total time can lift the length-capped cruise
+    # altitude, so refresh it from the rebuilt profile — the constraint envelope
+    # below (TOD anchor, gradients) must match the altitude ``profile.at()``
+    # actually flies, or the descent would step down at top-of-descent.
+    cruise_alt = profile.cruise_alt_ft
+
+    # --- Procedure crossing restrictions (Phase 4) -----------------------
+    # Shape the BADA altitude/speed profile to the SID/STAR constraints. When
+    # there are none this is a no-op, so the engine's default output is
+    # unchanged. Altitude is clamped into a per-distance [floor, ceiling]
+    # envelope; a descent ceiling rises backward along the descent gradient so
+    # the aircraft starts down early enough (i.e. TOD is pulled in), a climb
+    # ceiling holds the climb until the fix is passed. Conflicts resolve in
+    # favour of the ceiling (don't bust an at-or-below). Speed caps the TAS to
+    # the procedure CAS limit (+ the existing 250/FL100 already in the BADA
+    # speed). See `RouteConstraint`.
+    cons = constraints or []
+    g_climb = cruise_alt / max(climb_distance_nm, 1.0)
+    g_desc = cruise_alt / max(descent_distance_nm, 1.0)
+
+    # Top of Descent for a STAR is anchored per descent crossing restriction,
+    # following the planning rule applied to each one:
+    #     anchor = constraint_distance − (cruise_alt − constraint_alt)
+    #               ÷ descent_gradient
+    # Each restriction holds cruise until its own anchor, then its ceiling falls
+    # backward along the descent gradient — so every backward line starts at
+    # exactly cruise altitude at its anchor (no step). The lowest/earliest one
+    # binds, so the descent begins at the first fix that requires it and still
+    # meets every later, lower fix via the clamp below. See ``_alt_bounds``.
+
+    def _bada_alt_at_dist(d: float) -> float:
+        """Unconstrained BADA altitude (ft) at along-track distance ``d`` (NM)."""
+        if d <= climb_distance_nm:
+            t = d * 3600.0 / climb_gs
+        elif d <= climb_distance_nm + cruise_distance_nm:
+            t = climb_time_s + (d - climb_distance_nm) * 3600.0 / cruise_gs
+        else:
+            t = (
+                climb_time_s
+                + cruise_time_s
+                + (d - climb_distance_nm - cruise_distance_nm) * 3600.0 / descent_gs
+            )
+        return profile.at(t)[0]
+
+    # Local BADA vertical gradient (ft/NM) at each crossing fix. When a
+    # restriction releases, the climb/descent resumes *from the held altitude*
+    # at this real (steep, near-fix) rate and so catches up to and rejoins the
+    # BADA curve — instead of snapping straight up/down to it (a vertical step).
+    # Floored at the phase average so a fix sitting in a level segment still
+    # releases on a sane slope.
+    _grad_at_fix: dict[RouteConstraint, float] = {}
+    for _c in cons:
+        _near = _bada_alt_at_dist(min(total_distance_nm, _c.distance_nm + 1.0))
+        _far = _bada_alt_at_dist(max(0.0, _c.distance_nm - 1.0))
+        _g = abs(_near - _far) / 2.0
+        _grad_at_fix[_c] = max(_g, g_climb if _c.phase == "climb" else g_desc)
+
+    def _alt_bounds(d: float) -> tuple[float, float]:
+        floor = 0.0
+        ceil = float("inf")
+        for c in cons:
+            if c.alt_ceil_ft is not None:
+                if c.phase == "descent":
+                    # Hold cruise until this restriction's own TOD anchor, then
+                    # let its ceiling fall backward along the descent gradient
+                    # (the line meets cruise exactly at the anchor → no step).
+                    anchor = c.distance_nm - (cruise_alt - c.alt_ceil_ft) / g_desc
+                    if d < anchor:
+                        v = float("inf")  # before this fix's TOD: hold cruise
+                    elif d <= c.distance_nm:
+                        v = c.alt_ceil_ft + g_desc * (c.distance_nm - d)
+                    else:
+                        v = c.alt_ceil_ft
+                else:  # climb: hold ≤ ceiling to the fix, then climb on from it
+                    # Past the fix the cap rises at the fix's real BADA rate, so
+                    # the aircraft resumes climbing *from* the held altitude and
+                    # rejoins the BADA curve (no vertical step on release).
+                    v = (
+                        c.alt_ceil_ft
+                        if d <= c.distance_nm
+                        else c.alt_ceil_ft + _grad_at_fix[c] * (d - c.distance_nm)
+                    )
+                ceil = min(ceil, v)
+            if c.alt_floor_ft is not None:
+                if c.phase == "climb":
+                    v = c.alt_floor_ft - g_climb * (c.distance_nm - d) if d <= c.distance_nm else c.alt_floor_ft
+                else:  # descent: stay ≥ floor to the fix, then descend on from it
+                    # Mirror of the climb case: past the fix the floor falls at
+                    # the fix's real BADA rate so descent continues *from* the
+                    # held altitude and rejoins the curve (no vertical step).
+                    v = (
+                        c.alt_floor_ft
+                        if d <= c.distance_nm
+                        else max(0.0, c.alt_floor_ft - _grad_at_fix[c] * (d - c.distance_nm))
+                    )
+                floor = max(floor, v)
+        return floor, ceil
+
+    def _spd_cap(d: float) -> float:
+        cap = float("inf")
+        for c in cons:
+            if c.spd_max_kt is None:
+                continue
+            if c.phase == "descent" and d >= c.distance_nm - _SPD_LEAD_NM:
+                cap = min(cap, c.spd_max_kt)
+            elif c.phase == "climb" and d <= c.distance_nm:
+                cap = min(cap, c.spd_max_kt)
+        return cap
+
+    def _shape(alt: float, tas: float, dist_nm: float) -> tuple[float, float]:
+        """Clamp one sample's altitude + TAS to the constraints (no-op when
+        there are none). Ceiling wins over floor on conflict."""
+        if cons:
+            floor, ceil = _alt_bounds(dist_nm)
+            alt = min(ceil, max(floor, alt))
+            cap_cas = _spd_cap(dist_nm)
+            if cap_cas != float("inf"):
+                tas = min(tas, cas_to_tas_kt(cap_cas, alt))
+        return alt, tas
+
+    def _phase_for(alt: float, prev_alt: float | None, default: Phase) -> Phase:
+        """Re-derive phase from the (possibly clamped) altitude trend: a
+        constraint that makes the path rise/fall against BADA is reflected,
+        but a level-off keeps the BADA phase — so a climb/descent restriction
+        that briefly levels the aircraft is NOT mislabelled cruise (which would
+        corrupt the top-of-climb / top-of-descent detection)."""
+        if not cons or prev_alt is None:
+            return default
+        if alt > prev_alt + 1.0:
+            return "climb"
+        if alt < prev_alt - 1.0:
+            return "descent"
+        return default
 
     # Sample every `output_every_s`. Always emit the exact endpoint so
     # the trajectory finishes at ADES regardless of step alignment.
@@ -259,6 +416,10 @@ def build_flight_timeline(
             waypoint_sequence, leg_distances, dist_nm
         )
         tas = target_tas_kt(aircraft_type, alt, phase)
+        alt, tas = _shape(alt, tas, dist_nm)
+        phase = _phase_for(
+            alt, samples[-1].altitude_ft if samples else None, phase
+        )
         gs = max(60.0, tas - wind)
 
         samples.append(TimelineSample(
@@ -266,7 +427,7 @@ def build_flight_timeline(
             epoch_ts=eobt + timedelta(seconds=t),
             lat=lat,
             lon=lon,
-            altitude_ft=alt,
+            altitude_ft=round(alt, 1),
             phase=phase,
             tas_kt=tas,
             gs_kt=gs,
@@ -281,13 +442,17 @@ def build_flight_timeline(
             waypoint_sequence, leg_distances, total_distance_nm
         )
         tas = target_tas_kt(aircraft_type, alt, phase)
+        alt, tas = _shape(alt, tas, total_distance_nm)
+        phase = _phase_for(
+            alt, samples[-1].altitude_ft if samples else None, phase
+        )
         gs = max(60.0, tas - wind)
         samples.append(TimelineSample(
             elapsed_s=total_time_s,
             epoch_ts=eobt + timedelta(seconds=total_time_s),
             lat=lat,
             lon=lon,
-            altitude_ft=alt,
+            altitude_ft=round(alt, 1),
             phase=phase,
             tas_kt=tas,
             gs_kt=gs,

@@ -69,7 +69,7 @@ def _idents(pts: list[tuple[str, float, float]]) -> list[str]:
 def test_splice_inserts_sid_and_star(patched_navdata: None) -> None:
     warnings: list[str] = []
     enroute = [("DAGAB", 15.0, 101.8), ("LADAR", 15.5, 101.0)]
-    out = server._splice_terminal_procedures(
+    out, _cons = server._splice_terminal_procedures(
         _req(sid="BIDA2A", star="SARI1A"), "VTBS", "VTBS", enroute, warnings
     )
     assert _idents(out) == [
@@ -81,7 +81,7 @@ def test_splice_inserts_sid_and_star(patched_navdata: None) -> None:
 def test_no_procedures_passthrough(patched_navdata: None) -> None:
     warnings: list[str] = []
     enroute = [("DAGAB", 15.0, 101.8), ("LADAR", 15.5, 101.0)]
-    out = server._splice_terminal_procedures(
+    out, _cons = server._splice_terminal_procedures(
         _req(), "VTBS", "VTBS", enroute, warnings
     )
     assert out == enroute
@@ -91,7 +91,7 @@ def test_no_procedures_passthrough(patched_navdata: None) -> None:
 def test_unknown_procedure_warns_and_keeps_route(patched_navdata: None) -> None:
     warnings: list[str] = []
     enroute = [("DAGAB", 15.0, 101.8), ("LADAR", 15.5, 101.0)]
-    out = server._splice_terminal_procedures(
+    out, _cons = server._splice_terminal_procedures(
         _req(sid="NOPE9Z"), "VTBS", "VTBS", enroute, warnings
     )
     assert out == enroute  # unchanged
@@ -105,7 +105,7 @@ def test_ambiguous_runway_auto_resolves_with_warning(
     records the assumption rather than failing."""
     warnings: list[str] = []
     enroute = [("DAGAB", 15.0, 101.8)]
-    out = server._splice_terminal_procedures(
+    out, _cons = server._splice_terminal_procedures(
         _req(sid="BIDA2A"), "VTBS", "VTBS", enroute, warnings
     )
     # A SID was spliced in (route grew past the single enroute fix)...

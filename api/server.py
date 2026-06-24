@@ -37,14 +37,16 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from trajectory_sim.fpl import FlightPlan, parse_eobt, parse_route
-from trajectory_sim.geodesy import route_distance_nm
+from trajectory_sim.geodesy import haversine_distance, route_distance_nm
 from trajectory_sim.navdata import (
+    AltitudeConstraintType,
     AmbiguousProcedureError,
     NavData,
     Procedure,
     ProcedureNotFoundError,
     ProcedureType,
     RouteWaypoint,
+    SpeedConstraintType,
     splice_procedures,
 )
 from trajectory_sim.output import (
@@ -62,7 +64,7 @@ from trajectory_sim.performance import (
     set_speed_schedule,
     tune_speed_schedule,
 )
-from trajectory_sim.trajectory import build_flight_timeline
+from trajectory_sim.trajectory import RouteConstraint, build_flight_timeline
 from trajectory_sim.validation import CAT62Reference
 
 # Project root = parent of this `api/` package.
@@ -597,14 +599,86 @@ def _resolve_proc_for_splice(
     return proc
 
 
+def _alt_floor_ceil(
+    con: object,
+) -> "tuple[float | None, float | None]":
+    """(floor_ft, ceiling_ft) from an AltitudeConstraint — None = unbounded."""
+    t = getattr(con, "type", None)
+    a1 = getattr(con, "alt1_ft", None)
+    a2 = getattr(con, "alt2_ft", None)
+    if t is AltitudeConstraintType.AT:
+        return a1, a1
+    if t is AltitudeConstraintType.AT_OR_ABOVE:
+        return a1, None
+    if t is AltitudeConstraintType.AT_OR_BELOW:
+        return None, a1
+    if t is AltitudeConstraintType.BETWEEN:
+        return a2, a1  # alt2 = lower, alt1 = upper
+    return None, None
+
+
+def _route_constraints(
+    route_pts: "list[tuple[str, float, float]]",
+    sid_proc: "Procedure | None",
+    star_proc: "Procedure | None",
+) -> "list[RouteConstraint]":
+    """Map each SID/STAR leg's crossing restriction to its along-track distance
+    on the spliced route (Phase 4, sub-task 6). SID legs are tagged climb,
+    STAR legs descent; only an upper speed limit (AT / AT-or-below) is kept."""
+    # ident -> along-track distance (NM), first occurrence in flight order.
+    dist_by_ident: dict[str, float] = {}
+    acc = 0.0
+    for i, (ident, lat, lon) in enumerate(route_pts):
+        if i > 0:
+            pa = route_pts[i - 1]
+            acc += haversine_distance(pa[1], pa[2], lat, lon)
+        if ident and ident.upper() not in dist_by_ident:
+            dist_by_ident[ident.upper()] = acc
+
+    out: list[RouteConstraint] = []
+    for proc, phase in ((sid_proc, "climb"), (star_proc, "descent")):
+        if proc is None:
+            continue
+        for leg in proc.legs:
+            if not leg.has_fix:
+                continue
+            d = dist_by_ident.get((leg.ident or "").upper())
+            if d is None:
+                continue
+            floor, ceil = (
+                _alt_floor_ceil(leg.altitude)
+                if leg.altitude.is_constrained
+                else (None, None)
+            )
+            spd = None
+            if leg.speed.is_constrained and leg.speed.type in (
+                SpeedConstraintType.AT,
+                SpeedConstraintType.AT_OR_BELOW,
+            ):
+                spd = leg.speed.speed_kt
+            if floor is None and ceil is None and spd is None:
+                continue
+            out.append(
+                RouteConstraint(
+                    distance_nm=d,
+                    phase=phase,  # type: ignore[arg-type]
+                    alt_floor_ft=floor,
+                    alt_ceil_ft=ceil,
+                    spd_max_kt=spd,
+                )
+            )
+    return out
+
+
 def _splice_terminal_procedures(
     req: "GenerateRequest",
     adep: str,
     ades: str,
     route_pts: "list[tuple[str, float, float]]",
     warnings: list[str],
-) -> "list[tuple[str, float, float]]":
-    """Fold the requested SID (ADEP) and STAR (ADES) into the enroute fixes.
+) -> "tuple[list[tuple[str, float, float]], list[RouteConstraint]]":
+    """Fold the requested SID (ADEP) and STAR (ADES) into the enroute fixes,
+    and return the spliced route plus its crossing restrictions (Phase 4).
 
     The SID's fixes lead the sequence (it flies first, right after ADEP); the
     STAR's fixes trail it (right before ADES). Shared boundary fixes — the SID
@@ -615,7 +689,7 @@ def _splice_terminal_procedures(
     sid_name = (req.sid or "").strip()
     star_name = (req.star or "").strip()
     if not sid_name and not star_name:
-        return route_pts
+        return route_pts, []
 
     nav = _navdata()
     # The route's own fixes pick the right terminal-procedure transition when
@@ -641,11 +715,12 @@ def _splice_terminal_procedures(
         else None
     )
     if sid_proc is None and star_proc is None:
-        return route_pts
+        return route_pts, []
 
     enroute = [RouteWaypoint(ident=i, lat=la, lon=lo) for i, la, lo in route_pts]
     spliced = splice_procedures(enroute, sid=sid_proc, star=star_proc)
-    return [(w.ident, w.lat, w.lon) for w in spliced]
+    spliced_pts = [(w.ident, w.lat, w.lon) for w in spliced]
+    return spliced_pts, _route_constraints(spliced_pts, sid_proc, star_proc)
 
 
 def _constraint_json(con: object) -> dict[str, object]:
@@ -843,7 +918,9 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
     # Phase 4: splice the SID (at ADEP) and STAR (at ADES) around the now
     # ADEP-oriented enroute fixes, before the < 2 check — a thin route can
     # become valid once its terminal procedures are folded in.
-    route_pts = _splice_terminal_procedures(req, adep, ades, route_pts, warnings)
+    route_pts, route_constraints = _splice_terminal_procedures(
+        req, adep, ades, route_pts, warnings
+    )
 
     if len(route_pts) < 2:
         raise HTTPException(400, "Route resolved to fewer than 2 waypoints.")
@@ -892,6 +969,22 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
         adep_ll is not None
         and _sq_dist(waypoint_sequence[0], adep_ll) > _COINCIDENT_SQ
     ):
+        # Prepending ADEP shifts every fix's along-track distance forward by
+        # the new ADEP->first-fix leg, so shift the constraints to match.
+        off = haversine_distance(
+            adep_ll[0], adep_ll[1],
+            waypoint_sequence[0][0], waypoint_sequence[0][1],
+        )
+        route_constraints = [
+            RouteConstraint(
+                distance_nm=c.distance_nm + off,
+                phase=c.phase,
+                alt_floor_ft=c.alt_floor_ft,
+                alt_ceil_ft=c.alt_ceil_ft,
+                spd_max_kt=c.spd_max_kt,
+            )
+            for c in route_constraints
+        ]
         waypoint_sequence.insert(0, adep_ll)
     if ades_ll is not None:
         gap = _sq_dist(waypoint_sequence[-1], ades_ll)
@@ -957,6 +1050,8 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
                 flight_key_suffix=flight_key_suffix,
                 # Surveillance Profile cadence chosen in the UI (default 5 s).
                 output_every_s=req.output_every_s,
+                # Phase 4: SID/STAR crossing restrictions shape the profile.
+                constraints=route_constraints,
             )
             # Snapshot the schedule actually flown *before* restore, so the
             # reported speed_schedule reflects this flight's overrides (not
@@ -1011,16 +1106,22 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
     _val = _CAT62_REF.validate(adep, ades, elapsed_min, distance_nm=distance_nm)
     validation = _val.to_dict() if _val is not None else None
 
-    # Top of Climb / Top of Descent — first cruise sample and the sample
-    # *after* the last cruise sample respectively. The web uses these for
-    # map markers and the altitude profile annotations; they're omitted
-    # when a flight is too short to reach cruise (no "cruise" rows).
-    phases = gdf["phase"].tolist()
-    cruise_idx = [i for i, ph in enumerate(phases) if ph == "cruise"]
+    # Top of Climb / Top of Descent — the FIRST and LAST samples at the
+    # cruise (peak) altitude. Driven by altitude, not the phase label, so a
+    # SID/STAR constraint level-off below cruise (which reads as a brief
+    # non-climb band) can't be mistaken for the real top of climb/descent.
+    # The web uses these for map markers + altitude-profile annotations.
+    _alts = [a for a in gdf["altitude_ft"].tolist() if a is not None]
     toc = tod = None
-    if cruise_idx:
-        toc_i = cruise_idx[0]
-        tod_i = cruise_idx[-1]
+    if _alts:
+        _peak = max(_alts)
+        at_peak = [
+            i
+            for i, a in enumerate(gdf["altitude_ft"].tolist())
+            if a is not None and a >= _peak - 50.0
+        ]
+        toc_i = at_peak[0]
+        tod_i = at_peak[-1]
         toc = {
             "lat": float(gdf.geometry.iloc[toc_i].y),
             "lon": float(gdf.geometry.iloc[toc_i].x),
