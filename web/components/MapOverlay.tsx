@@ -10,6 +10,8 @@
 
 import { memo, useState } from "react";
 
+import AirwayMenu from "@/components/AirwayMenu";
+import type { AirwayExtra } from "@/components/LayerOptions";
 import type { Basemap, Theme } from "@/lib/mapPrefs";
 
 interface Props {
@@ -19,6 +21,10 @@ interface Props {
   onBasemap: (b: Basemap) => void;
   airwayOn: boolean;
   onAirway: (on: boolean) => void;
+  /** Airway reference-layer flags (labels / VOR / reporting / opacity) for
+   *  the standalone Airway dropdown. */
+  airway: AirwayExtra;
+  onAirwayChange: (s: AirwayExtra) => void;
   waypointsOn: boolean;
   onWaypoints: (on: boolean) => void;
   firOn: boolean;
@@ -42,6 +48,8 @@ function MapOverlay({
   onBasemap,
   airwayOn,
   onAirway,
+  airway,
+  onAirwayChange,
   waypointsOn,
   onWaypoints,
   firOn,
@@ -52,7 +60,10 @@ function MapOverlay({
   onZoomIn,
   onZoomOut,
 }: Props) {
-  const [airspaceOpen, setAirspaceOpen] = useState(false);
+  // Only one toolbar dropdown is open at a time — opening Layers closes Airway
+  // and vice-versa, so the two panels can never overlap.
+  const [openMenu, setOpenMenu] = useState<"layers" | "airway" | null>(null);
+  const airspaceOpen = openMenu === "layers";
 
   return (
     <>
@@ -70,7 +81,9 @@ function MapOverlay({
           <div className="ov-layers-wrap">
             <button
               className={`ov-chip${airspaceOpen ? " active" : ""}`}
-              onClick={() => setAirspaceOpen((v) => !v)}
+              onClick={() =>
+                setOpenMenu((m) => (m === "layers" ? null : "layers"))
+              }
               title="Map layers"
             >
               🗂 Layers
@@ -108,7 +121,7 @@ function MapOverlay({
                   className="ov-air-more"
                   onClick={() => {
                     onOpenLayers();
-                    setAirspaceOpen(false);
+                    setOpenMenu(null);
                   }}
                 >
                   ⚙ More Layer Options
@@ -117,16 +130,25 @@ function MapOverlay({
             )}
           </div>
 
+          {/* Standalone Airway dropdown (Airways / Labels / VOR / Reporting /
+              Opacity), always available like the reference viewer. */}
+          <AirwayMenu
+            open={openMenu === "airway"}
+            onOpenChange={(o) => setOpenMenu(o ? "airway" : null)}
+            airway={airway}
+            onAirwayChange={onAirwayChange}
+          />
+
           <select
             className="ov-select"
             value={basemap}
             // Close BEFORE the native option list opens, so the two
             // dropdowns never overlap.
-            onMouseDown={() => setAirspaceOpen(false)}
-            onFocus={() => setAirspaceOpen(false)}
+            onMouseDown={() => setOpenMenu(null)}
+            onFocus={() => setOpenMenu(null)}
             onChange={(e) => {
               onBasemap(e.target.value as Basemap);
-              setAirspaceOpen(false);
+              setOpenMenu(null);
             }}
             title="Base map"
           >
@@ -139,7 +161,7 @@ function MapOverlay({
             className="ov-chip"
             onClick={() => {
               onTheme(theme === "dark" ? "light" : "dark");
-              setAirspaceOpen(false); // close the Layers panel
+              setOpenMenu(null); // close any open dropdown
             }}
             title="Toggle light / dark mode"
           >
@@ -157,7 +179,7 @@ function MapOverlay({
                 className="ov-chip ov-zoom-btn"
                 onClick={() => {
                   onZoomIn?.();
-                  setAirspaceOpen(false);
+                  setOpenMenu(null);
                 }}
                 title="Zoom in"
                 aria-label="Zoom in"
@@ -169,7 +191,7 @@ function MapOverlay({
                 className="ov-chip ov-zoom-btn"
                 onClick={() => {
                   onZoomOut?.();
-                  setAirspaceOpen(false);
+                  setOpenMenu(null);
                 }}
                 title="Zoom out"
                 aria-label="Zoom out"

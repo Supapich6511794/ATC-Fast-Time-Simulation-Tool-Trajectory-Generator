@@ -3384,6 +3384,103 @@ body {
   border-color: var(--accent);
 }
 
+/* Airway menu — opacity slider header (reuses .lo-slider for the track). */
+.aw-opacity {
+  margin-top: 8px;
+}
+.aw-opacity-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.aw-opacity-val {
+  color: var(--accent);
+}
+
+/* Airway designator labels (the Airway menu "Labels" toggle): bare cyan text
+   over the line, no tooltip chrome or arrow. */
+.leaflet-tooltip.aw-label {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: #22d3ee;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0;
+  white-space: nowrap;
+  pointer-events: none;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 0.95);
+}
+.leaflet-tooltip.aw-label::before {
+  display: none;
+}
+
+/* VOR navaid symbol (the Airway menu "VOR" toggle): cyan ring + centre dot
+   with the station ident beside it, matching the reference viewer. */
+.vor-icon {
+  background: transparent;
+  border: none;
+}
+.vor-ring {
+  position: absolute;
+  inset: 0;
+  border: 1.4px solid #22d3ee;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+.vor-ring::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 3px;
+  background: #22d3ee;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+.vor-lbl {
+  position: absolute;
+  top: 1px;
+  left: 15px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: #22d3ee;
+  white-space: nowrap;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 0.95);
+}
+
+/* SID/STAR fix label (permanent): ident + crossing restriction stacked beside
+   the dot, bare text over the map (no tooltip chrome or arrow). */
+.leaflet-tooltip.pwp-label {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  line-height: 1.05;
+  white-space: nowrap;
+  pointer-events: none;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 0.95);
+}
+.leaflet-tooltip.pwp-label::before {
+  display: none;
+}
+.pwp-label .pwp-id {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+.pwp-label .pwp-alt {
+  display: block;
+  font-size: 9px;
+  font-weight: 600;
+  opacity: 0.95;
+}
+
 /* Blue map-pin airport icon with airplane glyph + hover pulse. */
 .airport-icon {
   background: transparent !important;

@@ -48,6 +48,8 @@ type TabKey =
 
 /** Airway-tab layer flags (lines opacity is shared with the points). */
 export interface AirwayExtra {
+  /** Draw the airway designator (e.g. "W18", "V3") beside each airway. */
+  labels: boolean;
   vor: boolean;
   reporting: boolean;
   opacity: number;
@@ -210,6 +212,16 @@ function LayerOptions({
                 type="checkbox"
                 checked={airwaysOn}
                 onChange={(e) => onAirwaysOn(e.target.checked)}
+              />
+            </label>
+            <label className="lo-check">
+              <span>Labels</span>
+              <input
+                type="checkbox"
+                checked={airway.labels}
+                onChange={(e) =>
+                  onAirwayChange({ ...airway, labels: e.target.checked })
+                }
               />
             </label>
             <label className="lo-check">

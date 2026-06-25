@@ -406,6 +406,7 @@ export default function MapApp() {
   // Airway reference layers (the Airway tab): VOR + reporting points, lazily
   // loaded when toggled, plus a shared opacity for the lines + points.
   const [airwayExtra, setAirwayExtra] = useState<AirwayExtra>({
+    labels: false,
     vor: false,
     reporting: false,
     opacity: 0.7,
@@ -1247,6 +1248,8 @@ export default function MapApp() {
               onBasemap={setBasemap}
               airwayOn={showAirways}
               onAirway={setShowAirways}
+              airway={airwayExtra}
+              onAirwayChange={setAirwayExtra}
               waypointsOn={showWaypoints}
               onWaypoints={setShowWaypoints}
               firOn={firOn}
@@ -1315,6 +1318,7 @@ export default function MapApp() {
               airwayPts={{
                 vor: airwayExtra.vor ? airwayVor : null,
                 reporting: airwayExtra.reporting ? airwayReporting : null,
+                labels: airwayExtra.labels ? airways : null,
                 opacity: airwayExtra.opacity,
               }}
               waypoints={showWaypoints ? waypoints : null}

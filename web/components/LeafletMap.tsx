@@ -63,10 +63,13 @@ interface Props {
   airways: AirwayCollection | null;
   /** Airway reference-point overlays (the Airway tab): VOR navaids and
    *  reporting points, plus a shared opacity for the airway lines + points.
-   *  Reporting is large (~35 k pts) so it only draws when zoomed in. */
+   *  Reporting is large (~35 k pts) so it only draws when zoomed in.
+   *  `labels`, when set, carries the airway collection whose designators
+   *  ("W18", "V3", …) are drawn — one label per airway. */
   airwayPts?: {
     vor?: AirwayPointCollection | null;
     reporting?: AirwayPointCollection | null;
+    labels?: AirwayCollection | null;
     opacity?: number;
   };
   /** Reference waypoint layer (all fixes), or null to hide. */
@@ -301,14 +304,34 @@ function buildProcedureLayer(
   );
 }
 
-/** Filtered SID/STAR fix dots (deduped by ident), or null when off. */
+/** Format a SID/STAR fix's ARINC 424 crossing restriction as a compact label,
+ *  e.g. "-10000" (at/below), "+11000" (at/above), "5000-8000" (between),
+ *  "10000" (at). Empty string when the fix has no altitude restriction. */
+function fmtWptAlt(p: {
+  altitude_description?: string | null;
+  altitude1?: number | null;
+  altitude2?: number | null;
+}): string {
+  const a1 = p.altitude1 ?? null;
+  const a2 = p.altitude2 ?? null;
+  if (a1 == null && a2 == null) return "";
+  const desc = (p.altitude_description ?? "").trim();
+  if (desc === "+") return a1 != null ? `+${a1}` : "";
+  if (desc === "-") return a1 != null ? `-${a1}` : "";
+  if (desc === "B") return `${a2 ?? "?"}-${a1 ?? "?"}`;
+  return a1 != null ? `${a1}` : ""; // "@" / blank = a hard AT
+}
+
+/** Filtered SID/STAR fix dots (deduped by ident), each with a permanent label
+ *  showing the ident + its crossing restriction (e.g. "GUGOT · -10000"), read
+ *  from the SID/STAR waypoint files. Null when the layer is off. */
 function buildWaypointLayer(
   wpts: ProcedureWaypointCollection | null | undefined,
   state: ProcLayerState | undefined,
   color: string,
 ): ReactNode {
   if (!wpts || !state?.waypoints) return null;
-  const seen = new Map<string, { lat: number; lon: number }>();
+  const seen = new Map<string, { lat: number; lon: number; alt: string }>();
   for (const f of wpts.features) {
     const p = f.properties;
     if (!passesProcFilter(p, state)) continue;
@@ -316,9 +339,15 @@ function buildWaypointLayer(
     const lat = p.waypoint_latitude ?? null;
     const lon = p.waypoint_longitude ?? null;
     if (!ident || lat == null || lon == null) continue;
-    if (!seen.has(ident)) seen.set(ident, { lat, lon });
+    const prev = seen.get(ident);
+    const alt = fmtWptAlt(p);
+    // First sighting wins for position; fill the altitude from whichever
+    // occurrence actually carries a restriction (the same fix is unconstrained
+    // on some procedures and constrained on others).
+    if (!prev) seen.set(ident, { lat, lon, alt });
+    else if (!prev.alt && alt) prev.alt = alt;
   }
-  return [...seen.entries()].map(([ident, { lat, lon }]) => (
+  return [...seen.entries()].map(([ident, { lat, lon, alt }]) => (
     <CircleMarker
       key={`pwp-${ident}`}
       center={[lat, lon]}
@@ -331,8 +360,21 @@ function buildWaypointLayer(
         opacity: state.opacity,
       }}
     >
-      <Tooltip direction="top" offset={[0, -4]}>
-        {ident}
+      <Tooltip
+        permanent
+        direction="right"
+        offset={[4, 0]}
+        className="pwp-label"
+        opacity={1}
+      >
+        <span className="pwp-id" style={{ color }}>
+          {ident}
+        </span>
+        {alt && (
+          <span className="pwp-alt" style={{ color }}>
+            {alt}
+          </span>
+        )}
       </Tooltip>
     </CircleMarker>
   ));
@@ -659,41 +701,100 @@ export default function LeafletMap({
     [airways, airwayPts?.opacity],
   );
 
-  // Airway reference points: VOR navaids + reporting points (the Airway tab),
-  // drawn as small canvas circles. Reporting is huge (~35 k pts) so it only
-  // renders past zoom 8 to keep the map responsive.
+  // Airway reporting points (the Airway menu) — small canvas circles. Huge
+  // (~35 k pts) so they only render past zoom 8 to keep the map responsive.
   const airwayPointLayers = useMemo(() => {
-    if (!airwayPts) return null;
-    const op = airwayPts.opacity ?? 0.7;
-    const ptLayer = (
-      data: AirwayPointCollection | null | undefined,
-      color: string,
-      radius: number,
-      key: string,
-    ) =>
-      data ? (
-        <GeoJSON
-          key={`${key}-${data.features.length}`}
-          data={data}
-          pointToLayer={(_f, latlng) =>
-            L.circleMarker(latlng, {
-              radius,
-              weight: 0,
-              color,
-              fillColor: color,
-              fillOpacity: op,
-              interactive: false,
-            })
-          }
-        />
-      ) : null;
+    const data = airwayPts?.reporting;
+    if (!data || mapZoom < 8) return null;
+    const op = airwayPts?.opacity ?? 0.7;
     return (
-      <>
-        {ptLayer(airwayPts.vor, "#fbbf24", 3, "aw-vor")}
-        {mapZoom >= 8 ? ptLayer(airwayPts.reporting, "#94a3b8", 1.5, "aw-rep") : null}
-      </>
+      <GeoJSON
+        key={`aw-rep-${data.features.length}`}
+        data={data}
+        pointToLayer={(_f, latlng) =>
+          L.circleMarker(latlng, {
+            radius: 1.5,
+            weight: 0,
+            color: "#94a3b8",
+            fillColor: "#94a3b8",
+            fillOpacity: op,
+            interactive: false,
+          })
+        }
+      />
     );
-  }, [airwayPts, mapZoom]);
+  }, [airwayPts?.reporting, airwayPts?.opacity, mapZoom]);
+
+  // VOR navaids — drawn as the conventional ring+centre-dot symbol with the
+  // station identifier beside it (matching the reference viewer). The source
+  // file is worldwide (~2.5 k), but this is a Thai-FIR tool, so the symbols are
+  // restricted to the Thailand bounds used by the reference viewer
+  // (lat 5.5–20.5, lon 97.5–106) — ~50 VOR/DME stations, exactly the set shown
+  // on the charts.
+  const airwayVorLayer = useMemo(() => {
+    const data = airwayPts?.vor;
+    if (!data) return null;
+    const op = airwayPts?.opacity ?? 0.85;
+    const inRegion = (lon: number, lat: number) =>
+      lon >= 97.5 && lon <= 106 && lat >= 5.5 && lat <= 20.5;
+
+    const markers: ReactNode[] = [];
+    for (const f of data.features) {
+      const g = f.geometry;
+      const coords =
+        g?.type === "MultiPoint"
+          ? (g.coordinates[0] as number[] | undefined)
+          : g?.type === "Point"
+            ? (g.coordinates as number[])
+            : undefined;
+      if (!coords) continue;
+      const [lon, lat] = coords;
+      if (!inRegion(lon, lat)) continue;
+      const id = String(f.properties?.waypoint_identifier ?? "");
+      markers.push(
+        <Marker
+          key={`vor-${id}-${f.properties?.fid ?? `${lat},${lon}`}`}
+          position={[lat, lon]}
+          interactive={false}
+          opacity={op}
+          icon={L.divIcon({
+            className: "vor-icon",
+            iconSize: [12, 12],
+            iconAnchor: [6, 6],
+            html: `<span class="vor-ring"></span><span class="vor-lbl">${id}</span>`,
+          })}
+        />,
+      );
+    }
+    return <>{markers}</>;
+  }, [airwayPts?.vor, airwayPts?.opacity]);
+
+  // Airway designator labels ("W18", "V3", …) — one permanent tooltip per
+  // airway, anchored on the first segment that names it. Invisible host lines
+  // (weight/opacity 0) so only the labels show; toggled by the Airway menu.
+  const airwayLabelLayer = useMemo(() => {
+    const data = airwayPts?.labels;
+    if (!data) return null;
+    const seen = new Set<string>();
+    return (
+      <GeoJSON
+        key={`aw-labels-${data.features.length}`}
+        data={data}
+        style={() => ({ weight: 0, opacity: 0, interactive: false })}
+        onEachFeature={(feature, layer) => {
+          const id = feature.properties?.route_identifier;
+          if (!id || seen.has(id)) return;
+          seen.add(id);
+          layer.bindTooltip(String(id), {
+            permanent: true,
+            direction: "center",
+            className: "aw-label",
+            opacity: airwayPts?.opacity ?? 0.8,
+          });
+        }}
+      />
+    );
+  }, [airwayPts?.labels, airwayPts?.opacity]);
 
   // Airspace sector overlays — one dashed, lightly-filled <GeoJSON> per
   // toggled-on sector (BACC / subsector / CTR / TMA / PDR), each in its own
@@ -1201,7 +1302,9 @@ export default function LeafletMap({
       {firLayer}
       {sectorLayers}
       {airwayLayer}
+      {airwayLabelLayer}
       {airwayPointLayers}
+      {airwayVorLayer}
       {sidLayer}
       {starLayer}
       {pbnLayer}

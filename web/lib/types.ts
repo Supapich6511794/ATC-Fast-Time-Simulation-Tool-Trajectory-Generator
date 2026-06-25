@@ -87,6 +87,12 @@ export interface ProcedureWaypointProperties {
   waypoint_identifier?: string | null;
   waypoint_latitude?: number | null;
   waypoint_longitude?: number | null;
+  /** ARINC 424 crossing restriction at this fix (from the DFD export):
+   *  "+" = at-or-above, "-" = at-or-below, "B" = between alt2..alt1,
+   *  "@"/blank = at. Drawn beside the fix (e.g. "GUGOT -10000"). */
+  altitude_description?: string | null;
+  altitude1?: number | null;
+  altitude2?: number | null;
 }
 
 /** `sid_waypoint_thai.geojson` / `star_waypoint.geojson` — procedure fixes. */
