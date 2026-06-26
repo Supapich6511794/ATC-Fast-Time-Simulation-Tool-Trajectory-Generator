@@ -33,7 +33,6 @@ import {
   TileLayer,
   Tooltip,
   useMap,
-  useMapEvents,
 } from "react-leaflet";
 
 import { BASEMAPS, type Basemap } from "@/lib/mapPrefs";
@@ -147,6 +146,12 @@ interface Props {
   /** flightKey of the aircraft the camera is following — drawn with a
    *  pulsing highlight ring so it stands out from the rest. */
   followKey?: string;
+  /** Clicking a plane on the map locks the camera onto it (the parent turns on
+   *  camera-follow + the detail card). Index is into `trajectories`. */
+  onAircraftClick?: (index: number) => void;
+  /** Hovering a plane shows its detail card without locking the camera; the
+   *  parent clears it on mouse-out (index null). */
+  onAircraftHover?: (index: number | null) => void;
   /** Bubbles the underlying Leaflet map instance up so the parent can
    *  drive zoom buttons rendered outside MapContainer (e.g. the +/− on
    *  the floating top-right toolbar). */
@@ -165,13 +170,6 @@ function MapRefBridge({
     onReady(map);
     return () => onReady(null);
   }, [map, onReady]);
-  return null;
-}
-
-/** Reports the live map zoom up to the parent (for zoom-gated layers). */
-function ZoomWatcher({ onZoom }: { onZoom: (z: number) => void }) {
-  const map = useMapEvents({ zoomend: () => onZoom(map.getZoom()) });
-  useEffect(() => onZoom(map.getZoom()), [map, onZoom]);
   return null;
 }
 
@@ -649,6 +647,8 @@ export default function LeafletMap({
   playbackIdx,
   hiddenAircraft,
   followKey,
+  onAircraftClick,
+  onAircraftHover,
   onMapReady,
 }: Props) {
   const tiles = BASEMAPS[basemap];
@@ -659,10 +659,24 @@ export default function LeafletMap({
     [trajectories],
   );
 
-  // Current map zoom — gates the heavy airway "reporting" point layer. Kept
-  // in sync by <ZoomWatcher> (a MapContainer child; this component is its
-  // parent so it can't call useMapEvents directly).
-  const [mapZoom, setMapZoom] = useState(6);
+  // Absolute departure offset (seconds) per route: its first-sample epoch minus
+  // the earliest first-sample epoch across all routes. In "all" mode the shared
+  // sim clock is an ABSOLUTE timeline, so each flight animates at its real
+  // EOBT — a later departure sits correspondingly behind on any shared track,
+  // giving realistic in-trail separation instead of every plane launching at
+  // once. Single-route playback ignores this (offset 0 = plays from its start).
+  const routeOffsetSec = useMemo(() => {
+    let origin = Infinity;
+    for (const t of trajectories) {
+      const p = t.points?.[0];
+      if (p) origin = Math.min(origin, new Date(p.epoch_ts).getTime());
+    }
+    if (!Number.isFinite(origin)) origin = 0;
+    return trajectories.map((t) => {
+      const p = t.points?.[0];
+      return p ? (new Date(p.epoch_ts).getTime() - origin) / 1000 : 0;
+    });
+  }, [trajectories]);
 
   const firLayer = useMemo(
     () =>
@@ -701,29 +715,49 @@ export default function LeafletMap({
     [airways, airwayPts?.opacity],
   );
 
-  // Airway reporting points (the Airway menu) — small canvas circles. Huge
-  // (~35 k pts) so they only render past zoom 8 to keep the map responsive.
+  // Airway reporting points (the Airway menu) — pink up-triangle + ident, like
+  // the reference viewer. The source file is worldwide (~35 k pts), so they're
+  // restricted to the Thailand bounds (lat 5.5–20.5, lon 97.5–106) → ~380
+  // points, light enough to draw at every zoom.
   const airwayPointLayers = useMemo(() => {
     const data = airwayPts?.reporting;
-    if (!data || mapZoom < 8) return null;
-    const op = airwayPts?.opacity ?? 0.7;
-    return (
-      <GeoJSON
-        key={`aw-rep-${data.features.length}`}
-        data={data}
-        pointToLayer={(_f, latlng) =>
-          L.circleMarker(latlng, {
-            radius: 1.5,
-            weight: 0,
-            color: "#94a3b8",
-            fillColor: "#94a3b8",
-            fillOpacity: op,
-            interactive: false,
-          })
-        }
-      />
-    );
-  }, [airwayPts?.reporting, airwayPts?.opacity, mapZoom]);
+    if (!data) return null;
+    const op = airwayPts?.opacity ?? 0.85;
+    const inRegion = (lon: number, lat: number) =>
+      lon >= 97.5 && lon <= 106 && lat >= 5.5 && lat <= 20.5;
+
+    const markers: ReactNode[] = [];
+    for (const f of data.features) {
+      const g = f.geometry;
+      const coords =
+        g?.type === "MultiPoint"
+          ? (g.coordinates as number[][])
+          : g?.type === "Point"
+            ? [g.coordinates as number[]]
+            : [];
+      const id = String(f.properties?.waypoint_identifier ?? "");
+      if (!id) continue;
+      for (let i = 0; i < coords.length; i++) {
+        const [lon, lat] = coords[i];
+        if (!inRegion(lon, lat)) continue;
+        markers.push(
+          <Marker
+            key={`rep-${id}-${i}-${lat},${lon}`}
+            position={[lat, lon]}
+            interactive={false}
+            opacity={op}
+            icon={L.divIcon({
+              className: "rep-icon",
+              iconSize: [12, 12],
+              iconAnchor: [6, 5],
+              html: `<span class="rep-tri"></span><span class="rep-lbl">${id}</span>`,
+            })}
+          />,
+        );
+      }
+    }
+    return <>{markers}</>;
+  }, [airwayPts?.reporting, airwayPts?.opacity]);
 
   // VOR navaids — drawn as the conventional ring+centre-dot symbol with the
   // station identifier beside it (matching the reference viewer). The source
@@ -1298,7 +1332,6 @@ export default function LeafletMap({
       <TileLayer key={basemap} attribution={tiles.attribution} url={tiles.url} />
       {onMapReady && <MapRefBridge onReady={onMapReady} />}
 
-      <ZoomWatcher onZoom={setMapZoom} />
       {firLayer}
       {sectorLayers}
       {airwayLayer}
@@ -1334,7 +1367,18 @@ export default function LeafletMap({
         // The filter panel's eye hides the animated aircraft icon (the route
         // line, controlled by hiddenKeys, is independent).
         if (hiddenAircraft?.has(t.meta.flightKey)) return null;
-        const ac = aircraftAt(samplesByRoute[ti] ?? [], simT);
+        // Absolute timeline in "all" mode: shift this route's clock by its
+        // departure offset, and show the icon only while it is airborne (after
+        // EOBT, before touchdown) so the map isn't littered with parked/landed
+        // planes stacked at the airports.
+        const routeSamples = samplesByRoute[ti] ?? [];
+        const off = playbackIdx === "all" ? routeOffsetSec[ti] ?? 0 : 0;
+        const localT = simT - off;
+        if (playbackIdx === "all") {
+          const dur = routeSamples[routeSamples.length - 1]?.t ?? 0;
+          if (localT < 0 || localT > dur) return null;
+        }
+        const ac = aircraftAt(routeSamples, localT);
         if (!ac) return null;
 
         // Decaying trail (Full Trails off): the flown path within the decay
@@ -1342,12 +1386,12 @@ export default function LeafletMap({
         // Re-rendered every frame here so it follows the aircraft.
         let decayTrail: ReactNode = null;
         if (showTrails && trailDecaySec > 0) {
-          const samples = samplesByRoute[ti] ?? [];
-          const lo = simT - trailDecaySec;
-          const win = samples.filter((s) => s.t <= simT && s.t >= lo);
+          const samples = routeSamples;
+          const lo = localT - trailDecaySec;
+          const win = samples.filter((s) => s.t <= localT && s.t >= lo);
           const trailPts = [
             ...win,
-            { lat: ac.lat, lon: ac.lon, altitudeFt: ac.altitudeFt, t: simT },
+            { lat: ac.lat, lon: ac.lon, altitudeFt: ac.altitudeFt, t: localT },
           ];
           if (trailPts.length >= 2) {
             // Decimate so a long flown path stays ~120 segments per frame.
@@ -1424,8 +1468,31 @@ export default function LeafletMap({
         return (
           <Fragment key={`ac-${t.meta.flightKey}`}>
             {decayTrail}
+            {/* Invisible hit target. The visible plane Marker re-creates its
+                divIcon every frame (to rotate with heading), which replaces its
+                DOM element ~60×/sec — a click (mousedown+mouseup on one element)
+                can never complete on it. This CircleMarker only ever moves
+                (setLatLng, same element), so click + hover register reliably.
+                Click locks the camera; hover shows detail without locking. */}
+            <CircleMarker
+              center={[ac.lat, ac.lon]}
+              radius={12}
+              pathOptions={{
+                stroke: false,
+                fill: true,
+                fillOpacity: 0,
+                interactive: true,
+                className: "aircraft-hit",
+              }}
+              eventHandlers={{
+                click: () => onAircraftClick?.(ti),
+                mouseover: () => onAircraftHover?.(ti),
+                mouseout: () => onAircraftHover?.(null),
+              }}
+            />
             <Marker
               position={[ac.lat, ac.lon]}
+              interactive={false}
               icon={planeIcon(
                 Math.round(ac.track),
                 aircraftColor(t.meta.aircraftType),

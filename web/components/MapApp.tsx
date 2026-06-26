@@ -90,6 +90,7 @@ import {
   totalSeconds,
   useSimPlayback,
 } from "@/lib/useSimPlayback";
+import { statusFromLocalT } from "@/lib/flightStatus";
 
 const LeafletMap = dynamic(() => import("@/components/LeafletMap"), {
   ssr: false,
@@ -189,21 +190,35 @@ export default function MapApp() {
   // stays single-instance — only the source changes.
   const [playbackIdx, setPlaybackIdx] = useState<number | "all">(0);
 
-  // Camera follow: the map keeps ONE chosen aircraft centred and shows a
-  // live detail card over it, with that aircraft highlighted. The followed
-  // flight (followIdx) is independent of the playback source — so following
-  // a flight while the source is "all" keeps every route animating; the
-  // camera just tracks the picked one. Triggered by clicking a Results row.
+  // Two ways to surface a flight's live detail card:
+  //  • followActive + followIdx — the camera LOCKS onto the aircraft and tracks
+  //    it every frame. Triggered ONLY by clicking the plane on the map.
+  //  • detailIdx — the detail card shows WITHOUT locking the camera. Triggered
+  //    by hovering a plane on the map or clicking a Results row.
+  // followActive takes priority for the card target, so a lock survives hovers.
   const [followActive, setFollowActive] = useState(false);
   const [followIdx, setFollowIdx] = useState(0);
-  const selectFlight = useCallback((i: number) => {
+  const [detailIdx, setDetailIdx] = useState<number | null>(null);
+
+  // Locking the camera onto a flight (follow + zoom). Used by BOTH a Results-row
+  // click and a click on the plane on the map — either way the camera tracks it.
+  const lockOnFlight = useCallback((i: number) => {
     setFollowIdx(i);
     setFollowActive(true);
-    // In single-route playback, switch the animated aircraft to the picked
-    // one (otherwise it wouldn't be moving to follow). In "all" mode leave
-    // the source untouched so every route keeps animating.
+    setDetailIdx(null);
+    // In single-route playback, switch the animated aircraft to the picked one
+    // (otherwise it wouldn't be moving). In "all" mode every route animates.
     setPlaybackIdx((idx) => (idx === "all" ? "all" : i));
   }, []);
+  const selectFlight = lockOnFlight;
+  const handleAircraftClick = lockOnFlight;
+
+  // Hovering a plane on the map: show its detail card, but leave the camera
+  // unlocked. Ignored visually while a lock is active (the lock wins the card).
+  const handleAircraftHover = useCallback(
+    (i: number | null) => setDetailIdx(i),
+    [],
+  );
 
   // Which fields show in each aircraft's map label, toggled by the Flight
   // Tags menu. Off by default — a freshly generated map stays uncluttered;
@@ -522,34 +537,82 @@ export default function MapApp() {
           : 0;
   const activeTrajectory =
     safePlaybackIdx === "all" ? longest : trajectories[safePlaybackIdx] ?? null;
-  const sim = useSimPlayback(activeTrajectory?.points);
 
-  // The followed flight + its live position. We interpolate the followed
-  // route at the SAME shared sim clock the map uses, so in "all" mode the
-  // camera tracks the picked aircraft while every route keeps animating.
-  const followTraj =
-    followActive && trajectories[followIdx] ? trajectories[followIdx] : null;
-  const followSamples = useMemo(
-    () => (followTraj ? toSamples(followTraj.points) : []),
-    [followTraj],
+  // "All" mode plays an ABSOLUTE timeline: a two-point span from the earliest
+  // departure to the latest arrival across every route. The shared clock then
+  // covers the whole operation, so each flight animates at its real EOBT (the
+  // map offsets each route by its own departure — see LeafletMap), spreading
+  // same-track traffic into a realistic in-trail stream. (`useSimPlayback` only
+  // reads first/last epoch for the clock; its interpolated aircraft is unused
+  // in "all" mode — the per-route planes are drawn in LeafletMap.)
+  const allOriginMs = useMemo(() => {
+    let m = Infinity;
+    for (const t of trajectories) {
+      const p = t.points?.[0];
+      if (p) m = Math.min(m, new Date(p.epoch_ts).getTime());
+    }
+    return Number.isFinite(m) ? m : 0;
+  }, [trajectories]);
+  const allSpanPoints = useMemo(() => {
+    if (trajectories.length === 0) return undefined;
+    let end = -Infinity;
+    for (const t of trajectories) {
+      const ps = t.points;
+      if (!ps || ps.length === 0) continue;
+      const b = new Date(ps[ps.length - 1].epoch_ts).getTime();
+      if (b > end) end = b;
+    }
+    if (!Number.isFinite(end) || end <= allOriginMs) return undefined;
+    const base = trajectories[0].points[0];
+    return [
+      { ...base, epoch_ts: new Date(allOriginMs).toISOString() },
+      { ...base, epoch_ts: new Date(end).toISOString() },
+    ];
+  }, [trajectories, allOriginMs]);
+
+  const sim = useSimPlayback(
+    safePlaybackIdx === "all" ? allSpanPoints : activeTrajectory?.points,
   );
-  const followAircraft = followTraj ? aircraftAt(followSamples, sim.simT) : null;
 
-  // Camera follow — keep the followed aircraft centred. The pan effect runs
-  // every animation frame (followAircraft is fresh each tick) but panTo with
-  // animate:false is a cheap centre-set.
-  const followLat = followAircraft?.lat ?? null;
-  const followLon = followAircraft?.lon ?? null;
+  // The detail-card target: the locked (followed) flight wins, else the flight
+  // hovered / picked for detail only. We interpolate it at the SAME shared sim
+  // clock the map uses, so in "all" mode it tracks the real position while every
+  // route keeps animating.
+  const cardIdx = followActive ? followIdx : detailIdx;
+  const cardTraj =
+    cardIdx != null && trajectories[cardIdx] ? trajectories[cardIdx] : null;
+  const cardSamples = useMemo(
+    () => (cardTraj ? toSamples(cardTraj.points) : []),
+    [cardTraj],
+  );
+  // Match the plane to the absolute clock the map uses, so its camera + detail
+  // card track the real position (offset by its own EOBT in "all" mode).
+  const cardOffsetSec =
+    cardTraj && safePlaybackIdx === "all" && cardTraj.points[0]
+      ? (new Date(cardTraj.points[0].epoch_ts).getTime() - allOriginMs) / 1000
+      : 0;
+  const cardLocalT = sim.simT - cardOffsetSec;
+  const cardAircraft = cardTraj ? aircraftAt(cardSamples, cardLocalT) : null;
+  const cardStatus = cardTraj
+    ? statusFromLocalT(cardLocalT, totalSeconds(cardTraj.points))
+    : null;
+
+  // Camera follow — keep the LOCKED aircraft centred. Runs every frame while a
+  // lock is active (cardAircraft is fresh each tick); panTo animate:false is a
+  // cheap centre-set. A hover/Results-click detail card never locks, so the
+  // camera stays put for those.
+  const followLat = followActive ? cardAircraft?.lat ?? null : null;
+  const followLon = followActive ? cardAircraft?.lon ?? null : null;
   useEffect(() => {
     if (!mapInstance || followLat == null || followLon == null) return;
     mapInstance.panTo([followLat, followLon], { animate: false });
   }, [mapInstance, followLat, followLon]);
-  // Zoom in when a flight is picked (follow turns on or the target changes),
+  // Zoom in when a flight is LOCKED (follow turns on or the target changes),
   // framing the aircraft. Frame-by-frame panning is the effect above, which
   // must not re-zoom.
   useEffect(() => {
     if (!mapInstance || !followActive) return;
-    const ac = aircraftAt(followSamples, sim.simT);
+    const ac = aircraftAt(cardSamples, sim.simT - cardOffsetSec);
     if (!ac) return;
     mapInstance.setView([ac.lat, ac.lon], Math.max(mapInstance.getZoom(), 8), {
       animate: true,
@@ -583,10 +646,19 @@ export default function MapApp() {
 
   // The sim clock for a given route's altitude chart: the live `simT` when
   // that route is the one being animated on the map ("all" animates every
-  // route), else null so its plane parks at the start. Keeps each profile's
-  // plane in lock-step with the map aircraft.
-  const playSimT = (i: number): number | null =>
-    safePlaybackIdx === "all" || safePlaybackIdx === i ? sim.simT : null;
+  // route), else null so its plane parks at the start. In "all" mode the clock
+  // is absolute, so subtract the route's own departure offset to keep each
+  // profile's plane in lock-step with the map aircraft.
+  const playSimT = (i: number): number | null => {
+    if (safePlaybackIdx === "all") {
+      const p = trajectories[i]?.points?.[0];
+      const off = p
+        ? (new Date(p.epoch_ts).getTime() - allOriginMs) / 1000
+        : 0;
+      return sim.simT - off;
+    }
+    return safePlaybackIdx === i ? sim.simT : null;
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -1232,7 +1304,8 @@ export default function MapApp() {
               onInvert={invertAircraft}
               onToggleHidden={toggleAircraftHidden}
               onSelectFlight={selectFlight}
-              activeIndex={followActive ? followIdx : safePlaybackIdx}
+              activeIndex={followActive ? followIdx : detailIdx ?? safePlaybackIdx}
+              playbackIdx={safePlaybackIdx}
               simT={sim.simT}
             />
             <DownloadModal
@@ -1364,7 +1437,9 @@ export default function MapApp() {
               }
               simT={sim.simT}
               playbackIdx={safePlaybackIdx}
-              followKey={followTraj?.meta.flightKey}
+              followKey={cardTraj?.meta.flightKey}
+              onAircraftClick={handleAircraftClick}
+              onAircraftHover={handleAircraftHover}
               onMapReady={onMapReady}
             />
             {previewRoutes.length > 0 && (
@@ -1426,61 +1501,100 @@ export default function MapApp() {
             />
             {trajectories.length > 0 && <AltitudeLegend />}
 
-            {/* Follow card — live readout anchored over the tracked aircraft
-                (which camera-follow keeps at the map centre). Click the header
-                to unlock and stop following. */}
-            {followActive && followTraj && followAircraft && (
-              <div className="follow-card" role="dialog">
-                <button
-                  type="button"
-                  className="follow-card-head"
-                  onClick={() => setFollowActive(false)}
-                  title="Click to unlock (stop following)"
-                >
-                  <span className="follow-card-key">
-                    {followTraj.meta.flightKey}
-                  </span>
-                  <span className="follow-card-unlock">🔒 click to unlock</span>
-                </button>
+            {/* Flight detail card — live readout for the picked aircraft. When
+                LOCKED (clicked on the map) the camera tracks it at centre and
+                the header offers to unlock; when shown from a hover / Results
+                click it's a read-only card that doesn't move the camera, and the
+                header offers to lock on. ✕ dismisses it. */}
+            {cardTraj && cardAircraft && cardIdx != null && (
+              <div
+                className={`follow-card${followActive ? " locked" : " detail"}`}
+                role="dialog"
+              >
+                <div className="follow-card-head">
+                  <button
+                    type="button"
+                    className="follow-card-toggle"
+                    onClick={() => {
+                      if (followActive) {
+                        // Unlock but keep the card open as a detail readout.
+                        setFollowActive(false);
+                        setDetailIdx(cardIdx);
+                      } else {
+                        // Lock the camera onto this flight.
+                        setFollowIdx(cardIdx);
+                        setFollowActive(true);
+                      }
+                    }}
+                    title={
+                      followActive
+                        ? "Click to unlock (stop following)"
+                        : "Click to lock the camera on this aircraft"
+                    }
+                  >
+                    <span className="follow-card-key">
+                      {cardTraj.meta.flightKey}
+                    </span>
+                    <span className="follow-card-unlock">
+                      {followActive ? "🔒 click to unlock" : "🔓 click to lock"}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="follow-card-close"
+                    onClick={() => {
+                      setFollowActive(false);
+                      setDetailIdx(null);
+                    }}
+                    aria-label="Close flight detail"
+                    title="Close"
+                  >
+                    ✕
+                  </button>
+                </div>
                 <dl className="follow-card-body">
                   <div>
                     <dt>ACID</dt>
-                    <dd>{followTraj.meta.callsign}</dd>
+                    <dd>{cardTraj.meta.callsign}</dd>
                   </div>
                   <div>
                     <dt>Type</dt>
-                    <dd>{followTraj.meta.aircraftType || "—"}</dd>
+                    <dd>{cardTraj.meta.aircraftType || "—"}</dd>
                   </div>
                   <div>
                     <dt>Route</dt>
                     <dd>
-                      {followTraj.meta.adep} → {followTraj.meta.ades}
+                      {cardTraj.meta.adep} → {cardTraj.meta.ades}
                     </dd>
                   </div>
                   <div>
                     <dt>FL</dt>
                     <dd>
-                      {followAircraft.altitudeFt != null
+                      {cardAircraft.altitudeFt != null
                         ? `FL${String(
-                            Math.round(followAircraft.altitudeFt / 100),
+                            Math.round(cardAircraft.altitudeFt / 100),
                           ).padStart(3, "0")}`
                         : "—"}
                     </dd>
                   </div>
                   <div>
                     <dt>GS</dt>
-                    <dd>{Math.round(followAircraft.gsKt)} kt</dd>
+                    <dd>{Math.round(cardAircraft.gsKt)} kt</dd>
                   </div>
                   <div>
                     <dt>HDG</dt>
-                    <dd>{Math.round(followAircraft.track)}°</dd>
+                    <dd>{Math.round(cardAircraft.track)}°</dd>
                   </div>
                   <div>
                     <dt>Status</dt>
-                    <dd>
-                      {sim.simT >= totalSeconds(followTraj.points) - 1
+                    <dd
+                      className={`follow-card-status ${cardStatus ?? "enroute"}`}
+                    >
+                      {cardStatus === "arrived"
                         ? "Arrived"
-                        : "En route"}
+                        : cardStatus === "scheduled"
+                          ? "Scheduled"
+                          : "En route"}
                     </dd>
                   </div>
                 </dl>

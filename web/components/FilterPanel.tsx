@@ -20,6 +20,7 @@ import { useMemo, useState } from "react";
 
 import type { TrajectoryResult } from "@/lib/trajectory/types";
 import { totalSeconds } from "@/lib/useSimPlayback";
+import { departureOffsets, localClock, statusFromLocalT } from "@/lib/flightStatus";
 
 export interface FlightFilter {
   search: string;
@@ -102,10 +103,15 @@ interface FilterPanelProps {
   onToggleHidden: (flightKey: string) => void;
   /** Centre + follow this flight (by index in trajectories). */
   onSelectFlight: (index: number) => void;
-  /** Index of the flight currently driving playback (highlighted). */
+  /** Index of the flight whose Results row is highlighted (the selected /
+   *  followed flight). `-1` / "all" = no single row highlighted. */
   activeIndex: number | "all";
-  /** Shared playback clock (seconds) — drives each row's arrived/en-route
-   *  status against the flight's total time. */
+  /** Which route drives the playback clock — "all" runs the absolute timeline
+   *  (each flight at its own EOBT), a number runs that single route. Needed to
+   *  read each flight's status on the correct route-local clock. */
+  playbackIdx: number | "all";
+  /** Shared playback clock (seconds) — drives each row's scheduled/en-route/
+   *  arrived status against the flight's own departure + duration. */
   simT: number;
 }
 
@@ -126,6 +132,7 @@ export default function FilterPanel({
   onToggleHidden,
   onSelectFlight,
   activeIndex,
+  playbackIdx,
   simT,
 }: FilterPanelProps) {
   const [tab, setTab] = useState<Tab>("filter");
@@ -173,18 +180,45 @@ export default function FilterPanel({
     return s;
   }, [trajectories, filter, typeQuery]);
 
-  // Rows shown in the Results list — the quick ACID search
-  // narrows them without touching the Apply filter / map visibility.
+  // Per-route departure offsets (the absolute "all"-mode timeline) — used to
+  // read each flight's live status on its own route-local clock.
+  const offsets = useMemo(() => departureOffsets(trajectories), [trajectories]);
+
+  // Rows shown in the Results list — the quick ACID search narrows them without
+  // touching the Apply filter / map visibility. Each row carries its live
+  // status, then the list is ordered like a monitoring feed: airborne flights
+  // first (most recently departed on top), then arrived (most recent first),
+  // then not-yet-departed flights (soonest to depart first).
   const shown = useMemo(() => {
     const q = resultQuery.trim().toUpperCase();
-    const rows = trajectories.map((t, i) => ({ t, i }));
-    if (!q) return rows;
-    return rows.filter(
-      ({ t }) =>
-        t.meta.callsign.toUpperCase().includes(q) ||
-        t.meta.flightKey.toUpperCase().includes(q),
-    );
-  }, [trajectories, resultQuery]);
+    let rows = trajectories.map((t, i) => {
+      const dur = totalSeconds(t.points);
+      const localT = localClock(i, simT, offsets, playbackIdx);
+      const status = statusFromLocalT(localT, dur);
+      return { t, i, status, offset: offsets[i] ?? 0, arrivalT: (offsets[i] ?? 0) + dur };
+    });
+    if (q) {
+      rows = rows.filter(
+        ({ t }) =>
+          t.meta.callsign.toUpperCase().includes(q) ||
+          t.meta.flightKey.toUpperCase().includes(q),
+      );
+    }
+    const rank = { enroute: 0, arrived: 1, scheduled: 2 } as const;
+    rows.sort((a, b) => {
+      if (rank[a.status] !== rank[b.status]) return rank[a.status] - rank[b.status];
+      if (a.status === "enroute") return b.offset - a.offset; // latest departed on top
+      if (a.status === "arrived") return b.arrivalT - a.arrivalT; // latest arrival on top
+      return a.offset - b.offset; // scheduled: soonest to depart on top
+    });
+    return rows;
+  }, [trajectories, resultQuery, simT, offsets, playbackIdx]);
+
+  // Live count of airborne flights, for the Results header.
+  const enrouteCount = useMemo(
+    () => shown.filter((r) => r.status === "enroute").length,
+    [shown],
+  );
 
   if (!open) return null;
 
@@ -418,7 +452,12 @@ export default function FilterPanel({
       </div>
 
       <div className="fp-results-head">
-        <span>Results ({shown.length})</span>
+        <span>
+          Results ({shown.length})
+          {enrouteCount > 0 && (
+            <span className="fp-results-live"> · {enrouteCount} en route</span>
+          )}
+        </span>
         <input
           type="search"
           className="fp-results-search"
@@ -430,11 +469,10 @@ export default function FilterPanel({
       </div>
       <ul className="fp-results">
         {shown.length === 0 && <li className="fp-empty">No matching flights.</li>}
-        {shown.map(({ t, i }) => {
+        {shown.map(({ t, i, status }) => {
           const key = t.meta.flightKey;
           const hidden = hiddenKeys.has(key);
           const active = activeIndex === i;
-          const arrived = simT >= totalSeconds(t.points) - 1;
           return (
             <li
               key={key}
@@ -444,23 +482,22 @@ export default function FilterPanel({
                 type="button"
                 className="fp-row-main"
                 onClick={() => onSelectFlight(i)}
-                title="Centre and follow this aircraft"
+                title="Centre on this aircraft (does not lock the camera)"
               >
-                <span
-                  className={`fp-dot ${arrived ? "arrived" : "enroute"}`}
-                  aria-hidden
-                />
+                <span className={`fp-dot ${status}`} aria-hidden />
                 <span className="fp-row-text">
                   <span className="fp-row-key">{t.meta.callsign}</span>
                   <span className="fp-row-route">
                     {t.meta.adep} → {t.meta.ades}
                   </span>
                 </span>
-                <span
-                  className={`fp-status ${arrived ? "arrived" : "enroute"}`}
-                >
-                  {arrived ? "Arrived" : "En route"}
-                </span>
+                {/* Status badge only once a flight is airborne or has arrived —
+                    a not-yet-departed flight shows no status. */}
+                {status !== "scheduled" && (
+                  <span className={`fp-status ${status}`}>
+                    {status === "arrived" ? "Arrived" : "En route"}
+                  </span>
+                )}
               </button>
               <button
                 type="button"

@@ -3481,6 +3481,32 @@ body {
   opacity: 0.95;
 }
 
+/* Airway reporting point (the Airway menu "Reporting" toggle): a pink up-
+   triangle with the fix ident below, matching the reference viewer. */
+.rep-icon {
+  background: transparent;
+  border: none;
+}
+.rep-tri {
+  display: block;
+  width: 0;
+  height: 0;
+  margin: 0 auto;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 8px solid #ce93d8;
+}
+.rep-lbl {
+  display: block;
+  margin-top: 1px;
+  text-align: center;
+  font-size: 8px;
+  font-weight: 600;
+  color: #ce93d8;
+  white-space: nowrap;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 0.95);
+}
+
 /* Blue map-pin airport icon with airplane glyph + hover pulse. */
 .airport-icon {
   background: transparent !important;
@@ -3881,23 +3907,58 @@ body {
   overflow: hidden;
   pointer-events: auto;
 }
+/* Unlocked (hover / Results-click) detail card reads amber; locked reads blue
+   (the default) so the user can tell at a glance whether the camera is tracking. */
+.follow-card.detail {
+  border-color: #fbbf24aa;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5), 0 0 0 1px #fbbf2433;
+}
 .follow-card-head {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid #ffffff1a;
+  background: #11314f;
+}
+.follow-card-toggle {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  width: 100%;
   padding: 8px 10px;
   border: none;
-  border-bottom: 1px solid #ffffff1a;
   font-size: 13px;
   color: #e2e8f0;
-  background: #11314f;
+  background: transparent;
   cursor: pointer;
   text-align: left;
 }
-.follow-card-head:hover {
+.follow-card-toggle:hover {
   background: #163a5e;
+}
+.follow-card-close {
+  flex: none;
+  border: none;
+  border-left: 1px solid #ffffff14;
+  background: transparent;
+  color: #93c5fd;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 10px;
+}
+.follow-card-close:hover {
+  background: #163a5e;
+  color: #e2e8f0;
+}
+.follow-card-status.enroute {
+  color: #34d399;
+}
+.follow-card-status.arrived {
+  color: #94a3b8;
+}
+.follow-card-status.scheduled {
+  color: #fbbf24;
 }
 .follow-card-key {
   font-weight: 600;
@@ -4207,13 +4268,23 @@ select.fp-input {
   background: #34d399;
   box-shadow: 0 0 6px #34d39988;
 }
-/* Status dot: green pulse = airborne, grey = arrived/parked. */
+/* Status dot: green pulse = airborne, grey = arrived, dim = not yet departed. */
 .fp-dot.enroute {
   background: #34d399;
   box-shadow: 0 0 6px #34d39988;
 }
 .fp-dot.arrived {
   background: #64748b;
+}
+.fp-dot.scheduled {
+  background: #475569;
+  opacity: 0.5;
+}
+/* Live airborne count beside the Results header. */
+.fp-results-live {
+  color: #34d399;
+  text-transform: none;
+  letter-spacing: 0;
 }
 .fp-status {
   flex: none;
