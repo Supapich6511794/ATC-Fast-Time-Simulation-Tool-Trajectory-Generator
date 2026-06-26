@@ -14,6 +14,9 @@ web/out/
 sim_output.*
 api/_outputs/
 
+# Large local source surveillance data (kept out of git — too big for GitHub)
+web/Data/
+
 # Local tool / editor settings
 .claude/
 .vscode/
