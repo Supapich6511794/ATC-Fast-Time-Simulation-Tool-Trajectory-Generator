@@ -37,6 +37,10 @@ export interface FlightRecord {
   /** SID name spliced at ADEP / STAR name spliced at ADES (optional). */
   sid?: string;
   star?: string;
+  /** Departure runway at ADEP / arrival runway at ADES, as the RW… transition
+   *  identifier (e.g. "RW03L") so it matches the runway picker options. */
+  depRwy?: string;
+  arrRwy?: string;
   /** Several Item-15 routes flown by ONE flight (the multi-route export).
    *  Set instead of `route` when a flight has more than one route, so the
    *  re-import rebuilds a single plan with a route queue rather than one
@@ -79,6 +83,10 @@ function fromObject(o: Record<string, unknown>): FlightRecord {
     route: get("route", "route_string", "item15"),
     sid: get("sid", "sid_name")?.toUpperCase(),
     star: get("star", "star_name")?.toUpperCase(),
+    depRwy: get("dep_rwy", "departure_runway", "dep_runway", "sid_runway")
+      ?.toUpperCase(),
+    arrRwy: get("arr_rwy", "arrival_runway", "arr_runway", "star_runway")
+      ?.toUpperCase(),
   };
 }
 
@@ -178,6 +186,8 @@ function parseTrajectoryBlock(block: string): FlightRecord | null {
   const eobt = normEobt(field("ATD"));
   const sid = field("SID")?.toUpperCase();
   const star = field("STAR")?.toUpperCase();
+  const depRwy = field("DEP RWY")?.toUpperCase();
+  const arrRwy = field("ARR RWY")?.toUpperCase();
 
   // Callsign lives in column 3 of the first data row under the table header.
   let callsign: string | undefined;
@@ -194,7 +204,9 @@ function parseTrajectoryBlock(block: string): FlightRecord | null {
 
   // Skip a block that yielded nothing identifiable.
   if (!route && !adep && !ades && !actype) return null;
-  return { callsign, actype, adep, ades, eobt, rfl, route, sid, star };
+  return {
+    callsign, actype, adep, ades, eobt, rfl, route, sid, star, depRwy, arrRwy,
+  };
 }
 
 /** True when the text is one of the tool's trajectory CSV exports rather

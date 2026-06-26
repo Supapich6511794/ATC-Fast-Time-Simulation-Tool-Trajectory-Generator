@@ -1245,6 +1245,8 @@ function GeneratorPanel({
     if (r.rfl != null) p.rfl = r.rfl;
     if (r.sid) p.sid = r.sid;
     if (r.star) p.star = r.star;
+    if (r.depRwy) p.depRwy = r.depRwy;
+    if (r.arrRwy) p.arrRwy = r.arrRwy;
     // A multi-route flight rebuilds as ONE plan with a route queue; a
     // single-route flight fills the Item-15 box.
     if (r.routes && r.routes.length > 0)
