@@ -43,6 +43,12 @@ _GS_KT = 450.0
 _NM_PER_DEG = 60.0  # ~1 NM per arc-minute (good enough for a duration estimate)
 
 _ROOT = Path(__file__).resolve().parent.parent
+
+import sys  # noqa: E402
+
+sys.path.insert(0, str(_ROOT))
+from trajectory_sim.validation import cab_cruising_level  # noqa: E402
+
 OUT_DIR = _ROOT / "dummy_data"
 AIP_PATH = _ROOT / "web" / "public" / "data" / "aip_VT.json"
 ROUTES_PATH = _ROOT / "web" / "public" / "data" / "aip_routes_VT.json"
@@ -326,8 +332,14 @@ def main() -> None:
             "adep": adep, "ades": ades, "sid": sid, "star": star,
             "dep_rwy": _rwy(SID_RWY, adep, sid) if sid else "",
             "arr_rwy": _rwy(STAR_RWY, ades, star) if star else "",
-            "rfl": _RFL_RNAV[i % len(_RFL_RNAV)] if r.get("rnav")
-            else _RFL_NON[i % len(_RFL_NON)],
+            # Snap the picked level to a CAB-compliant cruising level for the
+            # ADEP->ADES track (odd FL eastbound 000-179, even FL westbound
+            # 180-359; CAB Rules of the Air §2.4.2).
+            "rfl": cab_cruising_level(
+                bearing(la1, lo1, la2, lo2),
+                _RFL_RNAV[i % len(_RFL_RNAV)] if r.get("rnav")
+                else _RFL_NON[i % len(_RFL_NON)],
+            ),
             "route_str": r["route"], "route_pts": route_pts,
             "dep_elev": e1, "des_elev": e2,
             "base": REF_TIMES[i % len(REF_TIMES)],

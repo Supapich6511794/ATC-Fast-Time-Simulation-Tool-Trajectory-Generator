@@ -49,15 +49,15 @@ export function lookupReferenceMin(
 // Measured simulated-time (min) vs distance (NM) for a B738 to RFL350 —
 // mirrors trajectory_sim.validation._SIM_TIME_TABLE so the client's
 // PASS/FAIL prediction matches what the server will actually compute.
-// Calibrated against the real BADA 3.16 (ISA+20) model; re-measure if the
-// server's BADA dataset/offset changes. A single affine fit overshoots
-// short hops that never reach cruise (a 51 NM leg is ~9 min, not ~14), so
-// we interpolate this curve.
+// Calibrated against the real BADA 3.16 (ISA+20) climb/descent rates plus the
+// operational CAS/Mach speed schedule (B738 ~M0.78); re-measure if either
+// changes. A single affine fit overshoots short hops that never reach cruise
+// (a 51 NM leg is ~9 min, not ~14), so we interpolate this curve.
 const SIM_TIME_TABLE: ReadonlyArray<readonly [number, number]> = [
-  [0, 0], [20, 3.7], [40, 7.4], [60, 11.0], [80, 14.6], [100, 18.2],
-  [130, 23.1], [160, 27.9], [200, 34.0], [260, 42.6], [320, 50.6],
-  [400, 61.3], [500, 74.7], [650, 94.7], [800, 114.7], [1000, 141.4],
-  [1300, 181.4],
+  [0, 0], [20, 3.7], [40, 7.4], [60, 11.0], [80, 14.7], [100, 18.2],
+  [130, 23.2], [160, 27.9], [200, 34.1], [260, 42.6], [320, 50.7],
+  [400, 61.4], [500, 74.8], [650, 94.9], [800, 114.9], [1000, 141.6],
+  [1300, 181.8],
 ];
 const REF_MARGIN_MIN = 3.0;
 

@@ -273,7 +273,13 @@ export default function SimControls({
   onToggleAllRoutes,
 }: SimControlsProps) {
   if (!sim.ready) return null;
-  const ac = sim.aircraft;
+  // In "all routes" mode the playback clock runs on a synthetic two-point
+  // span (just first/last epoch across every route), so its interpolated
+  // aircraft is meaningless — the real per-route planes are drawn on the map.
+  // Blank the alt/speed/phase readout there instead of showing the frozen
+  // first-point value (the "always 6,000 ft" bug).
+  const isAllRoutes = playbackIdx === "all";
+  const ac = isAllRoutes ? null : sim.aircraft;
   const activeLabel = (() => {
     if (trajectories.length < 2) return null;
     if (playbackIdx === "all") return "Playing: all routes";

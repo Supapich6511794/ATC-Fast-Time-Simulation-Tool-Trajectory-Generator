@@ -231,6 +231,9 @@ export default function MapApp() {
   });
   // Trail drawing options (the Trails menu).
   const [trailOpts, setTrailOpts] = useState<TrailOpts>(DEFAULT_TRAIL_OPTS);
+  // TOC/TOD vertical-profile pins. Off after a fresh generation (just the
+  // lines show); the map toolbar's "TOC/TOD" button adds them on demand.
+  const [profilePinsOn, setProfilePinsOn] = useState(false);
 
   // Top-center aircraft-type filter. When non-empty, the map shows only
   // flights whose type matches (case-insensitive substring) — every other
@@ -525,16 +528,19 @@ export default function MapApp() {
     [trajectories],
   );
   // Clamp playbackIdx to the current list (e.g. after a route is
-  // removed). "all" stays as-is; numeric out-of-range falls back to R1
-  // when at least one route exists.
+  // removed). "all" is only meaningful with 2+ routes (the picker is hidden
+  // for a single flight); when just one route exists it collapses to R1, so
+  // a stale "all" (left over from a multi-route run) still shows that
+  // flight's live FL/speed instead of the degenerate all-span readout.
+  // Numeric out-of-range falls back to R1.
   const safePlaybackIdx =
     playbackIdx === "all"
-      ? "all"
+      ? trajectories.length >= 2
+        ? "all"
+        : 0
       : trajectories[playbackIdx]
         ? playbackIdx
-        : trajectories.length > 0
-          ? 0
-          : 0;
+        : 0;
   const activeTrajectory =
     safePlaybackIdx === "all" ? longest : trajectories[safePlaybackIdx] ?? null;
 
@@ -1279,6 +1285,19 @@ export default function MapApp() {
                 <FlightTagsMenu fields={tagFields} onChange={setTagFields} />
                 <button
                   type="button"
+                  className={`map-filter-btn${profilePinsOn ? " active" : ""}`}
+                  onClick={() => setProfilePinsOn((v) => !v)}
+                  aria-pressed={profilePinsOn}
+                  title={
+                    profilePinsOn
+                      ? "Hide the TOC/TOD markers"
+                      : "Add the Top-of-Climb / Top-of-Descent markers"
+                  }
+                >
+                  {profilePinsOn ? "✓ TOC/TOD" : "＋ TOC/TOD"}
+                </button>
+                <button
+                  type="button"
                   className={`map-filter-btn${filterOpen ? " active" : ""}`}
                   onClick={() => setFilterOpen((v) => !v)}
                   aria-pressed={filterOpen}
@@ -1424,6 +1443,8 @@ export default function MapApp() {
               showTrails={trailOpts.show}
               flColorTrails={trailOpts.flColor}
               trailDecaySec={trailOpts.decaySec}
+              trailWeight={trailOpts.weight}
+              showProfilePins={profilePinsOn}
               hiddenKeys={hiddenKeys}
               hiddenAircraft={hiddenAircraft}
               typeFilter={acTypeQuery}

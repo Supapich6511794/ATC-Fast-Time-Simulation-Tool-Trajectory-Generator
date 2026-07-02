@@ -3454,12 +3454,14 @@
     "VTBK": {
       "lat": 14.102008,
       "lon": 99.917258,
-      "name": "NAKHON PATHOM/KAMPHAENG SAEN AIRPORT"
+      "name": "NAKHON PATHOM/KAMPHAENG SAEN AIRPORT",
+      "elev_ft": 32.0
     },
     "VTBL": {
       "lat": 14.874639,
       "lon": 100.663389,
-      "name": "KHOK KATHIAM AIRPORT"
+      "name": "KHOK KATHIAM AIRPORT",
+      "elev_ft": 133.0
     },
     "VTBO": {
       "lat": 12.275833,
@@ -3482,29 +3484,32 @@
     "VTBU": {
       "lat": 12.679722,
       "lon": 101.005,
-      "elev_ft": 59.1,
+      "elev_ft": 59.0,
       "name": "U-TAPAO RAYONG PATTAYA INTERNATIONAL AIRPORT"
     },
     "VTBW": {
       "lat": 13.768756,
       "lon": 102.315547,
-      "name": "WATTHANA NAKHON AIRPORT"
+      "name": "WATTHANA NAKHON AIRPORT",
+      "elev_ft": 225.0
     },
     "VTCC": {
       "lat": 18.771389,
       "lon": 98.962778,
-      "elev_ft": 1036.7,
+      "elev_ft": 1036.0,
       "name": "CHIANG MAI/CHIANG MAI INTERNATIONAL AIRPORT"
     },
     "VTCH": {
       "lat": 19.301717,
       "lon": 97.975056,
-      "name": "MAE HONG SON AIRPORT"
+      "name": "MAE HONG SON AIRPORT",
+      "elev_ft": 929.0
     },
     "VTCI": {
       "lat": 19.372008,
       "lon": 98.435864,
-      "name": "MAE HONG SON / PAI AIRPORT"
+      "name": "MAE HONG SON / PAI AIRPORT",
+      "elev_ft": 1676.0
     },
     "VTCL": {
       "lat": 18.270833,
@@ -3515,33 +3520,38 @@
     "VTCN": {
       "lat": 18.807914,
       "lon": 100.783419,
-      "name": "NAN NAKHON AIRPORT"
+      "name": "NAN NAKHON AIRPORT",
+      "elev_ft": 685.0
     },
     "VTCP": {
       "lat": 18.132222,
       "lon": 100.164722,
-      "name": "PHRAE AIRPORT"
+      "name": "PHRAE AIRPORT",
+      "elev_ft": 540.0
     },
     "VTCT": {
       "lat": 19.95235,
       "lon": 99.882956,
-      "elev_ft": 1280.3,
+      "elev_ft": 1280.0,
       "name": "CHIANG RAI/MAE FAH LUANG- CHIANG RAI INTERNATIONAL AIRPORT"
     },
     "VTPB": {
       "lat": 16.676031,
       "lon": 101.195108,
-      "name": "PHETCHABUN AIRPORT"
+      "name": "PHETCHABUN AIRPORT",
+      "elev_ft": 450.0
     },
     "VTPH": {
       "lat": 12.630319,
       "lon": 99.953444,
-      "name": "HUA HIN AIRPORT"
+      "name": "HUA HIN AIRPORT",
+      "elev_ft": 62.0
     },
     "VTPI": {
       "lat": 15.277319,
       "lon": 100.295861,
-      "name": "NAKHON SAWAN/TAKHLI AIRPORT"
+      "name": "NAKHON SAWAN/TAKHLI AIRPORT",
+      "elev_ft": 103.0
     },
     "VTPM": {
       "lat": 16.699925,
@@ -3552,7 +3562,8 @@
     "VTPN": {
       "lat": 15.672472,
       "lon": 100.136042,
-      "name": "NAKHON SAWAN AIRPORT"
+      "name": "NAKHON SAWAN AIRPORT",
+      "elev_ft": 113.0
     },
     "VTPO": {
       "lat": 17.2375,
@@ -3563,7 +3574,8 @@
     "VTPP": {
       "lat": 16.782942,
       "lon": 100.279133,
-      "name": "PHITSANULOK AIRPORT"
+      "name": "PHITSANULOK AIRPORT",
+      "elev_ft": 148.0
     },
     "VTPT": {
       "lat": 16.895986,
@@ -3586,12 +3598,14 @@
     "VTSE": {
       "lat": 10.711111,
       "lon": 99.361667,
-      "name": "CHUMPHON AIRPORT"
+      "name": "CHUMPHON AIRPORT",
+      "elev_ft": 22.0
     },
     "VTSF": {
       "lat": 8.539617,
       "lon": 99.944725,
-      "name": "NAKHON SI THAMMARAT AIRPORT"
+      "name": "NAKHON SI THAMMARAT AIRPORT",
+      "elev_ft": 13.0
     },
     "VTSG": {
       "lat": 8.100278,
@@ -3602,7 +3616,8 @@
     "VTSH": {
       "lat": 7.185719,
       "lon": 100.608794,
-      "name": "SONGKHLA AIRPORT"
+      "name": "SONGKHLA AIRPORT",
+      "elev_ft": 12.0
     },
     "VTSK": {
       "lat": 6.785708,
@@ -3619,29 +3634,32 @@
     "VTSN": {
       "lat": 8.463889,
       "lon": 99.958333,
-      "name": "NAKHON SI THAMMARAT / CHA - IAN AIRPORT"
+      "name": "NAKHON SI THAMMARAT / CHA - IAN AIRPORT",
+      "elev_ft": 44.0
     },
     "VTSP": {
       "lat": 8.1125,
       "lon": 98.309167,
-      "elev_ft": 85.3,
+      "elev_ft": 84.0,
       "name": "PHUKET INTERNATIONAL AIRPORT"
     },
     "VTSR": {
       "lat": 9.777622,
       "lon": 98.585483,
-      "name": "RANONG AIRPORT"
+      "name": "RANONG AIRPORT",
+      "elev_ft": 61.0
     },
     "VTSS": {
       "lat": 6.932778,
       "lon": 100.395,
-      "elev_ft": 91.9,
+      "elev_ft": 90.0,
       "name": "SONGKHLA / HAT YAI INTERNATIONAL AIRPORT"
     },
     "VTST": {
       "lat": 7.508611,
       "lon": 99.615833,
-      "name": "TRANG AIRPORT"
+      "name": "TRANG AIRPORT",
+      "elev_ft": 67.0
     },
     "VTUD": {
       "lat": 17.386436,
@@ -3652,7 +3670,8 @@
     "VTUI": {
       "lat": 17.195142,
       "lon": 104.118628,
-      "name": "SAKON NAKHON AIRPORT"
+      "name": "SAKON NAKHON AIRPORT",
+      "elev_ft": 529.0
     },
     "VTUK": {
       "lat": 16.466667,
@@ -3663,12 +3682,14 @@
     "VTUL": {
       "lat": 17.439167,
       "lon": 101.721944,
-      "name": "LOEI AIRPORT"
+      "name": "LOEI AIRPORT",
+      "elev_ft": 864.0
     },
     "VTUN": {
       "lat": 14.934444,
       "lon": 102.078611,
-      "name": "NAKHON RATCHASIMA / KHORAT AIRPORT"
+      "name": "NAKHON RATCHASIMA / KHORAT AIRPORT",
+      "elev_ft": 729.0
     },
     "VTUO": {
       "lat": 15.226758,

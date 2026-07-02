@@ -28,13 +28,21 @@ export interface TrailOpts {
    *  drawn statically; a positive value = a recent trail of that length that
    *  follows the aircraft as it flies. */
   decaySec: number;
+  /** Stroke weight (px) of the coloured trail line; the dark casing is drawn
+   *  2 px wider. Lower = narrower lines. */
+  weight: number;
 }
 
 export const DEFAULT_TRAIL_OPTS: TrailOpts = {
   show: true,
   flColor: true,
   decaySec: 0,
+  weight: 2,
 };
+
+/** Trail-thickness bounds (px) for the slider. */
+export const TRAIL_WEIGHT_MIN = 1;
+export const TRAIL_WEIGHT_MAX = 6;
 
 /** Trail-decay choices (label → seconds; 0 = no decay). */
 const DECAY_OPTS: { label: string; sec: number }[] = [
@@ -126,6 +134,22 @@ function TrailsMenu({
                 </option>
               ))}
             </select>
+          </div>
+          <div className="flight-tags-decay">
+            <span className="flight-tags-decay-label">
+              Trail Thickness ({opts.weight.toFixed(1)} px)
+            </span>
+            <input
+              type="range"
+              min={TRAIL_WEIGHT_MIN}
+              max={TRAIL_WEIGHT_MAX}
+              step={0.5}
+              value={opts.weight}
+              onChange={(e) =>
+                onChange({ ...opts, weight: Number(e.target.value) })
+              }
+              aria-label="Trail thickness"
+            />
           </div>
         </div>
       )}

@@ -42,6 +42,27 @@ def test_no_constraints_unchanged() -> None:
     assert [s.tas_kt for s in a.samples] == [s.tas_kt for s in b.samples]
 
 
+def test_descent_floor_does_not_pin_climb_start() -> None:
+    # Regression: a STAR descent floor ("at or above 11,000 ft" near arrival)
+    # must NOT propagate back across the whole climb/cruise. Combined with a SID
+    # climb ceiling ("at or below 6,000 ft" near departure) it previously made
+    # floor(11000) collide with ceil(6000) at the start; the ceiling won and the
+    # flight *began* at 6,000 ft instead of its field elevation.
+    cons = [
+        RouteConstraint(10.0, "climb", alt_ceil_ft=6000.0),
+        RouteConstraint(180.0, "descent", alt_floor_ft=11000.0),
+    ]
+    tl = _build(cons)
+    # Starts at (near) field elevation, NOT pinned at the SID ceiling.
+    assert tl.samples[0].altitude_ft < 1000.0
+    # The SID ceiling is still honoured at its fix...
+    assert _alt_at_nm(tl, 10.0) <= 6000.0 + 1.0
+    # ...the aircraft still climbs to a real cruise...
+    assert max(s.altitude_ft for s in tl.samples) > 20000.0
+    # ...and the descent floor still holds the arrival up.
+    assert _alt_at_nm(tl, 180.0) > 9000.0
+
+
 def test_at_or_below_caps_descent() -> None:
     base = _alt_at_nm(_build(None), 150.0)
     capped = _alt_at_nm(

@@ -69,7 +69,7 @@ def _idents(pts: list[tuple[str, float, float]]) -> list[str]:
 def test_splice_inserts_sid_and_star(patched_navdata: None) -> None:
     warnings: list[str] = []
     enroute = [("DAGAB", 15.0, 101.8), ("LADAR", 15.5, 101.0)]
-    out, _cons = server._splice_terminal_procedures(
+    out, _cons, _term = server._splice_terminal_procedures(
         _req(sid="BIDA2A", star="SARI1A"), "VTBS", "VTBS", enroute, warnings
     )
     assert _idents(out) == [
@@ -78,10 +78,36 @@ def test_splice_inserts_sid_and_star(patched_navdata: None) -> None:
     ]
 
 
+def test_proc_runway_derivation() -> None:
+    """The export runway falls back to the RW* leg transition when the DFD
+    encodes it there (route_type 5) and ``proc.runway`` is None."""
+
+    class _Leg:
+        def __init__(self, tr: str | None) -> None:
+            self.transition = tr
+
+    class _Proc:  # proc.runway None → derive from legs
+        runway = None
+        legs = (_Leg(None), _Leg("RW03L"), _Leg("RW03L"))
+
+    class _ProcWithRunway:  # explicit proc.runway wins
+        runway = "RW21R"
+        legs = (_Leg("RW09"),)
+
+    class _ProcNoRunway:  # nothing to derive
+        runway = None
+        legs = (_Leg(None),)
+
+    assert server._proc_runway(_Proc()) == "RW03L"
+    assert server._proc_runway(_ProcWithRunway()) == "RW21R"
+    assert server._proc_runway(_ProcNoRunway()) is None
+    assert server._proc_runway(None) is None
+
+
 def test_no_procedures_passthrough(patched_navdata: None) -> None:
     warnings: list[str] = []
     enroute = [("DAGAB", 15.0, 101.8), ("LADAR", 15.5, 101.0)]
-    out, _cons = server._splice_terminal_procedures(
+    out, _cons, _term = server._splice_terminal_procedures(
         _req(), "VTBS", "VTBS", enroute, warnings
     )
     assert out == enroute
@@ -91,7 +117,7 @@ def test_no_procedures_passthrough(patched_navdata: None) -> None:
 def test_unknown_procedure_warns_and_keeps_route(patched_navdata: None) -> None:
     warnings: list[str] = []
     enroute = [("DAGAB", 15.0, 101.8), ("LADAR", 15.5, 101.0)]
-    out, _cons = server._splice_terminal_procedures(
+    out, _cons, _term = server._splice_terminal_procedures(
         _req(sid="NOPE9Z"), "VTBS", "VTBS", enroute, warnings
     )
     assert out == enroute  # unchanged
@@ -105,10 +131,14 @@ def test_ambiguous_runway_auto_resolves_with_warning(
     records the assumption rather than failing."""
     warnings: list[str] = []
     enroute = [("DAGAB", 15.0, 101.8)]
-    out, _cons = server._splice_terminal_procedures(
+    out, _cons, _term = server._splice_terminal_procedures(
         _req(sid="BIDA2A"), "VTBS", "VTBS", enroute, warnings
     )
     # A SID was spliced in (route grew past the single enroute fix)...
     assert len(out) > 1
     # ...and the auto-pick was reported.
     assert any("assumed" in w for w in warnings)
+    # ...and the resolved runway is captured for the export, even though the
+    # request left it on "Auto".
+    assert _term["sid"] == "BIDA2A"
+    assert _term["dep_rwy"]  # a concrete runway, not None/empty

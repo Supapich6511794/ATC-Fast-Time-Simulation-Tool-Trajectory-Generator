@@ -34,6 +34,10 @@ def build_trajectory_gdf(
     wind_kt: float | None = None,
     output_every_s: float = 4.0,
     constraints: "list | None" = None,
+    sid: str | None = None,
+    star: str | None = None,
+    dep_rwy: str | None = None,
+    arr_rwy: str | None = None,
 ) -> gpd.GeoDataFrame:
     """Build a trajectory GeoDataFrame from a sequence of waypoints.
 
@@ -62,8 +66,11 @@ def build_trajectory_gdf(
 
     Returns:
         GeoDataFrame, EPSG:4326, with columns: flight_key, callsign,
-        aircraft_type, adep, ades, epoch_ts (UTC), altitude_ft, tas_kt
-        (None until Phase 3), gs_kt, track_deg, phase, geometry.
+        aircraft_type, adep, ades, dep_rwy, arr_rwy, sid, star, epoch_ts
+        (UTC), altitude_ft, tas_kt (None until Phase 3), gs_kt, track_deg,
+        phase, geometry. The dep_rwy/arr_rwy/sid/star columns carry the
+        terminal-procedure selection ("" when none), so the exported
+        trajectory records which SID/STAR/runways were flown.
 
     Raises:
         ValueError: if waypoint_sequence has fewer than 2 points or
@@ -77,6 +84,16 @@ def build_trajectory_gdf(
     flight_key = f"{callsign}_{eobt.strftime('%Y%m%dT%H%MZ')}"
     if flight_key_suffix:
         flight_key = f"{flight_key}_{flight_key_suffix}"
+
+    # Terminal-procedure selection, written into every row as constant
+    # columns so the GeoPackage/GeoJSON/CSV export self-documents the SID,
+    # STAR and the departure/arrival runways the trajectory was flown on.
+    terminal_cols = {
+        "dep_rwy": (dep_rwy or "").strip(),
+        "arr_rwy": (arr_rwy or "").strip(),
+        "sid": (sid or "").strip(),
+        "star": (star or "").strip(),
+    }
 
     # Phase 3 — variable speed timeline. Only kicks in when an RFL is
     # supplied (otherwise we have no altitude profile, hence no phase
@@ -102,6 +119,7 @@ def build_trajectory_gdf(
                 "aircraft_type": aircraft_type,
                 "adep": adep,
                 "ades": ades,
+                **terminal_cols,
                 "epoch_ts": s.epoch_ts,
                 "altitude_ft": round(s.altitude_ft, 1),
                 "tas_kt": round(s.tas_kt, 1),
@@ -175,6 +193,7 @@ def build_trajectory_gdf(
             "aircraft_type": aircraft_type,
             "adep": adep,
             "ades": ades,
+            **terminal_cols,
             "epoch_ts": eobt + timedelta(seconds=elapsed_s),
             "altitude_ft": altitude_ft,
             "tas_kt": None,
@@ -252,6 +271,10 @@ def write_csv(
         DEP: <adep>
         DEST: <ades>
         ACTYPE: <aircraft_type>
+        DEP RWY: <dep_rwy>
+        ARR RWY: <arr_rwy>
+        SID: <sid>
+        STAR: <star>
         FL: F<rfl>
         ATD: YYYY-MM-DD HH:MM:SS
 
@@ -282,6 +305,14 @@ def write_csv(
     ades = str(gdf["ades"].iloc[0])
     actype = str(gdf["aircraft_type"].iloc[0])
     callsign = str(gdf["callsign"].iloc[0])
+
+    # Terminal-procedure metadata (constant per flight). Absent on gdfs built
+    # before these columns existed, so read defensively.
+    def _const(col: str) -> str:
+        return str(gdf[col].iloc[0]) if col in gdf.columns else ""
+
+    dep_rwy, arr_rwy = _const("dep_rwy"), _const("arr_rwy")
+    sid, star = _const("sid"), _const("star")
     eobt_raw = gdf["epoch_ts"].iloc[0]
     eobt = (
         eobt_raw.to_pydatetime()
@@ -313,6 +344,12 @@ def write_csv(
         f.write(f"DEP: {adep}\n")
         f.write(f"DEST: {ades}\n")
         f.write(f"ACTYPE: {actype}\n")
+        # Terminal procedures / runways — always emitted so the format
+        # carries them (blank when the flight has none).
+        f.write(f"DEP RWY: {dep_rwy}\n")
+        f.write(f"ARR RWY: {arr_rwy}\n")
+        f.write(f"SID: {sid}\n")
+        f.write(f"STAR: {star}\n")
         if rfl is not None:
             f.write(f"FL: F{rfl}\n")
         f.write(f"ATD: {eobt.strftime('%Y-%m-%d %H:%M:%S')}\n")

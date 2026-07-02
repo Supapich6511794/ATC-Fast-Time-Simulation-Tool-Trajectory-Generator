@@ -543,22 +543,76 @@ function GeneratorPanel({
     };
   }, []);
 
+  // First and last EN-ROUTE fix of a published route string — the airway
+  // designators (and DCT) are skipped, so we land on the real entry/exit fix.
+  // A SID's exit fix is a route's FIRST fix; a STAR's entry fix is its LAST.
+  const knownFixIdents = useMemo(
+    () => new Set(allFixes.map((f) => f.ident)),
+    [allFixes],
+  );
+  const routeFixEnds = useCallback(
+    (route: string): { first: string | null; last: string | null } => {
+      const toks = route
+        .toUpperCase()
+        .split(/\s+/)
+        .filter((t) => t && t !== "DCT" && knownFixIdents.has(t));
+      return { first: toks[0] ?? null, last: toks[toks.length - 1] ?? null };
+    },
+    [knownFixIdents],
+  );
+
   // ADES suggestions cascade from ADEP: when the departure aerodrome has
   // published AIP routes, the destination dropdown lists only those filed
-  // destinations (e.g. VTCC → VTBD, VTBS). Falls back to all aerodromes when
-  // the ADEP has no AIP route (so best-route pairs still work); free-typing
-  // any ICAO stays allowed by the combobox.
+  // destinations (e.g. VTCC → VTBD, VTBS). When a SID is also chosen, narrow
+  // further to destinations whose filed route leaves via that SID's exit fix
+  // (the route's first fix matches the SID name, which is coded from that fix —
+  // ALBO3C → ALBOS). Falls back to all aerodromes when the ADEP has no AIP
+  // route, and to the ADEP-only list when no route matches the SID (soft
+  // filter); free-typing any ICAO stays allowed by the combobox.
   const adesOptions = useMemo<ComboOption[]>(() => {
     const a = adep.trim().toUpperCase();
     if (!a) return airportOptions;
-    const dests = new Set(
-      aipRoutes
-        .filter((r) => r.adep.toUpperCase() === a)
-        .map((r) => r.ades.toUpperCase()),
-    );
+    const fromA = aipRoutes.filter((r) => r.adep.toUpperCase() === a);
+    let dests = new Set(fromA.map((r) => r.ades.toUpperCase()));
     if (dests.size === 0) return airportOptions;
+    const pre = sid ? sid.match(/^[A-Z]+/)?.[0] ?? sid : null;
+    if (pre) {
+      const narrowed = new Set(
+        fromA
+          .filter((r) => {
+            const f = routeFixEnds(r.route).first;
+            return f != null && f.startsWith(pre);
+          })
+          .map((r) => r.ades.toUpperCase()),
+      );
+      if (narrowed.size > 0) dests = narrowed;
+    }
     return airportOptions.filter((o) => dests.has(o.code.toUpperCase()));
-  }, [adep, aipRoutes, airportOptions]);
+  }, [adep, sid, aipRoutes, airportOptions, routeFixEnds]);
+
+  // ADEP suggestions cascade BACKWARD from ADES + STAR: when an arrival STAR is
+  // chosen before the departure aerodrome, the ADEP dropdown lists only origins
+  // whose filed route into this ADES arrives over that STAR's entry fix (the
+  // route's last fix matches the STAR name, coded from that fix — SURG2A →
+  // SURGU). Inactive (all aerodromes) until a STAR is picked, so the normal
+  // ADEP-first workflow is unchanged; soft-falls back to all when nothing
+  // matches. Free-typing any ICAO stays allowed by the combobox.
+  const adepOptions = useMemo<ComboOption[]>(() => {
+    const b = ades.trim().toUpperCase();
+    const pre = star ? star.match(/^[A-Z]+/)?.[0] ?? star : null;
+    if (!b || !pre) return airportOptions;
+    const toB = aipRoutes.filter((r) => r.ades.toUpperCase() === b);
+    const origins = new Set(
+      toB
+        .filter((r) => {
+          const f = routeFixEnds(r.route).last;
+          return f != null && f.startsWith(pre);
+        })
+        .map((r) => r.adep.toUpperCase()),
+    );
+    if (origins.size === 0) return airportOptions;
+    return airportOptions.filter((o) => origins.has(o.code.toUpperCase()));
+  }, [ades, star, aipRoutes, airportOptions, routeFixEnds]);
 
   // Aerodrome reference coords, keyed by ICAO, for the route finder.
   const airportLL = useMemo(() => {
@@ -1735,7 +1789,7 @@ function GeneratorPanel({
               <IdentCombobox
                 value={adep}
                 onChange={handleAdepChange}
-                options={airportOptions}
+                options={adepOptions}
                 placeholder="Departure"
               />
             </label>

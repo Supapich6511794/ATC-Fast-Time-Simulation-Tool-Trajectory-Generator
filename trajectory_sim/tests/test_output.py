@@ -191,6 +191,33 @@ def test_write_geopackage_has_brief_indices(tmp_path: Path) -> None:
     assert "flight_key" in pk_sql and "epoch_ts" in pk_sql
 
 
+def test_gdf_carries_terminal_procedures() -> None:
+    gdf = build_trajectory_gdf(
+        waypoint_sequence=_WAYPOINTS,
+        eobt=_EOBT,
+        callsign="THA204",
+        aircraft_type="B738",
+        adep="VTBS",
+        ades="VTSP",
+        sid="ALBO3C",
+        star="BUKI2A",
+        dep_rwy="RW21L",
+        arr_rwy="RW27",
+    )
+    for col in ("dep_rwy", "arr_rwy", "sid", "star"):
+        assert col in gdf.columns
+    assert (gdf["sid"] == "ALBO3C").all()
+    assert (gdf["star"] == "BUKI2A").all()
+    assert (gdf["dep_rwy"] == "RW21L").all()
+    assert (gdf["arr_rwy"] == "RW27").all()
+
+
+def test_gdf_terminal_cols_blank_by_default() -> None:
+    gdf = _build_default_gdf()
+    for col in ("dep_rwy", "arr_rwy", "sid", "star"):
+        assert (gdf[col] == "").all()
+
+
 # --- write_csv -------------------------------------------------------------
 
 _DATA_COLS = [
@@ -225,7 +252,34 @@ def test_write_csv_has_metadata_header(tmp_path: Path) -> None:
     assert "ACTYPE: B738" in text
     assert "FL: F330" in text
     assert "ATD: 2026-01-03 08:15:00" in text
+    # Terminal-procedure header lines are always present (blank here).
+    assert "DEP RWY:" in text
+    assert "ARR RWY:" in text
+    assert "SID:" in text
+    assert "STAR:" in text
     assert "Timestamp,UTC,Callsign,Lat,Lon,Altitude,Speed,Direction" in text
+
+
+def test_write_csv_terminal_header_values(tmp_path: Path) -> None:
+    gdf = build_trajectory_gdf(
+        waypoint_sequence=_WAYPOINTS,
+        eobt=_EOBT,
+        callsign="THA204",
+        aircraft_type="B738",
+        adep="VTBS",
+        ades="VTSP",
+        sid="ALBO3C",
+        star="BUKI2A",
+        dep_rwy="RW21L",
+        arr_rwy="RW27",
+    )
+    out = tmp_path / "term.csv"
+    write_csv(gdf, out, route_str="BKK Y8 PUT", rfl=330)
+    text = out.read_text()
+    assert "DEP RWY: RW21L" in text
+    assert "ARR RWY: RW27" in text
+    assert "SID: ALBO3C" in text
+    assert "STAR: BUKI2A" in text
 
 
 def test_write_csv_data_rows_match_gdf(tmp_path: Path) -> None:

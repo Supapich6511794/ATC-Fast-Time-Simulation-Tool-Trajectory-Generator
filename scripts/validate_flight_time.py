@@ -41,11 +41,15 @@ sys.path.insert(0, str(_ROOT))
 from trajectory_sim.performance import (  # noqa: E402
     aircraft_speeds,
     get_speed_restriction,
+    service_ceiling_ft,
     set_speed_restriction,
     tune_speed_schedule,
 )
 from trajectory_sim.trajectory import build_flight_timeline  # noqa: E402
-from trajectory_sim.validation import CAT62Reference  # noqa: E402
+from trajectory_sim.validation import (  # noqa: E402
+    CAT62Reference,
+    validate_cruise_level,
+)
 
 _AIP_PATH = _ROOT / "web" / "public" / "data" / "aip_VT.json"
 
@@ -170,6 +174,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     print()
 
+    # --- Cruise level vs RFL: exact match (real clamps PASS with a reason) ---
+    rfl_ft = args.rfl * 100.0
+    profile = timeline.profile
+    level = validate_cruise_level(
+        rfl_ft=rfl_ft,
+        cruise_alt_ft=profile.cruise_alt_ft,
+        service_ceiling_ft=service_ceiling_ft(args.actype),
+        climb_top_ft=profile.climb_top_ft,
+        reaches_rfl=profile.reaches_ft(rfl_ft),
+        route=f"{args.adep.upper()}-{args.ades.upper()}",
+    )
+    print(level.report())
+    print()
+
+    # --- Total flight time vs CAT62 reference ---
     ref = CAT62Reference.load(args.reference)
     result = ref.validate(args.adep, args.ades, simulated_min)
     if result is None:
@@ -178,10 +197,11 @@ def main(argv: list[str] | None = None) -> int:
             f"Simulated Time: {simulated_min:.0f} min\n"
             "Status: NO REFERENCE (add this pair to cat62_reference.json)"
         )
-        return 0
+        # Still honour the cruise-level check even without a time reference.
+        return 0 if level.passed else 1
 
     print(result.report())
-    return 0 if result.passed else 1
+    return 0 if (result.passed and level.passed) else 1
 
 
 if __name__ == "__main__":

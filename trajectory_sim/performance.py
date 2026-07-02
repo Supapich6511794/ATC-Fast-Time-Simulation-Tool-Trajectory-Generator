@@ -142,6 +142,38 @@ def tas_to_cas_kt(tas_kt: float, altitude_ft: float) -> float:
     return cas_ms * _MS_TO_KT
 
 
+def cas_mach_crossover_ft(cas_kt: float, mach: float) -> float:
+    """Altitude (ft) where a constant-CAS profile reaches a given Mach.
+
+    Below this altitude a fixed calibrated airspeed maps to a Mach number
+    lower than ``mach``; above it, higher. It is the CAS→Mach crossover of
+    a BADA-style speed schedule — the point the climb/descent switches from
+    holding ``cas_kt`` to holding ``mach``. Both conversions go through the
+    ISA atmosphere, so the crossover is consistent with
+    :func:`target_tas_kt` (the target TAS is continuous across it).
+
+    Args:
+        cas_kt: Held calibrated airspeed, knots.
+        mach: Held Mach number.
+
+    Returns:
+        Crossover altitude in feet AMSL, within ``[0, 60000]``. Returns the
+        60 000 ft ceiling when the CAS never reaches the Mach in that band
+        (e.g. a turboprop whose CAS schedule stays sub-Mach).
+    """
+    lo, hi = 0.0, 60000.0
+    # Mach of a fixed CAS rises monotonically with altitude → bisection.
+    if tas_to_mach(cas_to_tas_kt(cas_kt, hi), hi) < mach:
+        return hi
+    for _ in range(60):
+        mid = (lo + hi) / 2.0
+        if tas_to_mach(cas_to_tas_kt(cas_kt, mid), mid) < mach:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
 @dataclass(frozen=True)
 class _Segment:
     """One altitude band with a constant vertical rate (fpm)."""
@@ -310,9 +342,9 @@ class SpeedSchedule:
       - ``cruise_mach`` — long-range or normal cruise Mach number.
       - ``descent_mach`` — Mach number above the crossover.
       - ``descent_cas_kt`` — CAS in knots below the crossover.
-    The 250 KCAS / FL100 ATC speed limit is **not** modelled here — the
-    Phase 1 horizontal trajectory uses a single ground speed; speeds are
-    exposed for callers that want to display the planned schedule.
+    The 250 KCAS / FL100 ATC speed limit is applied on top of this schedule
+    by :func:`target_tas_kt` (not stored on the dataclass); the CAS→Mach
+    crossover altitude lives in :func:`crossover_altitude_ft`.
     """
 
     climb_cas_kt: float
@@ -322,9 +354,15 @@ class SpeedSchedule:
     descent_cas_kt: float
 
 
-# Per-airframe speed schedules — published nominal values, not the
-# licensed BADA APF dataset. Mirror the shape of BADA's airline-procedure
-# file (APF) so a real APF can drop in later without API change.
+# Per-airframe OPERATIONAL speed schedules (typical airline long-range
+# cruise). These are AUTHORITATIVE for the CAS/Mach speeds — BADA supplies
+# only the climb/descent RATES (ROCD), not the schedule. This split is
+# deliberate: BADA's PTF `tas` is a nominal/high-speed profile (B738 cruise
+# ~M0.816) that runs faster than real ops, so simulated flight time came out
+# below even the fastest real CAT062 flight. The values here are calibrated
+# to the real CAT062 tracks (B738: cruise ~M0.78, climb ~290 kt, descent
+# ~290 kt vs measured 0.776 / 289 / 258), so the clean direct trajectory
+# lands next to a delay-free real flight. See [[project-bada-dataset]].
 #
 # Grouped by family — the 737/A320 narrow-bodies share a ~290 kt / M0.78
 # profile, the A330/777/787 wide-bodies a faster ~300-310 kt / M0.80-0.85
@@ -432,6 +470,8 @@ _SERVICE_CEILING_FT: dict[str, float] = {
 # CAS → Mach crossover altitude per airframe (BADA convention). Below
 # this altitude the climb / descent flies a constant CAS; above it,
 # constant Mach. Typical narrow-body crossover sits around FL280–300.
+# Consistent with the operational schedule above (cas_mach_crossover_ft of
+# the climb CAS + Mach lands near these).
 _CROSSOVER_FT: dict[str, float] = {
     # 737 / A320 narrow-bodies cross over around FL280.
     "B738": 28000.0,
@@ -466,6 +506,12 @@ _CROSSOVER_FT: dict[str, float] = {
 # named so the value is searchable and easy to tweak per state.
 _BELOW_FL100_CAS_KT = 250.0
 _RESTRICTION_ALT_FT = 10000.0
+
+
+# The CAS/Mach speed schedule is operational (defined above), NOT BADA-
+# derived — BADA nominal speeds run faster than real ops. BADA still drives
+# the climb/descent RATES (see _load_bada_perf_tables / PERFORMANCE_SOURCE).
+SPEED_SCHEDULE_SOURCE = "operational (airline LRC), calibrated to CAT062 tracks"
 
 
 def crossover_altitude_ft(aircraft_type: str) -> float:
@@ -643,13 +689,14 @@ def average_phase_tas_kt(
         return target_tas_kt(aircraft_type, (lo_alt + hi_alt) / 2.0, phase)
     return tas_x_time / total_time_s
 
-# Field elevations (ft AMSL) for the airports in scope. Real navdata
-# (airports layer) isn't delivered yet, so these are the published AIP
-# elevations for the single city pair; default 0 elsewhere.
+# Field elevations (ft AMSL) — fallback for when the AIP airports layer
+# isn't loaded. The API overwrites these with the full AIP set at startup
+# (see api.server._register_field_elevations); default 0 elsewhere. Values
+# are the published AIP elevations.
 _FIELD_ELEV_FT: dict[str, float] = {
-    "VTBS": 5.0,    
-    "VTSP": 25.0,   
-    "VTBD": 9.0,    # Bangkok Don Mueang (in case of reroute)
+    "VTBS": 8.0,     # Bangkok Suvarnabhumi
+    "VTSP": 84.0,    # Phuket
+    "VTBD": 9.0,     # Bangkok Don Mueang
 }
 
 
@@ -901,6 +948,30 @@ class VerticalProfile:
             return self.at(0.0)
         f = max(0.0, min(1.0, along_track_nm / total_distance_nm))
         return self.at(f * self.total_time_s)
+
+    @property
+    def climb_top_ft(self) -> float:
+        """Highest altitude the loaded climb schedule can reach (top of its
+        last segment) — the ceiling the climb table itself imposes, which
+        can sit below the airframe's service ceiling."""
+        return self._climb_segs[-1].alt_hi_ft if self._climb_segs else self.cruise_alt_ft
+
+    def reaches_ft(self, alt_ft: float) -> bool:
+        """True when climbing to and descending from ``alt_ft`` fits within
+        ``total_time_s``.
+
+        Mirrors the short-flight clamp in :meth:`build`: a level that fits
+        in time is cruised at; one that does not was clamped lower for
+        distance. Lets a caller tell a legitimate distance clamp from an
+        unexplained cruise-level mismatch. Altitudes above the climb table
+        are treated as time-reachable here (the ceiling/climb limit is the
+        binding one and is judged separately).
+        """
+        if self.total_time_s <= 0:
+            return True
+        climb_s = _time_to_climb(self._climb_segs, self.dep_elev_ft, alt_ft)
+        desc_s = _time_to_climb(self._desc_segs, self.des_elev_ft, alt_ft)
+        return climb_s + desc_s <= self.total_time_s
 
     def at(self, elapsed_s: float) -> tuple[float, Phase]:
         """Return (altitude_ft, phase) at an elapsed time into the flight."""

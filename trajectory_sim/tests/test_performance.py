@@ -29,8 +29,8 @@ def test_roc_rod_within_brief_envelope() -> None:
 
 
 def test_field_elevation_known_and_default() -> None:
-    assert field_elevation_ft("VTBS") == 5.0
-    assert field_elevation_ft("vtsp") == 25.0  # case-insensitive
+    assert field_elevation_ft("VTBS") == 8.0    # published AIP elevation
+    assert field_elevation_ft("vtsp") == 84.0   # case-insensitive
     assert field_elevation_ft("ZZZZ") == 0.0
 
 
@@ -181,8 +181,8 @@ def test_merged_3d_profile_continuous_and_monotonic() -> None:
     assert altitudes[tod_i] - altitudes[tod_i + 1] <= max_step_ft + 1e-6
 
     # 8. Endpoints are sane (close to field elevation).
-    assert altitudes[0] <= 10.0 + 1e-6        # near VTBS (5 ft)
-    assert altitudes[-1] <= 30.0 + 1e-6       # near VTSP (25 ft)
+    assert altitudes[0] <= 12.0 + 1e-6        # near VTBS (8 ft)
+    assert altitudes[-1] <= 88.0 + 1e-6       # near VTSP (84 ft)
 
 
 def test_aircraft_speeds_known_and_fallback() -> None:

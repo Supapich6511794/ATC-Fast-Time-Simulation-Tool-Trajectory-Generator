@@ -106,19 +106,24 @@ def test_250_kt_restriction_below_fl100() -> None:
 
 
 def test_climb_cas_above_fl100_below_crossover() -> None:
-    # Between FL100 and crossover (FL280 for B738) we fly climb CAS=290.
+    # Between FL100 and the crossover we fly the schedule's climb CAS
+    # (BADA-derived, so pin to the schedule rather than a literal). FL200
+    # is below the B738 crossover (~FL295).
+    sched = aircraft_speeds("B738")
+    assert 20_000.0 < crossover_altitude_ft("B738")
     cas = tas_to_cas_kt(
         target_tas_kt("B738", 20_000.0, "climb"), 20_000.0
     )
-    assert cas == pytest.approx(290.0, abs=1.0)
+    assert cas == pytest.approx(sched.climb_cas_kt, abs=1.0)
 
 
 def test_climb_mach_above_crossover() -> None:
-    # Above FL280 the climb flies Mach 0.78 — TAS at FL320 should
-    # match mach_to_tas_kt(0.78, 32 000).
+    # Above the crossover the climb flies the schedule's climb Mach — TAS
+    # at crossover+4000 ft should match mach_to_tas_kt(climb_mach, that alt).
+    sched = aircraft_speeds("B738")
     crossover = crossover_altitude_ft("B738")
-    high = crossover + 4000.0  # FL320 if crossover is FL280
-    expected = mach_to_tas_kt(0.78, high)
+    high = crossover + 4000.0
+    expected = mach_to_tas_kt(sched.climb_mach, high)
     assert target_tas_kt("B738", high, "climb") == pytest.approx(
         expected, abs=0.5
     )

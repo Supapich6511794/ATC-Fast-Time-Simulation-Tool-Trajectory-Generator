@@ -341,16 +341,37 @@ def build_flight_timeline(
                 ceil = min(ceil, v)
             if c.alt_floor_ft is not None:
                 if c.phase == "climb":
-                    v = c.alt_floor_ft - g_climb * (c.distance_nm - d) if d <= c.distance_nm else c.alt_floor_ft
-                else:  # descent: stay ≥ floor to the fix, then descend on from it
-                    # Mirror of the climb case: past the fix the floor falls at
-                    # the fix's real BADA rate so descent continues *from* the
-                    # held altitude and rejoins the curve (no vertical step).
-                    v = (
-                        c.alt_floor_ft
-                        if d <= c.distance_nm
-                        else max(0.0, c.alt_floor_ft - _grad_at_fix[c] * (d - c.distance_nm))
-                    )
+                    # Straight line from field level at departure (d=0 → 0) up to
+                    # the floor at the fix, so the floor lifts the climb AT the
+                    # fix but NEVER pins the START above field elevation. Any
+                    # fixed backward gradient (the shallow g_climb, or even the
+                    # steep near-fix rate) can stay positive all the way back to
+                    # d=0 for a high or near-departure "at or above" fix and pin
+                    # the start at thousands of feet. Anchoring the ramp at the
+                    # departure guarantees it reaches 0 there. Past the fix, hold
+                    # the floor (the aircraft is climbing above it anyway).
+                    if c.distance_nm <= 0.0:
+                        v = 0.0  # a floor AT the departure fix can't pin the ground
+                    elif d <= c.distance_nm:
+                        v = c.alt_floor_ft * (d / c.distance_nm)
+                    else:
+                        v = c.alt_floor_ft
+                else:  # descent: stay ≥ floor from this fix's TOD anchor to the
+                    # fix, then descend on from it. WITHOUT the anchor the floor
+                    # would apply backward across the whole climb + cruise and,
+                    # where a SID's low ceiling near departure conflicts, pin the
+                    # start at that ceiling (a flight that began at 6000 ft, not
+                    # its field elevation). Mirrors the descent-ceiling anchor
+                    # above: the floor rises backward along the descent gradient
+                    # and meets cruise exactly at the anchor (no step), and does
+                    # not bind before it (climb/cruise stay free).
+                    anchor = c.distance_nm - (cruise_alt - c.alt_floor_ft) / g_desc
+                    if d < anchor:
+                        v = 0.0  # before this fix's TOD: no floor
+                    elif d <= c.distance_nm:
+                        v = c.alt_floor_ft + g_desc * (c.distance_nm - d)
+                    else:
+                        v = max(0.0, c.alt_floor_ft - _grad_at_fix[c] * (d - c.distance_nm))
                 floor = max(floor, v)
         return floor, ceil
 

@@ -117,6 +117,13 @@ interface Props {
   showTrails?: boolean;
   flColorTrails?: boolean;
   trailDecaySec?: number;
+  /** Stroke weight (px) of the coloured route/trail line; the dark casing is
+   *  drawn 2 px wider. Set from the Trails menu's thickness slider. */
+  trailWeight?: number;
+  /** Show the TOC/TOD vertical-profile pins. Off by default so a fresh
+   *  generation shows just the lines; the map toolbar's "TOC/TOD" button
+   *  turns them on. */
+  showProfilePins?: boolean;
   /** flightKeys whose route *line* is hidden on the map. The aircraft icon
    *  stays visible, so the user can declutter the lines mid-simulation while
    *  still tracking each flight. */
@@ -638,6 +645,8 @@ export default function LeafletMap({
   showTrails = true,
   flColorTrails = true,
   trailDecaySec = 0,
+  trailWeight = 2,
+  showProfilePins = false,
   hiddenKeys,
   previewRoutes,
   typeFilter,
@@ -1185,7 +1194,7 @@ export default function LeafletMap({
               interactive={false}
               pathOptions={{
                 color: altitudeColor(altMid),
-                weight: 3,
+                weight: trailWeight,
                 opacity: 0.95,
                 lineCap: "round",
                 lineJoin: "round",
@@ -1208,7 +1217,7 @@ export default function LeafletMap({
                   interactive={false}
                   pathOptions={{
                     color: "#0f172a",
-                    weight: 5,
+                    weight: trailWeight + 2,
                     opacity: 0.45,
                     lineCap: "round",
                     lineJoin: "round",
@@ -1222,7 +1231,7 @@ export default function LeafletMap({
                     interactive={false}
                     pathOptions={{
                       color,
-                      weight: 3,
+                      weight: trailWeight,
                       opacity: 0.95,
                       lineCap: "round",
                       lineJoin: "round",
@@ -1289,7 +1298,7 @@ export default function LeafletMap({
             {/* Phase 2 vertical-profile pins: small triangles where the
                 aircraft reaches cruise (TOC) and starts descent (TOD).
                 Omitted on too-short legs where no cruise sample exists. */}
-            {trajectory.profile?.toc && (
+            {showProfilePins && trajectory.profile?.toc && (
               <Marker
                 position={[trajectory.profile.toc.lat, trajectory.profile.toc.lon]}
                 icon={profileBadge("TOC", "#22d3ee")}
@@ -1300,7 +1309,7 @@ export default function LeafletMap({
                 </Tooltip>
               </Marker>
             )}
-            {trajectory.profile?.tod && (
+            {showProfilePins && trajectory.profile?.tod && (
               <Marker
                 position={[trajectory.profile.tod.lat, trajectory.profile.tod.lon]}
                 icon={profileBadge("TOD", "#fbbf24")}
@@ -1314,7 +1323,7 @@ export default function LeafletMap({
           </Fragment>
         );
       }),
-    [trajectories, multiRoute, hiddenKeys, typeFilter, showTrails, flColorTrails, trailDecaySec],
+    [trajectories, multiRoute, hiddenKeys, typeFilter, showTrails, flColorTrails, trailDecaySec, trailWeight, showProfilePins],
   );
 
   return (
@@ -1407,7 +1416,7 @@ export default function LeafletMap({
                   interactive={false}
                   pathOptions={{
                     color: "#0f172a",
-                    weight: 5,
+                    weight: trailWeight + 2,
                     opacity: 0.4,
                     lineCap: "round",
                     lineJoin: "round",
@@ -1428,7 +1437,7 @@ export default function LeafletMap({
                         interactive={false}
                         pathOptions={{
                           color: altitudeColor(altMid),
-                          weight: 3,
+                          weight: trailWeight,
                           opacity: 0.95,
                           lineCap: "round",
                           lineJoin: "round",
@@ -1442,7 +1451,7 @@ export default function LeafletMap({
                     interactive={false}
                     pathOptions={{
                       color: trailColor,
-                      weight: 3,
+                      weight: trailWeight,
                       opacity: 0.95,
                       lineCap: "round",
                       lineJoin: "round",

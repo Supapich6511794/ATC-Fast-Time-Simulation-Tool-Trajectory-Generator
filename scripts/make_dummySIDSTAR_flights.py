@@ -46,6 +46,12 @@ SAMPLES_PER_ROUTE = 16   # points written per route table (cosmetic)
 EOBT_GAP_MIN = 1         # minutes between consecutive variants (unique EOBTs)
 
 _ROOT = Path(__file__).resolve().parent.parent
+
+import sys  # noqa: E402
+
+sys.path.insert(0, str(_ROOT))
+from trajectory_sim.validation import cab_cruising_level  # noqa: E402
+
 OUT_DIR = _ROOT / "dummy_data"
 AIP_PATH = _ROOT / "web" / "public" / "data" / "aip_VT.json"
 ROUTES_PATH = _ROOT / "web" / "public" / "data" / "aip_routes_VT.json"
@@ -257,7 +263,10 @@ def main() -> None:
         actype = ACTYPES[ri % len(ACTYPES)]
         la1, lo1, e1 = AIRPORTS[adep]
         la2, lo2, e2 = AIRPORTS[ades]
-        rfl = _RFL_RNAV[ri % len(_RFL_RNAV)] if r.get("rnav") else _RFL_NON[ri % len(_RFL_NON)]
+        rfl = cab_cruising_level(
+            bearing(la1, lo1, la2, lo2),
+            _RFL_RNAV[ri % len(_RFL_RNAV)] if r.get("rnav") else _RFL_NON[ri % len(_RFL_NON)],
+        )
         route_pts = (
             [(adep, la1, lo1)]
             + [(f, la, lo) for (f, la, lo) in coords]

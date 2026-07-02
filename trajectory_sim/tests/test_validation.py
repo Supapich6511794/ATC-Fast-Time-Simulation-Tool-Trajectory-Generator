@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 from trajectory_sim.performance import (
+    VerticalProfile,
     aircraft_speeds,
     get_speed_restriction,
+    service_ceiling_ft,
     set_speed_restriction,
     tune_speed_schedule,
 )
 from trajectory_sim.validation import (
     CAT62Reference,
     FlightTimeValidation,
+    cab_cruising_level,
+    validate_cruise_level,
+    validate_cruising_level,
     validate_flight_time,
 )
 
@@ -98,3 +103,143 @@ def test_set_speed_restriction_roundtrip() -> None:
         assert get_speed_restriction() == (280.0, 8000.0)
     finally:
         set_speed_restriction(cas_kt=orig_cas, below_alt_ft=orig_alt)
+
+
+# --- Cruise level vs FPL RFL -------------------------------------------------
+
+
+def test_cruise_level_exact_match_passes() -> None:
+    v = validate_cruise_level(35000.0, 35000.0, route="VTBS-VTSP")
+    assert v.reason == "exact"
+    assert v.passed is True
+    assert v.delta_ft == 0.0
+    assert v.is_exact is True
+
+
+def test_cruise_level_within_tolerance_is_exact() -> None:
+    v = validate_cruise_level(35000.0, 34999.5)
+    assert v.reason == "exact" and v.passed
+
+
+def test_cruise_level_ceiling_limited_passes() -> None:
+    # FPL asked FL450 but the airframe tops out at its service ceiling.
+    v = validate_cruise_level(
+        45000.0, 41000.0, service_ceiling_ft=41000.0, climb_top_ft=41000.0
+    )
+    assert v.reason == "ceiling_limited"
+    assert v.passed is True
+    assert v.delta_ft == -4000.0
+
+
+def test_cruise_level_climb_limited_passes() -> None:
+    # Below the service ceiling, but above what the climb schedule reaches.
+    v = validate_cruise_level(
+        43000.0, 41000.0, service_ceiling_ft=45000.0, climb_top_ft=41000.0
+    )
+    assert v.reason == "climb_limited" and v.passed
+
+
+def test_cruise_level_distance_limited_passes() -> None:
+    # Level is within reach, but the flight is too short to get there.
+    v = validate_cruise_level(
+        35000.0,
+        28000.0,
+        service_ceiling_ft=41000.0,
+        climb_top_ft=41000.0,
+        reaches_rfl=False,
+    )
+    assert v.reason == "distance_limited" and v.passed
+
+
+def test_cruise_level_mismatch_fails() -> None:
+    # Reachable and time allows it, yet cruise came out lower — a bug → FAIL.
+    v = validate_cruise_level(
+        35000.0,
+        28000.0,
+        service_ceiling_ft=41000.0,
+        climb_top_ft=41000.0,
+        reaches_rfl=True,
+    )
+    assert v.reason == "mismatch" and not v.passed
+
+
+def test_cruise_level_overshoot_fails() -> None:
+    # Simulated cruise ABOVE the requested level is never a valid clamp.
+    v = validate_cruise_level(35000.0, 37000.0, service_ceiling_ft=41000.0)
+    assert v.reason == "overshoot" and not v.passed
+
+
+def test_cruise_level_report_format() -> None:
+    v = validate_cruise_level(35000.0, 35000.0, route="VTBS-VTSP")
+    assert v.report() == (
+        "Route: VTBS-VTSP\n"
+        "Requested Level: FL350\n"
+        "Simulated Cruise: FL350\n"
+        "Delta: +0 ft\n"
+        "Status: PASS (exact)"
+    )
+
+
+# --- CAB cruising-level (hemispheric) check ----------------------------------
+
+
+def test_cruising_level_eastbound_needs_odd() -> None:
+    # Track 090° (eastbound, 000-179) → odd FL only.
+    assert validate_cruising_level(90.0, 35000.0).passed      # FL350 odd → OK
+    assert not validate_cruising_level(90.0, 34000.0).passed  # FL340 even → FAIL
+    v = validate_cruising_level(90.0, 34000.0, route="A-B")
+    assert v.direction == "E" and v.nearest_valid_fl in (330, 350)
+
+
+def test_cruising_level_westbound_needs_even() -> None:
+    # Track 270° (westbound, 180-359) → even FL only.
+    assert validate_cruising_level(270.0, 34000.0).passed      # FL340 even → OK
+    assert not validate_cruising_level(270.0, 35000.0).passed  # FL350 odd → FAIL
+    assert validate_cruising_level(270.0, 35000.0).direction == "W"
+
+
+def test_cruising_level_above_fl410_uses_published_sets() -> None:
+    # Non-RVSM band: FL430/470/510 are WEST, FL450/490 are EAST (not parity).
+    assert validate_cruising_level(270.0, 43000.0).passed      # FL430 west → OK
+    assert validate_cruising_level(90.0, 45000.0).passed       # FL450 east → OK
+    assert not validate_cruising_level(90.0, 43000.0).passed   # FL430 not east
+
+
+def test_cab_cruising_level_snaps_to_direction() -> None:
+    # Eastbound wants odd near FL340 → FL330 or FL350.
+    assert cab_cruising_level(90.0, 340) in (330, 350)
+    # Westbound wants even near FL350 → FL340 or FL360.
+    assert cab_cruising_level(270.0, 350) in (340, 360)
+    # An already-valid level is unchanged.
+    assert cab_cruising_level(270.0, 340) == 340
+    assert cab_cruising_level(90.0, 350) == 350
+
+
+def test_cruise_level_with_real_profile_exact_and_short() -> None:
+    ac = "B738"
+    ceil = service_ceiling_ft(ac)
+
+    # Long flight → reaches FL350 exactly.
+    long_p = VerticalProfile.build(7200.0, 35000.0, ac, 0.0, 0.0)
+    assert long_p.reaches_ft(35000.0) is True
+    v_long = validate_cruise_level(
+        35000.0,
+        long_p.cruise_alt_ft,
+        service_ceiling_ft=ceil,
+        climb_top_ft=long_p.climb_top_ft,
+        reaches_rfl=long_p.reaches_ft(35000.0),
+    )
+    assert v_long.reason == "exact" and v_long.passed
+
+    # Very short flight → clamped below FL350, but PASS as distance_limited.
+    short_p = VerticalProfile.build(600.0, 35000.0, ac, 0.0, 0.0)
+    assert short_p.cruise_alt_ft < 35000.0
+    assert short_p.reaches_ft(35000.0) is False
+    v_short = validate_cruise_level(
+        35000.0,
+        short_p.cruise_alt_ft,
+        service_ceiling_ft=ceil,
+        climb_top_ft=short_p.climb_top_ft,
+        reaches_rfl=short_p.reaches_ft(35000.0),
+    )
+    assert v_short.reason == "distance_limited" and v_short.passed

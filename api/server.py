@@ -670,15 +670,38 @@ def _route_constraints(
     return out
 
 
+def _proc_runway(proc: "Procedure | None") -> str | None:
+    """The runway a resolved SID/STAR serves — for the trajectory export.
+
+    Prefers ``proc.runway``, but the Thai DFD SID/STAR carry every leg under
+    route_type 5 ("common"), so the runway (stored in each leg's
+    ``transition_identifier``, e.g. RW03L) never surfaces as ``proc.runway``.
+    Fall back to the first RW* transition found among the legs.
+    """
+    if proc is None:
+        return None
+    if getattr(proc, "runway", None):
+        return proc.runway
+    for leg in getattr(proc, "legs", ()):
+        tr = getattr(leg, "transition", None)
+        if tr and tr.upper().startswith("RW"):
+            return tr.upper()
+    return None
+
+
 def _splice_terminal_procedures(
     req: "GenerateRequest",
     adep: str,
     ades: str,
     route_pts: "list[tuple[str, float, float]]",
     warnings: list[str],
-) -> "tuple[list[tuple[str, float, float]], list[RouteConstraint]]":
-    """Fold the requested SID (ADEP) and STAR (ADES) into the enroute fixes,
-    and return the spliced route plus its crossing restrictions (Phase 4).
+) -> "tuple[list[tuple[str, float, float]], list[RouteConstraint], dict[str, str | None]]":
+    """Fold the requested SID (ADEP) and STAR (ADES) into the enroute fixes.
+
+    Returns ``(spliced_route, crossing_restrictions, terminal)`` where
+    ``terminal`` maps ``sid``/``star``/``dep_rwy``/``arr_rwy`` to the resolved
+    selection (runway is the one the resolver picked, even for an "Auto"
+    request) — empty ``{}`` when neither procedure is requested (Phase 4).
 
     The SID's fixes lead the sequence (it flies first, right after ADEP); the
     STAR's fixes trail it (right before ADES). Shared boundary fixes — the SID
@@ -689,7 +712,7 @@ def _splice_terminal_procedures(
     sid_name = (req.sid or "").strip()
     star_name = (req.star or "").strip()
     if not sid_name and not star_name:
-        return route_pts, []
+        return route_pts, [], {}
 
     nav = _navdata()
     # The route's own fixes pick the right terminal-procedure transition when
@@ -715,12 +738,20 @@ def _splice_terminal_procedures(
         else None
     )
     if sid_proc is None and star_proc is None:
-        return route_pts, []
+        return route_pts, [], {}
 
     enroute = [RouteWaypoint(ident=i, lat=la, lon=lo) for i, la, lo in route_pts]
     spliced = splice_procedures(enroute, sid=sid_proc, star=star_proc)
     spliced_pts = [(w.ident, w.lat, w.lon) for w in spliced]
-    return spliced_pts, _route_constraints(spliced_pts, sid_proc, star_proc)
+    # Resolved terminal selection for the export — the runway is the one the
+    # resolver actually picked (so an "Auto" request still records a runway).
+    terminal = {
+        "sid": sid_name or None,
+        "star": star_name or None,
+        "dep_rwy": _proc_runway(sid_proc),
+        "arr_rwy": _proc_runway(star_proc),
+    }
+    return spliced_pts, _route_constraints(spliced_pts, sid_proc, star_proc), terminal
 
 
 def _constraint_json(con: object) -> dict[str, object]:
@@ -918,7 +949,7 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
     # Phase 4: splice the SID (at ADEP) and STAR (at ADES) around the now
     # ADEP-oriented enroute fixes, before the < 2 check — a thin route can
     # become valid once its terminal procedures are folded in.
-    route_pts, route_constraints = _splice_terminal_procedures(
+    route_pts, route_constraints, terminal = _splice_terminal_procedures(
         req, adep, ades, route_pts, warnings
     )
 
@@ -1052,6 +1083,12 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
                 output_every_s=req.output_every_s,
                 # Phase 4: SID/STAR crossing restrictions shape the profile.
                 constraints=route_constraints,
+                # Phase 4: record the terminal procedures + resolved runways
+                # in the exported trajectory (GeoPackage/CSV/GeoJSON).
+                sid=terminal.get("sid"),
+                star=terminal.get("star"),
+                dep_rwy=terminal.get("dep_rwy"),
+                arr_rwy=terminal.get("arr_rwy"),
             )
             # Snapshot the schedule actually flown *before* restore, so the
             # reported speed_schedule reflects this flight's overrides (not
