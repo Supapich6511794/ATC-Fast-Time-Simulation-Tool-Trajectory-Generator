@@ -80,6 +80,17 @@ def test_at_or_above_floors_climb() -> None:
     assert capped >= 20000.0 - 1.0
 
 
+def test_climb_floor_releases_for_descent() -> None:
+    # Regression: a SID climb floor ("at or above" early) must NOT hold the
+    # minimum through cruise + descent. Held flat past its fix it stopped the
+    # aircraft descending below it, so a flight with a "≥15000 at fix" SID
+    # "landed" at FL150 instead of its field elevation.
+    tl = _build([RouteConstraint(30.0, "climb", alt_floor_ft=15000.0)])
+    alts = [s.altitude_ft for s in tl.samples]
+    assert max(alts) >= 15000.0        # climbed through the floor to cruise
+    assert alts[-1] <= 500.0           # yet still descended to field elevation
+
+
 def test_speed_cap_applies() -> None:
     con = [RouteConstraint(150.0, "descent", alt_ceil_ft=9000.0, spd_max_kt=230.0)]
     tl = _build(con)

@@ -348,14 +348,20 @@ def build_flight_timeline(
                     # steep near-fix rate) can stay positive all the way back to
                     # d=0 for a high or near-departure "at or above" fix and pin
                     # the start at thousands of feet. Anchoring the ramp at the
-                    # departure guarantees it reaches 0 there. Past the fix, hold
-                    # the floor (the aircraft is climbing above it anyway).
+                    # departure guarantees it reaches 0 there. Past the fix the
+                    # floor RELEASES at the fix's real climb rate — holding it
+                    # flat would keep the minimum in force through cruise and
+                    # descent and stop the aircraft descending below it (a
+                    # flight that "landed" at FL130 because a SID said ≥13000).
                     if c.distance_nm <= 0.0:
                         v = 0.0  # a floor AT the departure fix can't pin the ground
                     elif d <= c.distance_nm:
                         v = c.alt_floor_ft * (d / c.distance_nm)
                     else:
-                        v = c.alt_floor_ft
+                        v = max(
+                            0.0,
+                            c.alt_floor_ft - _grad_at_fix[c] * (d - c.distance_nm),
+                        )
                 else:  # descent: stay ≥ floor from this fix's TOD anchor to the
                     # fix, then descend on from it. WITHOUT the anchor the floor
                     # would apply backward across the whole climb + cruise and,
