@@ -26,9 +26,11 @@ Run:  python scripts/make_dummyCAT062_flights.py
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import math
+import random
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -295,6 +297,25 @@ def csv_block(callsign, actype, adep, ades, rfl, route_str, eobt, samples,
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser(
+        description="Generate the dummy CAT062 flight file."
+    )
+    ap.add_argument(
+        "--limit", type=int, default=None,
+        help="keep only N flights, sampled evenly across the route list so the "
+             "subset still spans varied city pairs (default: all 682)",
+    )
+    ap.add_argument(
+        "--spread-min", type=float, default=None,
+        help="space departures this many minutes apart so aircraft fly well "
+             "separated — only a few airborne at once (default: real CAT062 timing)",
+    )
+    ap.add_argument(
+        "--out", default="dummyCAT062_flights",
+        help="output basename under dummy_data/ (default: dummyCAT062_flights)",
+    )
+    args = ap.parse_args()
+
     all_routes = json.loads(ROUTES_PATH.read_text(encoding="utf-8"))["routes"]
     # Keep only routes that resolve to a real polyline and whose aerodromes
     # have coordinates (so the cosmetic samples + map line draw correctly).
@@ -307,8 +328,34 @@ def main() -> None:
         coords = resolve_route_coords(r["route"])
         if len(coords) >= 1:
             usable.append((r, coords))
+    if args.limit and args.limit < len(usable):
+        # Pick + order the subset by *round-robin over departure airports* so
+        # (a) the flights leave from many random ADEPs instead of one busy hub,
+        # and (b) consecutive departure slots are always different airports —
+        # with the even-spread timing below, two flights leaving the same ADEP
+        # end up ~(#airports) slots apart, never at nearly the same time.
+        rng = random.Random(20251223)
+        by_adep: dict[str, list] = {}
+        for item in usable:
+            by_adep.setdefault(item[0]["adep"], []).append(item)
+        for lst in by_adep.values():
+            rng.shuffle(lst)          # random route within each airport
+        adeps = list(by_adep)
+        rng.shuffle(adeps)            # random, but fixed, airport cycle order
+        picked = []
+        while len(picked) < args.limit:
+            progressed = False
+            for ap in adeps:          # one departure per airport per pass
+                if by_adep[ap]:
+                    picked.append(by_adep[ap].pop())
+                    progressed = True
+                    if len(picked) >= args.limit:
+                        break
+            if not progressed:
+                break
+        usable = picked
 
-    if not REF_TIMES:
+    if args.spread_min is None and not REF_TIMES:
         raise SystemExit(f"No CAT062 start times loaded from {CAT062_PATH}")
 
     # --- 1) Build each flight's fixed attributes + its CAT062 *base* start
@@ -342,7 +389,7 @@ def main() -> None:
             ),
             "route_str": r["route"], "route_pts": route_pts,
             "dep_elev": e1, "des_elev": e2,
-            "base": REF_TIMES[i % len(REF_TIMES)],
+            "base": REF_TIMES[i % len(REF_TIMES)] if REF_TIMES else None,
             "dur": round(route_seconds(route_pts)),  # whole seconds
         })
 
@@ -353,25 +400,35 @@ def main() -> None:
     # what spreads the stack of same-runway departures into a realistic in-trail
     # stream instead of a solid line. Different SIDs/STARs diverge, so they're
     # treated as independent. Exact-instant collisions are nudged 1 s apart.
-    sep = timedelta(seconds=_SEP_S)
-    dep_last: dict[tuple, datetime] = {}
-    arr_last: dict[tuple, datetime] = {}
-    used_starts: set[datetime] = set()
-    for p in sorted(prelim, key=lambda x: x["base"]):
-        dep_key = (p["adep"], p["sid"] or p["dep_rwy"] or "-")
-        arr_key = (p["ades"], p["star"] or p["arr_rwy"] or "-")
-        dur = timedelta(seconds=p["dur"])
-        t = p["base"]
-        if dep_key in dep_last:
-            t = max(t, dep_last[dep_key] + sep)
-        if arr_key in arr_last:
-            t = max(t, arr_last[arr_key] + sep - dur)
-        while t in used_starts:
-            t += timedelta(seconds=1)
-        used_starts.add(t)
-        p["eobt"] = t
-        dep_last[dep_key] = t
-        arr_last[arr_key] = t + dur
+    if args.spread_min is not None:
+        # Even global spread: every flight departs `spread_min` after the one
+        # before it, regardless of corridor. With a ~50 min sector and a wide
+        # gap only a handful are airborne at any instant, so the aircraft fly
+        # well apart ("บินห่างๆกัน") instead of stacking into busy streams.
+        origin = datetime(2025, 12, 23, 0, 0, tzinfo=timezone.utc)
+        gap = timedelta(minutes=args.spread_min)
+        for i, p in enumerate(prelim):
+            p["eobt"] = origin + gap * i
+    else:
+        sep = timedelta(seconds=_SEP_S)
+        dep_last: dict[tuple, datetime] = {}
+        arr_last: dict[tuple, datetime] = {}
+        used_starts: set[datetime] = set()
+        for p in sorted(prelim, key=lambda x: x["base"]):
+            dep_key = (p["adep"], p["sid"] or p["dep_rwy"] or "-")
+            arr_key = (p["ades"], p["star"] or p["arr_rwy"] or "-")
+            dur = timedelta(seconds=p["dur"])
+            t = p["base"]
+            if dep_key in dep_last:
+                t = max(t, dep_last[dep_key] + sep)
+            if arr_key in arr_last:
+                t = max(t, arr_last[arr_key] + sep - dur)
+            while t in used_starts:
+                t += timedelta(seconds=1)
+            used_starts.add(t)
+            p["eobt"] = t
+            dep_last[dep_key] = t
+            arr_last[arr_key] = t + dur
 
     # --- 3) Build the flight records (samples + CAT062-format flight key) from
     # the separated start times.
@@ -421,7 +478,7 @@ def main() -> None:
                 dep_rwy=fl["dep_rwy"], arr_rwy=fl["arr_rwy"],
             )
         )
-    csv_path = OUT_DIR / "dummyCAT062_flights.csv"
+    csv_path = OUT_DIR / f"{args.out}.csv"
     csv_path.write_text("\n\n\n".join(blocks) + "\n", encoding="utf-8")
 
     # ---- combined GeoJSON ----
@@ -475,7 +532,7 @@ def main() -> None:
                         ],
                     },
                 })
-    geojson_path = OUT_DIR / "dummyCAT062_flights.geojson"
+    geojson_path = OUT_DIR / f"{args.out}.geojson"
     geojson_path.write_text(
         json.dumps({"type": "FeatureCollection", "features": features}),
         encoding="utf-8",
@@ -489,7 +546,7 @@ def main() -> None:
     )
     print(f"Flights: {len(flights)} (1 FPL = 1 route) | with SID/STAR: {proc} "
           f"| with RWY: {rwys}")
-    print(f"CAT062 start times available: {len(REF_TIMES)} | UTC span: {span}")
+    print(f"UTC span: {span}")
     print(f"CSV:     {csv_path}")
     print(f"GeoJSON: {geojson_path}")
 
