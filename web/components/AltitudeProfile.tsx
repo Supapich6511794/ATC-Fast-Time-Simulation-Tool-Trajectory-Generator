@@ -80,8 +80,11 @@ export default function AltitudeProfile({
   // Scales — guarded so they're safe to compute before the early return.
   const tMax = samples.length ? samples[samples.length - 1].t || 1 : 1;
   const altMax = samples.length ? Math.max(...samples.map((s) => s.alt)) : 0;
-  // Round the y-axis up to the nearest 5000 ft so labels are tidy.
-  const yMax = Math.max(5000, Math.ceil(altMax / 5000) * 5000);
+  // Round the y-axis to a tidy STEP so every tick lands on a round altitude
+  // (0/5k/FL100 …) instead of the 6.25k / FL187.5 that quartering an
+  // arbitrary max produced.
+  const yStep = altMax <= 24000 ? 5000 : 10000;
+  const yMax = Math.max(yStep, Math.ceil(altMax / yStep) * yStep);
 
   const w = 100;
   const h = height;
@@ -110,6 +113,54 @@ export default function AltitudeProfile({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [samples, tMax, yMax, h]);
 
+  // SID/STAR crossing constraints surface as climb/descent LEVEL-OFFS in the
+  // curve — runs where the aircraft holds altitude until the fix releases it.
+  // Detect each sustained hold so its altitude can be labelled: the steps then
+  // read as the coded restrictions they are, not just wiggles.
+  const holds = useMemo(() => {
+    const cruise = trajectory.stats.cruiseAltFt ?? Infinity;
+    // Coded SID/STAR crossing altitudes (per phase) so a level-off is labelled
+    // with the real restriction (e.g. 9000) rather than the altitude the sim
+    // happened to level at (~8875).
+    const cons = trajectory.profile.constraints ?? [];
+    const snap = (alt: number, phase: string): number => {
+      const cands = cons.filter((c) => c.phase === phase);
+      if (cands.length === 0) return alt;
+      const near = cands.reduce((b, c) =>
+        Math.abs(c.altFt - alt) < Math.abs(b.altFt - alt) ? c : b,
+      );
+      return Math.abs(near.altFt - alt) <= 2500 ? near.altFt : alt;
+    };
+    const out: { t: number; tEnd: number; alt: number; label: number }[] = [];
+    let i = 0;
+    while (i < samples.length - 1) {
+      const s = samples[i];
+      if (s.phase === "cruise" || s.alt < 800 || s.alt > cruise - 500) {
+        i += 1;
+        continue;
+      }
+      let j = i;
+      while (
+        j + 1 < samples.length &&
+        samples[j + 1].phase !== "cruise" &&
+        Math.abs(samples[j + 1].alt - s.alt) < 250
+      ) {
+        j += 1;
+      }
+      if (j > i && samples[j].t - s.t >= Math.max(40, tMax * 0.03)) {
+        const alt = (s.alt + samples[j].alt) / 2;
+        out.push({
+          t: s.t,
+          tEnd: samples[j].t,
+          alt,
+          label: snap(alt, s.phase),
+        });
+      }
+      i = j + 1;
+    }
+    return out;
+  }, [samples, tMax, trajectory.stats.cruiseAltFt, trajectory.profile.constraints]);
+
   if (samples.length < 2) {
     return (
       <p className="alt-empty">
@@ -129,8 +180,9 @@ export default function AltitudeProfile({
   const rflFt = trajectory.stats.rflFt;
   const fmtFL = (ft: number) => `FL${Math.round(ft / 100)}`;
 
-  // Y-axis gridlines at 0, 25 %, 50 %, 75 %, 100 %.
-  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * yMax);
+  // Y-axis gridlines at round altitudes (every yStep) so labels stay tidy.
+  const yTicks: number[] = [];
+  for (let a = 0; a <= yMax + 1; a += yStep) yTicks.push(a);
 
   // Plane position from the shared sim clock — clamped to this route's own
   // duration and parked at the start when it isn't being animated. Because
@@ -180,7 +232,11 @@ export default function AltitudeProfile({
                 className="alt-grid"
               />
               <text x={4} y={y(tick) + 3} className="alt-axis">
-                {tick >= 10000 ? `FL${tick / 100}` : `${tick / 1000}k`}
+                {tick === 0
+                  ? "0 ft"
+                  : tick >= 10000
+                    ? `FL${tick / 100}`
+                    : `${tick / 1000}k ft`}
               </text>
             </g>
           ))}
@@ -188,6 +244,41 @@ export default function AltitudeProfile({
           {/* Climb/cruise/descent area fill */}
           <path d={areaPath} className="alt-area" />
           <path d={linePath} className="alt-line" />
+
+          {/* SID/STAR crossing constraints — the climb/descent level-offs,
+              highlighted so the "held at FLxx" steps read as coded
+              restrictions. Direct-labelled with the altitude (identity is
+              never colour-alone). */}
+          {holds.map((hd, k) => {
+            const yy = y(hd.alt);
+            const right = x(hd.t) > vbW * 0.58;
+            // Label with the coded constraint (hd.label, e.g. 9000), positioned
+            // on the actual level-off (hd.alt, ~8875).
+            const lbl =
+              hd.label >= 10000
+                ? `FL${Math.round(hd.label / 100)}`
+                : `${Math.round(hd.label).toLocaleString()} ft`;
+            return (
+              <g key={`con-${k}`}>
+                <line
+                  x1={x(hd.t)}
+                  x2={x(hd.tEnd)}
+                  y1={yy}
+                  y2={yy}
+                  className="alt-con-line"
+                />
+                <circle cx={x(hd.t)} cy={yy} r={2.3} className="alt-con" />
+                <text
+                  x={right ? x(hd.t) - 4 : x(hd.tEnd) + 4}
+                  y={yy - 3}
+                  textAnchor={right ? "end" : "start"}
+                  className="alt-con-lbl"
+                >
+                  {lbl}
+                </text>
+              </g>
+            );
+          })}
 
           {/* TOC + TOD markers */}
           {tocT != null && (

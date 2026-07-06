@@ -72,12 +72,21 @@ export interface PhaseBreakdown {
   descent: PhaseBreakdownRow;
 }
 
+/** A SID/STAR crossing restriction's coded altitude (e.g. 9000 ft) and the
+ *  phase it applies in, used to label the altitude-profile level-offs with the
+ *  real restriction rather than the altitude the sim happened to level at. */
+export interface CrossingConstraint {
+  phase: string; // "climb" | "descent"
+  altFt: number;
+}
+
 /** Vertical-profile waypoints surfaced for map markers + chart. */
 export interface VerticalProfileMeta {
   toc: ProfilePoint | null;
   tod: ProfilePoint | null;
   speedSchedule?: SpeedSchedule;
   phaseBreakdown?: PhaseBreakdown;
+  constraints?: CrossingConstraint[];
 }
 
 /** CAT62 flight-time validation result, null when the city pair has no

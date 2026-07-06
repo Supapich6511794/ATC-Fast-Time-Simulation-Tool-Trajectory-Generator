@@ -118,6 +118,7 @@ interface ApiPayload {
       cruise: { avg_tas_kt: number | null; avg_gs_kt: number | null; time_min: number | null };
       descent: { avg_tas_kt: number | null; avg_gs_kt: number | null; time_min: number | null };
     };
+    constraints?: { phase: string; alt_ft: number }[];
   };
   validation: {
     route: string;
@@ -238,6 +239,10 @@ function mapPayload(p: ApiPayload): GenerateResponse {
             },
           }
         : undefined,
+      constraints: (p.profile.constraints ?? []).map((c) => ({
+        phase: c.phase,
+        altFt: c.alt_ft,
+      })),
     },
     validation: p.validation
       ? {

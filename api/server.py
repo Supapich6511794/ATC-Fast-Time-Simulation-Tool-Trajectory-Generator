@@ -1288,6 +1288,16 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
             "tod": tod,
             "speed_schedule": speed_schedule,
             "phase_breakdown": phase_breakdown,
+            # The SID/STAR crossing altitudes (the coded values, e.g. 9000),
+            # so the altitude-profile chart can label each level-off with the
+            # real restriction instead of the altitude the sim happened to
+            # level at (~8875).
+            "constraints": [
+                {"phase": c.phase, "alt_ft": a}
+                for c in route_constraints
+                for a in (c.alt_ceil_ft, c.alt_floor_ft)
+                if a is not None
+            ],
         },
         "validation": validation,
         "route": [
