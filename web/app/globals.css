@@ -2913,6 +2913,27 @@ body {
   display: none; /* hide the little pointer arrow */
 }
 
+/* Permanent gate-identifier pills, shown for every gate once zoomed in to an
+   airport (compact cyan pills, mirroring the reference viewer). Rendered as a
+   divIcon so the gate dot keeps its own hover tooltip. */
+.gate-badge {
+  background: transparent !important;
+  border: none !important;
+}
+
+.gate-badge-pill {
+  display: inline-block;
+  padding: 0 3px;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  color: #062a34;
+  background: rgba(6, 182, 212, 0.92);
+  border-radius: 3px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  white-space: nowrap;
+}
+
 /* Live route preview — faint, accent-coloured ident labels shown while
    the user is still typing/picking, not on the generated trajectory. */
 .leaflet-tooltip.preview-label {

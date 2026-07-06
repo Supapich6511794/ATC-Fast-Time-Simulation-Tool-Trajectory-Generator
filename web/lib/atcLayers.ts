@@ -114,6 +114,12 @@ export interface RunwayPoint {
   ident: string;
   lat: number;
   lon: number;
+  /** Runway true bearing (degrees) — direction from this threshold. */
+  bearing: number;
+  /** Runway length (feet), for drawing the strip. */
+  lengthFt: number;
+  /** Runway width (feet). */
+  widthFt: number;
 }
 
 export async function fetchRunways(): Promise<RunwayPoint[]> {
@@ -124,6 +130,9 @@ export async function fetchRunways(): Promise<RunwayPoint[]> {
       ident: (r.runway_identifier || "").trim(),
       lat: Number(r.runway_latitude),
       lon: Number(r.runway_longitude),
+      bearing: Number(r.runway_true_bearing),
+      lengthFt: Number(r.runway_length),
+      widthFt: Number(r.runway_width),
     }))
     .filter(
       (r) => r.airport && Number.isFinite(r.lat) && Number.isFinite(r.lon),

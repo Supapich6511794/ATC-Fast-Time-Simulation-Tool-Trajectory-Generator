@@ -28,11 +28,13 @@ import {
   GeoJSON,
   MapContainer,
   Marker,
+  Polygon,
   Polyline,
   Popup,
   TileLayer,
   Tooltip,
   useMap,
+  useMapEvents,
 } from "react-leaflet";
 
 import { BASEMAPS, type Basemap } from "@/lib/mapPrefs";
@@ -179,6 +181,21 @@ function MapRefBridge({
   }, [map, onReady]);
   return null;
 }
+
+/** Reports the live map zoom so zoom-dependent layers (e.g. gate labels, shown
+ *  only when zoomed in to an airport) can react to it. */
+function ZoomWatcher({ onZoom }: { onZoom: (z: number) => void }) {
+  const map = useMapEvents({ zoomend: () => onZoom(map.getZoom()) });
+  useEffect(() => {
+    onZoom(map.getZoom());
+  }, [map, onZoom]);
+  return null;
+}
+
+/** Gate dots always draw; their PERMANENT identifier labels only appear at or
+ *  above this zoom (airport-diagram level) — below it the labels would blanket
+ *  the country, so gates just show as dots with a hover tooltip. */
+const GATE_ZOOM = 13;
 
 /** Per-route colours (cycled if there are more routes than entries). */
 const ROUTE_COLORS = [
@@ -519,6 +536,54 @@ function routeIndexBadge(text: string, color: string): L.DivIcon {
     iconAnchor: [-6, 28],
     html: `<span class="route-index-pill" style="background:${color};color:#06283d">${text}</span>`,
   });
+}
+
+/** Permanent gate-identifier pill, drawn just off the gate dot once zoomed in.
+ *  Separate from the dot's hover tooltip (Leaflet allows one tooltip per
+ *  marker), so hovering the dot still shows the full "ICAO - Gate <id>". */
+function gateBadge(text: string): L.DivIcon {
+  return L.divIcon({
+    className: "gate-badge",
+    iconSize: [0, 0],
+    iconAnchor: [-4, 7],
+    html: `<span class="gate-badge-pill">${text}</span>`,
+  });
+}
+
+/** Destination point `distNm` NM from (lat, lon) along a true bearing (deg) —
+ *  used to build a runway strip rectangle out of a threshold + length + width. */
+function destPoint(
+  lat: number,
+  lon: number,
+  bearingDeg: number,
+  distNm: number,
+): [number, number] {
+  const R = 3440.065; // Earth radius, NM
+  const d = distNm / R;
+  const b = (bearingDeg * Math.PI) / 180;
+  const la1 = (lat * Math.PI) / 180;
+  const lo1 = (lon * Math.PI) / 180;
+  const la2 = Math.asin(
+    Math.sin(la1) * Math.cos(d) + Math.cos(la1) * Math.sin(d) * Math.cos(b),
+  );
+  const lo2 =
+    lo1 +
+    Math.atan2(
+      Math.sin(b) * Math.sin(d) * Math.cos(la1),
+      Math.cos(d) - Math.sin(la1) * Math.sin(la2),
+    );
+  return [(la2 * 180) / Math.PI, (lo2 * 180) / Math.PI];
+}
+
+/** Reciprocal runway ident (RW03L → RW21R): +18 on the number (wrapping 1-36)
+ *  and swapping L↔R, so a runway's two thresholds collapse into one strip. */
+function reciprocalRwy(ident: string): string {
+  const m = ident.match(/^RW(\d{1,2})([LRC]?)$/i);
+  if (!m) return "";
+  const num = ((parseInt(m[1], 10) + 18 - 1) % 36) + 1;
+  const side = m[2].toUpperCase();
+  const rec = side === "L" ? "R" : side === "R" ? "L" : side;
+  return `RW${String(num).padStart(2, "0")}${rec}`;
 }
 
 /** Altitude → polyline colour: brighter (yellow) at low altitudes,
@@ -914,35 +979,52 @@ export default function LeafletMap({
     [ilsWpts, ils],
   );
 
-  // Gates — small orange dots with the gate name on hover.
+  // Live map zoom (updated by ZoomWatcher) — gates only label when zoomed in.
+  const [zoom, setZoom] = useState<number>(DEFAULT_ZOOM);
+
+  // Gates — small orange dots, ALWAYS drawn (with a hover tooltip naming the
+  // airport + gate) so the stands read as dots even when zoomed out. Once
+  // zoomed in to an airport (>= GATE_ZOOM) every gate additionally gets a
+  // PERMANENT label with its identifier, so the whole stand layout is readable
+  // at a glance for any airport that has gate data (all in gateway.geojson).
   const gateLayer = useMemo(() => {
     if (!gates) return null;
+    const labelled = zoom >= GATE_ZOOM;
     return gates.features
       .map((f, i) => {
         const p = f.properties;
         const lat = p.gate_latitude;
         const lon = p.gate_longitude;
         if (lat == null || lon == null) return null;
+        const gid = p.gate_identifier ?? "";
         return (
-          <CircleMarker
-            key={`gate-${p.airport_identifier}-${p.gate_identifier}-${i}`}
-            center={[lat, lon]}
-            radius={2}
-            pathOptions={{
-              color: GATE_COLOR,
-              weight: 1,
-              fillColor: GATE_COLOR,
-              fillOpacity: 0.8,
-            }}
-          >
-            <Tooltip direction="top" offset={[0, -3]}>
-              {p.airport_identifier} · {p.gate_identifier}
-            </Tooltip>
-          </CircleMarker>
+          <Fragment key={`gate-${p.airport_identifier}-${gid}-${i}`}>
+            <CircleMarker
+              center={[lat, lon]}
+              radius={2}
+              pathOptions={{
+                color: GATE_COLOR,
+                weight: 1,
+                fillColor: GATE_COLOR,
+                fillOpacity: 0.8,
+              }}
+            >
+              <Tooltip direction="top" offset={[0, -3]} sticky>
+                {p.airport_identifier} - Gate {gid}
+              </Tooltip>
+            </CircleMarker>
+            {labelled && (
+              <Marker
+                position={[lat, lon]}
+                icon={gateBadge(gid)}
+                interactive={false}
+              />
+            )}
+          </Fragment>
         );
       })
       .filter(Boolean);
-  }, [gates]);
+  }, [gates, zoom]);
 
   // Highlighted procedure (from the lookup form / map click): a bright
   // yellow glow path through its fixes, with permanent ident labels.
@@ -1004,26 +1086,51 @@ export default function LeafletMap({
     );
   }, [highlightProc]);
 
-  // Runway threshold points (white squares).
+  // Runways — drawn as real strips: a width-scaled rectangle spanning each
+  // runway's two thresholds (paired by reciprocal ident), not just threshold
+  // dots. The rectangle uses the published runway width so it reads like the
+  // grey strips on the basemap and scales with zoom.
   const runwayLayer = useMemo(() => {
     if (!runways) return null;
-    return runways.map((r, i) => (
-      <CircleMarker
-        key={`rwy-${r.airport}-${r.ident}-${i}`}
-        center={[r.lat, r.lon]}
-        radius={3}
-        pathOptions={{
-          color: "#0f172a",
-          weight: 1,
-          fillColor: RUNWAY_COLOR,
-          fillOpacity: 0.95,
-        }}
-      >
-        <Tooltip direction="top" offset={[0, -3]}>
-          {r.airport} · RWY {r.ident}
-        </Tooltip>
-      </CircleMarker>
-    ));
+    const NM_PER_FT = 1 / 6076.12;
+    const byKey = new Map(runways.map((r) => [`${r.airport}|${r.ident}`, r]));
+    const drawn = new Set<string>();
+    const out: ReactNode[] = [];
+    for (const r of runways) {
+      const rec = reciprocalRwy(r.ident);
+      const pairKey = `${r.airport}|${[r.ident, rec].sort().join("-")}`;
+      if (drawn.has(pairKey)) continue;
+      drawn.add(pairKey);
+      const brg = Number.isFinite(r.bearing) ? r.bearing : 0;
+      const a: [number, number] = [r.lat, r.lon];
+      // The far end is the reciprocal threshold when we have it, else a point
+      // one runway length ahead along the bearing.
+      const other = byKey.get(`${r.airport}|${rec}`);
+      const b: [number, number] = other
+        ? [other.lat, other.lon]
+        : destPoint(r.lat, r.lon, brg, (r.lengthFt || 8000) * NM_PER_FT);
+      const halfW = ((r.widthFt || 150) / 2) * NM_PER_FT;
+      const corners: [number, number][] = [
+        destPoint(a[0], a[1], brg + 90, halfW),
+        destPoint(a[0], a[1], brg - 90, halfW),
+        destPoint(b[0], b[1], brg - 90, halfW),
+        destPoint(b[0], b[1], brg + 90, halfW),
+      ];
+      out.push(
+        <Polygon
+          key={`rwy-${pairKey}`}
+          positions={corners}
+          interactive={false}
+          pathOptions={{
+            color: RUNWAY_COLOR,
+            weight: 0.5,
+            fillColor: RUNWAY_COLOR,
+            fillOpacity: 0.6,
+          }}
+        />,
+      );
+    }
+    return out;
   }, [runways]);
 
   // Airport markers — shown per-airport from the Layer Options list
@@ -1340,6 +1447,7 @@ export default function LeafletMap({
     >
       <TileLayer key={basemap} attribution={tiles.attribution} url={tiles.url} />
       {onMapReady && <MapRefBridge onReady={onMapReady} />}
+      <ZoomWatcher onZoom={setZoom} />
 
       {firLayer}
       {sectorLayers}
