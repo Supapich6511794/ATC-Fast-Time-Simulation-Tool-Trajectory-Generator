@@ -10,8 +10,8 @@
 
 import { memo, useState } from "react";
 
-import AirwayMenu from "@/components/AirwayMenu";
-import type { AirwayExtra } from "@/components/LayerOptions";
+import AirspaceMenu from "@/components/AirspaceMenu";
+import type { SectorKey } from "@/lib/geojson";
 import type { Basemap, Theme } from "@/lib/mapPrefs";
 
 interface Props {
@@ -21,15 +21,15 @@ interface Props {
   onBasemap: (b: Basemap) => void;
   airwayOn: boolean;
   onAirway: (on: boolean) => void;
-  /** Airway reference-layer flags (labels / VOR / reporting / opacity) for
-   *  the standalone Airway dropdown. */
-  airway: AirwayExtra;
-  onAirwayChange: (s: AirwayExtra) => void;
   waypointsOn: boolean;
   onWaypoints: (on: boolean) => void;
   firOn: boolean;
   onFir: (on: boolean) => void;
   firLoading: boolean;
+  /** Airspace sector visibility (BACC / subsector / CTR / TMA / PDR) for the
+   *  standalone Airspace dropdown. */
+  sectorsOn: Record<SectorKey, boolean>;
+  onToggleSector: (key: SectorKey) => void;
   /** Open the tabbed Layer Options panel (Airports / SID / STAR / …). */
   onOpenLayers: () => void;
   onToggleSidebar: () => void;
@@ -48,21 +48,21 @@ function MapOverlay({
   onBasemap,
   airwayOn,
   onAirway,
-  airway,
-  onAirwayChange,
   waypointsOn,
   onWaypoints,
   firOn,
   onFir,
   firLoading,
+  sectorsOn,
+  onToggleSector,
   onOpenLayers,
   onToggleSidebar,
   onZoomIn,
   onZoomOut,
 }: Props) {
-  // Only one toolbar dropdown is open at a time — opening Layers closes Airway
-  // and vice-versa, so the two panels can never overlap.
-  const [openMenu, setOpenMenu] = useState<"layers" | "airway" | null>(null);
+  // Only one toolbar dropdown is open at a time — opening one closes the other,
+  // so the Layers and Airspace popovers can never overlap.
+  const [openMenu, setOpenMenu] = useState<"layers" | "airspace" | null>(null);
   const airspaceOpen = openMenu === "layers";
 
   return (
@@ -130,13 +130,12 @@ function MapOverlay({
             )}
           </div>
 
-          {/* Standalone Airway dropdown (Airways / Labels / VOR / Reporting /
-              Opacity), always available like the reference viewer. */}
-          <AirwayMenu
-            open={openMenu === "airway"}
-            onOpenChange={(o) => setOpenMenu(o ? "airway" : null)}
-            airway={airway}
-            onAirwayChange={onAirwayChange}
+          {/* Standalone Airspace dropdown (sector polygons), beside Layers. */}
+          <AirspaceMenu
+            open={openMenu === "airspace"}
+            onOpenChange={(o) => setOpenMenu(o ? "airspace" : null)}
+            sectorsOn={sectorsOn}
+            onToggleSector={onToggleSector}
           />
 
           <select

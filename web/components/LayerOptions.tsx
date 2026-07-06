@@ -2,8 +2,9 @@
 
 /**
  * LayerOptions — the map's "Layer Options" panel (tabbed), modelled on the
- * reference ATC viewer. Tabs: Airports, SID, STAR (fully wired), plus
- * Gates / PBN / ILS placeholders (their source data isn't loaded).
+ * reference ATC viewer. Tabs: Airports, SID, STAR, PBN, ILS (all fully wired
+ * to their GeoJSON layers), plus Gates / Airway. (Airspace sectors moved to
+ * their own toolbar dropdown beside the Layers button — see AirspaceMenu.)
  *
  * Pure presentational + local UI state (open dropdowns); all layer state is
  * lifted to MapApp so LeafletMap can render from it.
@@ -12,7 +13,6 @@
 import { memo, useMemo, useState } from "react";
 
 import type { PanelAirport } from "@/lib/atcLayers";
-import { SECTORS, type SectorKey } from "@/lib/geojson";
 import type { ProcedureDto } from "@/lib/api";
 
 /** Visibility + style state for one procedure layer (SID or STAR). */
@@ -43,8 +43,7 @@ type TabKey =
   | "star"
   | "pbn"
   | "ils"
-  | "airway"
-  | "sectors";
+  | "airway";
 
 /** Airway-tab layer flags (lines opacity is shared with the points). */
 export interface AirwayExtra {
@@ -55,9 +54,9 @@ export interface AirwayExtra {
   opacity: number;
 }
 
-// Full layer set (matches the flight-animation viewer): Airports, Gates, SID,
-// STAR, PBN, ILS terminal procedures, Airway reference layers, plus the
-// airspace Sectors tab.
+// Full layer set: Airports, Gates, SID, STAR, PBN, ILS terminal procedures,
+// plus the Airway reference layers. (Airspace sectors live in their own
+// toolbar dropdown beside the Layers button.)
 const TABS: { key: TabKey; icon: string; label: string }[] = [
   { key: "airports", icon: "✈", label: "Airports" },
   { key: "gates", icon: "🚪", label: "Gates" },
@@ -66,7 +65,6 @@ const TABS: { key: TabKey; icon: string; label: string }[] = [
   { key: "pbn", icon: "📍", label: "PBN" },
   { key: "ils", icon: "📡", label: "ILS" },
   { key: "airway", icon: "🛩", label: "Airway" },
-  { key: "sectors", icon: "▱", label: "Sectors" },
 ];
 
 /** One procedure-style layer's wiring (shared by SID/STAR/PBN/ILS). */
@@ -104,9 +102,6 @@ interface Props {
   onAirwaysOn: (on: boolean) => void;
   airway: AirwayExtra;
   onAirwayChange: (s: AirwayExtra) => void;
-  // Airspace sectors (BACC / subsector / CTR / TMA / PDR)
-  sectorsOn: Record<SectorKey, boolean>;
-  onToggleSector: (key: SectorKey) => void;
   /** Highlight a looked-up procedure on the map (null clears it). */
   onProcHighlight: (data: ProcedureDto | null) => void;
   // Procedure layers
@@ -132,8 +127,6 @@ function LayerOptions({
   onAirwaysOn,
   airway,
   onAirwayChange,
-  sectorsOn,
-  onToggleSector,
   onProcHighlight,
   sid,
   star,
@@ -258,34 +251,6 @@ function LayerOptions({
             </p>
           </>
         )}
-        {tab === "sectors" && (
-          <>
-            {SECTORS.map((s) => (
-              <label key={s.key} className="lo-check">
-                <span>
-                  <span
-                    aria-hidden
-                    style={{
-                      display: "inline-block",
-                      width: 10,
-                      height: 10,
-                      marginRight: 8,
-                      borderRadius: 2,
-                      background: s.color,
-                      verticalAlign: "middle",
-                    }}
-                  />
-                  {s.label}
-                </span>
-                <input
-                  type="checkbox"
-                  checked={sectorsOn[s.key]}
-                  onChange={() => onToggleSector(s.key)}
-                />
-              </label>
-            ))}
-          </>
-        )}
         {(tab === "sid" || tab === "star" || tab === "pbn" || tab === "ils") && (
           <ProcTab
             kind={tab.toUpperCase() as "SID" | "STAR" | "PBN" | "ILS"}
@@ -406,8 +371,11 @@ function ProcTab({
   const set = (patch: Partial<ProcLayerState>) =>
     onChange({ ...state, ...patch });
 
+  // Wrapper keeps every procedure tab (SID/STAR/PBN/ILS) the same card height,
+  // so PBN/ILS — which have no "look up a procedure" form — don't render as a
+  // visibly shorter card than SID/STAR.
   return (
-    <>
+    <div className="lo-proc">
       <label className="lo-check">
         <span>{kind} Routes</span>
         <input
@@ -457,13 +425,18 @@ function ProcTab({
         onChange={(v) => set({ thickness: v })}
       />
 
-      <ProcLookup
-        kind={kind}
-        index={index}
-        lookup={lookup}
-        onHighlight={onHighlight}
-      />
-    </>
+      {/* The direct "look up a procedure" form is only useful for the terminal
+          procedures the user routes through (SID/STAR). PBN/ILS show just the
+          layer + style controls. */}
+      {(kind === "SID" || kind === "STAR") && (
+        <ProcLookup
+          kind={kind}
+          index={index}
+          lookup={lookup}
+          onHighlight={onHighlight}
+        />
+      )}
+    </div>
   );
 }
 
@@ -641,13 +614,34 @@ function MultiSelect({
   onChange: (s: Set<string>) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const text =
-    selected.size === 0 ? "ALL" : `${selected.size} SELECTED`;
+  const [query, setQuery] = useState("");
+  const text = selected.size === 0 ? "ALL" : `${selected.size} SELECTED`;
+
+  // Type-ahead filter over the option list (case-insensitive substring).
+  const filtered = useMemo(() => {
+    const needle = query.trim().toUpperCase();
+    return needle
+      ? options.filter((o) => o.toUpperCase().includes(needle))
+      : options;
+  }, [options, query]);
+
+  const toggle = () => {
+    if (open) setQuery(""); // reset the search when collapsing
+    setOpen((v) => !v);
+  };
+
+  const flip = (o: string) => {
+    const next = new Set(selected);
+    if (next.has(o)) next.delete(o);
+    else next.add(o);
+    onChange(next);
+  };
+
   return (
     <div className="lo-field">
       <span className="lo-label">{label}</span>
       <div className="lo-select">
-        <button className="lo-select-btn" onClick={() => setOpen((v) => !v)}>
+        <button className="lo-select-btn" onClick={toggle}>
           <span>{text}</span>
           <span className="lo-caret" aria-hidden>
             ▾
@@ -655,31 +649,36 @@ function MultiSelect({
         </button>
         {open && (
           <div className="lo-select-menu">
+            <input
+              className="lo-opt-search"
+              placeholder={`Search ${label.toLowerCase()}…`}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              autoFocus
+            />
             <button
               type="button"
               className="lo-select-all"
               onClick={() => onChange(new Set())}
             >
-              All
+              All ({options.length})
             </button>
-            {options.length === 0 && (
-              <p className="lo-empty">No options.</p>
-            )}
-            {options.map((o) => (
-              <label key={o} className="lo-opt">
-                <input
-                  type="checkbox"
-                  checked={selected.has(o)}
-                  onChange={() => {
-                    const next = new Set(selected);
-                    if (next.has(o)) next.delete(o);
-                    else next.add(o);
-                    onChange(next);
-                  }}
-                />
-                <span>{o}</span>
-              </label>
-            ))}
+            <div className="lo-opt-list">
+              {options.length === 0 && <p className="lo-empty">No options.</p>}
+              {options.length > 0 && filtered.length === 0 && (
+                <p className="lo-empty">No matches for “{query}”.</p>
+              )}
+              {filtered.map((o) => (
+                <label key={o} className="lo-opt">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(o)}
+                    onChange={() => flip(o)}
+                  />
+                  <span>{o}</span>
+                </label>
+              ))}
+            </div>
           </div>
         )}
       </div>

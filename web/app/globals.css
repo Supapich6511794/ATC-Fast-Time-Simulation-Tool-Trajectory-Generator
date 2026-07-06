@@ -3689,6 +3689,12 @@ body {
   font-size: 13px;
   font-weight: 600;
 }
+/* Keep all four procedure tabs (SID/STAR/PBN/ILS) the same card height. SID/STAR
+   fill it with the "look up a procedure" form; PBN/ILS reserve the same space so
+   the card doesn't shrink between tabs. */
+.lo-proc {
+  min-height: 480px;
+}
 .lo-search {
   width: 100%;
   margin: 8px 0;
@@ -3784,12 +3790,32 @@ body {
   left: 0;
   right: 0;
   z-index: 5;
-  max-height: 200px;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  max-height: 260px;
+  overflow: hidden;
   background: #0f172a;
   border: 1px solid #33415588;
   border-radius: 8px;
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+/* Type-ahead box, pinned above the scrolling option list. */
+.lo-opt-search {
+  margin: 6px;
+  padding: 6px 8px;
+  border: 1px solid #33415588;
+  border-radius: 6px;
+  background: #0b1220;
+  color: var(--text);
+  font-size: 12px;
+}
+.lo-opt-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+/* Only the options scroll; the search + "All" stay put. */
+.lo-opt-list {
+  overflow-y: auto;
 }
 .lo-select-all {
   width: 100%;

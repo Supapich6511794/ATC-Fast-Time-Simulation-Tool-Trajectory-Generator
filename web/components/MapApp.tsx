@@ -1340,13 +1340,13 @@ export default function MapApp() {
               onBasemap={setBasemap}
               airwayOn={showAirways}
               onAirway={setShowAirways}
-              airway={airwayExtra}
-              onAirwayChange={setAirwayExtra}
               waypointsOn={showWaypoints}
               onWaypoints={setShowWaypoints}
               firOn={firOn}
               onFir={setFirOn}
               firLoading={firLoading}
+              sectorsOn={sectorsOn}
+              onToggleSector={toggleSector}
               onOpenLayers={() => setLayersOpen(true)}
               onToggleSidebar={toggleSidebar}
               onZoomIn={handleZoomIn}
@@ -1368,8 +1368,6 @@ export default function MapApp() {
               onAirwaysOn={setShowAirways}
               airway={airwayExtra}
               onAirwayChange={setAirwayExtra}
-              sectorsOn={sectorsOn}
-              onToggleSector={toggleSector}
               onProcHighlight={setHighlightProc}
               sid={{
                 state: sid,
