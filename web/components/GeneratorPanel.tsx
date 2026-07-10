@@ -26,6 +26,7 @@ import {
   type Fix,
 } from "@/lib/aip";
 import {
+  staticApproaches,
   staticProcedureRunways,
   staticProcedureWaypoints,
   staticRunways,
@@ -114,6 +115,9 @@ interface PlanDraft {
    *  "" = let the engine auto-pick the procedure's first runway. */
   depRwy: string;
   arrRwy: string;
+  /** PBN instrument approach (IAP) at ADES for the arrival runway, e.g.
+   *  "R09-Z". "" = none (STAR descends straight to the field). */
+  approach: string;
 }
 
 let _planSeq = 0;
@@ -137,6 +141,7 @@ function blankPlan(): PlanDraft {
     star: "",
     depRwy: "",
     arrRwy: "",
+    approach: "",
   };
 }
 
@@ -287,6 +292,9 @@ function GeneratorPanel({
   // Selected runways: departure at ADEP / arrival at ADES ("" = auto-pick).
   const [depRwy, setDepRwy] = useState("");
   const [arrRwy, setArrRwy] = useState("");
+  // PBN instrument approach at ADES for the arrival runway ("" = none). Its
+  // option list is derived from the arrival runway below.
+  const [approach, setApproach] = useState("");
 
   // --- Multi-plan tabs -----------------------------------------------------
   // The active tab's values live in the scalar state above. `plans` holds a
@@ -348,6 +356,7 @@ function GeneratorPanel({
     star,
     depRwy,
     arrRwy,
+    approach,
   });
 
   /** Pick the route tab for a loaded plan: AIP when its route is a published
@@ -388,6 +397,7 @@ function GeneratorPanel({
     setStar(d.star);
     setDepRwy(d.depRwy ?? "");
     setArrRwy(d.arrRwy ?? "");
+    setApproach(d.approach ?? "");
     // Auto-select AIP vs Manual based on whether the route is a filed route.
     setRouteTab(routeTabForDraft(d));
   };
@@ -758,6 +768,26 @@ function GeneratorPanel({
     };
   }, [des]);
 
+  // PBN instrument approaches at the ADES, grouped by the arrival runway they
+  // serve ({ RW09: ["R09-Y","R09-Z"], … }). Picking an Arrival RWY reveals its
+  // approaches; empty when the aerodrome has no coded PBN approaches.
+  const [approachByRwy, setApproachByRwy] = useState<Record<string, string[]>>(
+    {},
+  );
+  useEffect(() => {
+    if (!des) {
+      setApproachByRwy({});
+      return;
+    }
+    let cancelled = false;
+    staticApproaches(des)
+      .then((r) => !cancelled && setApproachByRwy(r))
+      .catch(() => !cancelled && setApproachByRwy({}));
+    return () => {
+      cancelled = true;
+    };
+  }, [des]);
+
   // procedure name → runways it serves, so a selected runway can narrow the
   // SID (ADEP) / STAR (ADES) dropdowns to that runway's procedures only.
   const [sidProcRwy, setSidProcRwy] = useState<Record<string, string[]>>({});
@@ -1023,33 +1053,19 @@ function GeneratorPanel({
     return m.length > 0 ? m : byRwy;
   }, [starOptions, routeEndFixes, arrRwy, starProcRwy]);
 
-  // Terminal fixes of the route the user has actually SELECTED/typed (no
-  // fallback to the top suggestion) — used to drop a now-stale SID/STAR.
-  const selectedEndFixes = useMemo(() => {
-    const src = effectiveRoute.trim();
-    if (!src) return { first: null as string | null, last: null as string | null };
-    const known = new Set(allFixes.map((f) => f.ident));
-    const toks = src
-      .toUpperCase()
-      .split(/\s+/)
-      .filter((t) => t && t !== "DCT" && known.has(t));
-    return { first: toks[0] ?? null, last: toks[toks.length - 1] ?? null };
-  }, [effectiveRoute, allFixes]);
+  // PBN approaches for the SELECTED arrival runway — the user picks the
+  // runway first, then its approaches appear (RW09 → R09-Y, R09-Z).
+  const approachShown = useMemo(
+    () => (arrRwy ? approachByRwy[arrRwy] ?? [] : []),
+    [approachByRwy, arrRwy],
+  );
 
-  // When the SELECTED route changes, reset a SID/STAR that no longer connects
-  // to its terminal fix back to None (direct) — switching from "UGUVO Y27 …"
-  // to "SEMBO A464 …" must clear the stale UGUV1B SID so the user re-picks a
-  // SEMB* one. Scoped to an explicit route pick, so an imported plan's SID
-  // isn't cleared on load (its route may not be re-typed in the box).
-  useEffect(() => {
-    const f = selectedEndFixes.first;
-    if (sid && f && !f.startsWith(sid.match(/^[A-Z]+/)?.[0] ?? sid)) setSid("");
-  }, [selectedEndFixes.first, sid]);
-  useEffect(() => {
-    const f = selectedEndFixes.last;
-    if (star && f && !f.startsWith(star.match(/^[A-Z]+/)?.[0] ?? star))
-      setStar("");
-  }, [selectedEndFixes.last, star]);
+  // SID/STAR are NEVER auto-selected — they default to "None (direct)" and the
+  // user picks them explicitly. They stay related to the runway: the picker
+  // lists only the chosen RWY's procedures (sidShown/starShown), and changing
+  // ADEP/ADES resets the pair to RWY=Auto + SID/STAR=None (see the ADEP/ADES
+  // change handlers). The best-connecting-procedure engine endpoint still
+  // exists (api.suggestProcedure) if an auto-suggest UX is wanted later.
 
   // When the runway changes, drop a SID/STAR that doesn't serve the new
   // runway (the picker only lists that runway's procedures, so the stale pick
@@ -1062,6 +1078,12 @@ function GeneratorPanel({
     if (star && !servesRwy(starProcRwy, star, arrRwy)) setStar("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [arrRwy, starProcRwy]);
+  // An approach belongs to one arrival runway; drop it when the runway
+  // changes to one the current approach doesn't serve (or is cleared).
+  useEffect(() => {
+    if (approach && !approachShown.includes(approach)) setApproach("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [arrRwy, approachShown]);
 
   /** Queue one (route, SID, STAR) combination (deduped + capped). */
   const addCombo = (c: RouteCombo) => {
@@ -1117,12 +1139,21 @@ function GeneratorPanel({
     setRouteStr("");
     setBuiltWpts([]);
   };
+  // Changing EITHER aerodrome invalidates the whole terminal setup (the route
+  // is cleared, so its SID/STAR/approach + runways no longer apply). Reset them
+  // all to None / Auto so nothing stale carries over to the new city pair.
+  const resetTerminal = () => {
+    setSid("");
+    setStar("");
+    setDepRwy("");
+    setArrRwy("");
+    setApproach("");
+  };
   const handleAdepChange = (v: string) => {
     const nv = v.trim().toUpperCase();
     if (nv !== adep.trim().toUpperCase()) {
       clearRouteSelection();
-      setSid(""); // SID is ADEP-specific — drop it when ADEP changes.
-      setDepRwy(""); // departure runway is ADEP-specific too.
+      resetTerminal();
       // ADES cascades from ADEP: if the new ADEP publishes AIP destinations
       // and the current ADES isn't one of them, clear it so the dependent
       // dropdown stays consistent.
@@ -1133,7 +1164,6 @@ function GeneratorPanel({
       );
       if (dests.size > 0 && ades && !dests.has(ades.trim().toUpperCase())) {
         setAdes("");
-        setStar("");
       }
     }
     setAdep(v);
@@ -1141,8 +1171,7 @@ function GeneratorPanel({
   const handleAdesChange = (v: string) => {
     if (v.trim().toUpperCase() !== ades.trim().toUpperCase()) {
       clearRouteSelection();
-      setStar(""); // STAR is ADES-specific — drop it when ADES changes.
-      setArrRwy(""); // arrival runway is ADES-specific too.
+      resetTerminal();
     }
     setAdes(v);
   };
@@ -1299,6 +1328,7 @@ function GeneratorPanel({
     if (r.rfl != null) p.rfl = r.rfl;
     if (r.sid) p.sid = r.sid;
     if (r.star) p.star = r.star;
+    if (r.approach) p.approach = r.approach;
     if (r.depRwy) p.depRwy = r.depRwy;
     if (r.arrRwy) p.arrRwy = r.arrRwy;
     // A multi-route flight rebuilds as ONE plan with a route queue; a
@@ -1467,6 +1497,7 @@ function GeneratorPanel({
               ...(c.star ? { star: c.star } : {}),
               ...(d.depRwy ? { sid_runway: d.depRwy } : {}),
               ...(d.arrRwy ? { star_runway: d.arrRwy } : {}),
+              ...(d.approach ? { approach: d.approach } : {}),
             },
             label: isCsv ? `Airway CSV · ${dp}→${ds}` : c.route || "(route)",
           });
@@ -1628,6 +1659,7 @@ function GeneratorPanel({
             ...(c.star ? { star: c.star } : {}),
             ...(depRwy ? { sid_runway: depRwy } : {}),
             ...(arrRwy ? { star_runway: arrRwy } : {}),
+            ...(approach ? { approach } : {}),
             ...(multi ? { flight_index: i } : {}),
           }),
         ),
@@ -2253,6 +2285,45 @@ function GeneratorPanel({
               </select>
             </label>
           </div>
+
+          {/* PBN instrument approach at ADES — pick the Arrival RWY first
+              (above), then its approaches appear (RW09 → R09-Y, R09-Z). Ends
+              at the runway/MAPt; "None" descends the STAR straight to the
+              field. */}
+          <div className="field-row">
+            <div className="field" aria-hidden />
+            <label className="field">
+              <span>Approach (at {des || "ADES"})</span>
+              <select
+                value={approach}
+                onChange={(e) => setApproach(e.target.value)}
+                disabled={!arrRwy || approachShown.length === 0}
+                title={
+                  !arrRwy
+                    ? "Select an Arrival RWY first"
+                    : "PBN instrument approach for the arrival runway"
+                }
+              >
+                <option value="">None (no approach)</option>
+                {approach && !approachShown.includes(approach) && (
+                  <option value={approach}>{approach}</option>
+                )}
+                {approachShown.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {des &&
+            arrRwy &&
+            Object.keys(approachByRwy).length > 0 &&
+            approachShown.length === 0 && (
+              <p className="rt-hint">
+                No coded PBN approach for {des} {arrRwy}.
+              </p>
+            )}
           {((dep && sidOptions.length === 0) ||
             (des && starOptions.length === 0)) && (
             <p className="rt-hint">

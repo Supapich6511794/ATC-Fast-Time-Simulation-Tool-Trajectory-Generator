@@ -35,9 +35,9 @@ from trajectory_sim.performance import (
     VerticalProfile,
     average_phase_tas_kt,
     cas_to_tas_kt,
-    field_elevation_ft,
     mach_to_tas_kt,
     aircraft_speeds,
+    runway_threshold_elevation_ft,
     target_tas_kt,
 )
 
@@ -173,6 +173,8 @@ def build_flight_timeline(
     output_every_s: float = 4.0,
     wind_kt: Optional[float] = None,
     constraints: "Optional[list[RouteConstraint]]" = None,
+    dep_runway: Optional[str] = None,
+    ades_runway: Optional[str] = None,
 ) -> FlightTimeline:
     """Construct a variable-speed flight timeline from EOBT.
 
@@ -188,6 +190,10 @@ def build_flight_timeline(
             CAT62 surveillance rate).
         wind_kt: Optional **head-wind** component along the route, in
             knots. None ⇒ zero-wind (GS = TAS).
+        dep_runway, ades_runway: ICAO runway idents (e.g. ``"RW09"``,
+            ``"RW21L"``) for the departure/arrival ends. When given, the
+            profile starts/ends at that runway's AIP threshold elevation
+            instead of the aerodrome field elevation. None ⇒ field elevation.
 
     Returns:
         A :class:`FlightTimeline` whose ``samples`` list carries one
@@ -199,8 +205,11 @@ def build_flight_timeline(
     leg_distances = _leg_distances_nm(waypoint_sequence)
     total_distance_nm = sum(leg_distances)
 
-    dep_elev = field_elevation_ft(adep)
-    des_elev = field_elevation_ft(ades)
+    # Start the climb at the departure runway threshold and end the descent
+    # at the arrival runway threshold (Thai AIP AD 2 elevations) when a
+    # runway is known; otherwise fall back to the aerodrome field elevation.
+    dep_elev = runway_threshold_elevation_ft(adep, dep_runway)
+    des_elev = runway_threshold_elevation_ft(ades, ades_runway)
 
     # Use cruise TAS as the first guess for total_time_s — only used to
     # bootstrap VerticalProfile.build, which itself caps cruise_alt to
@@ -417,28 +426,56 @@ def build_flight_timeline(
             return "descent"
         return default
 
-    # Sample every `output_every_s`. Always emit the exact endpoint so
-    # the trajectory finishes at ADES regardless of step alignment.
-    samples: list[TimelineSample] = []
-    t = 0.0
-    while t < total_time_s:
-        alt, phase = profile.at(t)
-        if t <= climb_time_s:
-            dist_nm = climb_gs * t / 3600.0
-        elif t <= climb_time_s + cruise_time_s:
-            dist_nm = (
-                climb_distance_nm
-                + cruise_gs * (t - climb_time_s) / 3600.0
-            )
-        else:
-            dist_nm = (
-                climb_distance_nm
-                + cruise_distance_nm
-                + descent_gs
-                * (t - climb_time_s - cruise_time_s)
-                / 3600.0
-            )
+    # Along-track distance <-> elapsed time, using the phase-average ground
+    # speeds (inverse of each other, so a sample placed at a waypoint's time
+    # lands exactly on that waypoint).
+    def _dist_at_time(tt: float) -> float:
+        if tt <= climb_time_s:
+            return climb_gs * tt / 3600.0
+        if tt <= climb_time_s + cruise_time_s:
+            return climb_distance_nm + cruise_gs * (tt - climb_time_s) / 3600.0
+        return (
+            climb_distance_nm
+            + cruise_distance_nm
+            + descent_gs * (tt - climb_time_s - cruise_time_s) / 3600.0
+        )
 
+    def _time_at_dist(d: float) -> float:
+        if d <= climb_distance_nm:
+            return d * 3600.0 / max(climb_gs, 1e-9)
+        if d <= climb_distance_nm + cruise_distance_nm:
+            return climb_time_s + (d - climb_distance_nm) * 3600.0 / max(cruise_gs, 1e-9)
+        return (
+            climb_time_s
+            + cruise_time_s
+            + (d - climb_distance_nm - cruise_distance_nm) * 3600.0 / max(descent_gs, 1e-9)
+        )
+
+    # Sample every `output_every_s`, PLUS a sample at EVERY route waypoint (each
+    # leg boundary) so the drawn path runs exactly through each fix — enroute,
+    # SID, STAR and PBN-approach alike — instead of chording across the turn.
+    # Every fix is already in `waypoint_sequence`; we fold its crossing time
+    # into the sample grid. The ADEP/ADES endpoints come from {0, total}.
+    wp_times: list[float] = []
+    _acc = 0.0
+    for _ld in leg_distances[:-1]:  # interior boundaries only (skip ADES)
+        _acc += _ld
+        wp_times.append(_time_at_dist(_acc))
+
+    n_grid = int(total_time_s / output_every_s) if output_every_s > 0 else 0
+    grid = {i * output_every_s for i in range(n_grid + 1)}
+    grid |= {0.0, total_time_s}
+    grid |= {t for t in wp_times if 0.0 < t < total_time_s}
+    times: list[float] = []
+    for tt in sorted(grid):
+        tt = min(max(tt, 0.0), total_time_s)
+        if not times or tt - times[-1] > 1e-3:  # collapse near-duplicates
+            times.append(tt)
+
+    samples: list[TimelineSample] = []
+    for t in times:
+        alt, phase = profile.at(t)
+        dist_nm = _dist_at_time(t)
         lat, lon, track = _locate_along_route(
             waypoint_sequence, leg_distances, dist_nm
         )
@@ -448,35 +485,9 @@ def build_flight_timeline(
             alt, samples[-1].altitude_ft if samples else None, phase
         )
         gs = max(60.0, tas - wind)
-
         samples.append(TimelineSample(
             elapsed_s=t,
             epoch_ts=eobt + timedelta(seconds=t),
-            lat=lat,
-            lon=lon,
-            altitude_ft=round(alt, 1),
-            phase=phase,
-            tas_kt=tas,
-            gs_kt=gs,
-            track_deg=track,
-        ))
-        t += output_every_s
-
-    # Final exact endpoint — ADES at total_time_s.
-    if not samples or samples[-1].elapsed_s < total_time_s - 1e-6:
-        alt, phase = profile.at(total_time_s)
-        lat, lon, track = _locate_along_route(
-            waypoint_sequence, leg_distances, total_distance_nm
-        )
-        tas = target_tas_kt(aircraft_type, alt, phase)
-        alt, tas = _shape(alt, tas, total_distance_nm)
-        phase = _phase_for(
-            alt, samples[-1].altitude_ft if samples else None, phase
-        )
-        gs = max(60.0, tas - wind)
-        samples.append(TimelineSample(
-            elapsed_s=total_time_s,
-            epoch_ts=eobt + timedelta(seconds=total_time_s),
             lat=lat,
             lon=lon,
             altitude_ft=round(alt, 1),

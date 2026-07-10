@@ -16,6 +16,7 @@ by `trajectory_sim.output.write_geopackage`.
 
 from __future__ import annotations
 
+import csv
 import io
 import json
 import os
@@ -37,7 +38,11 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from trajectory_sim.fpl import FlightPlan, parse_eobt, parse_route
-from trajectory_sim.geodesy import haversine_distance, route_distance_nm
+from trajectory_sim.geodesy import (
+    compute_bearing,
+    haversine_distance,
+    route_distance_nm,
+)
 from trajectory_sim.navdata import (
     AltitudeConstraintType,
     AmbiguousProcedureError,
@@ -60,6 +65,7 @@ from trajectory_sim.performance import (
     crossover_altitude_ft,
     get_speed_restriction,
     register_field_elevations,
+    register_runway_elevations,
     set_speed_restriction,
     set_speed_schedule,
     tune_speed_schedule,
@@ -162,6 +168,11 @@ class GenerateRequest(BaseModel):
     star: str | None = None
     star_runway: str | None = None
     star_transition: str | None = None
+    # PBN instrument approach (IAP) at ADES, e.g. "R09-Z". Its landing runway
+    # is encoded in the name, so it reuses ``star_runway`` for the runway; the
+    # IAF transition auto-picks from the STAR's terminal fix (or set it here).
+    approach: str | None = None
+    approach_transition: str | None = None
 
     # --- Optional speed-schedule overrides (Phase 3 tuning) -----------
     # Any field left None keeps the airframe's default. Applied per
@@ -313,11 +324,47 @@ def _register_field_elevations() -> None:
         register_field_elevations(elevs)
 
 
-# Inject real AIP field elevations at startup. Guarded so a missing
+# Thai AIP AD 2 runway-threshold elevation table. Repo-root file (where it
+# is maintained); trajectory_sim/data is a shipped fallback for deployment.
+_RWY_ELEV_PATHS = (
+    _ROOT / "thai_aip_ad2_thr_elevations.csv",
+    _ROOT / "trajectory_sim" / "data" / "thai_aip_ad2_thr_elevations.csv",
+)
+
+
+def _register_runway_elevations() -> None:
+    """Push AIP runway-threshold elevations into the performance model so a
+    flight's climb starts / descent ends at the actual departure/arrival
+    runway threshold (e.g. VTSP RW09 = 22 ft, VTBD RW21L = 6.4 ft) rather
+    than the aerodrome's single field elevation."""
+    path = next((p for p in _RWY_ELEV_PATHS if p.exists()), None)
+    if path is None:
+        return
+    elevs: dict[tuple[str, str], float] = {}
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        for row in csv.DictReader(fh):
+            icao = (row.get("ICAO") or "").strip()
+            rwy = (row.get("RWY_NR") or "").strip()
+            raw = (row.get("THR_elev_ft") or "").strip()
+            if not icao or not rwy or not raw:
+                continue  # NIL/blank threshold — no elevation on record
+            try:
+                elevs[(icao, rwy)] = float(raw)
+            except ValueError:
+                continue
+    if elevs:
+        register_runway_elevations(elevs)
+
+
+# Inject real AIP field + runway elevations at startup. Guarded so a missing
 # cache (fresh checkout before the first ingest) never blocks boot.
 try:
     _register_field_elevations()
 except Exception:  # noqa: BLE001 — fall back to the hardcoded set
+    pass
+try:
+    _register_runway_elevations()
+except Exception:  # noqa: BLE001 — fall back to field elevations
     pass
 
 
@@ -417,21 +464,24 @@ def cat62_reference() -> dict[str, object]:
 # web/public/data/{sid,star}/. NavData reads + indexes them on first use.
 _SID_SOURCE = _DATA / "sid" / "sid_waypoint_thai.geojson"
 _STAR_SOURCE = _DATA / "star" / "star_waypoint.geojson"
+_APPROACH_SOURCE = _DATA / "pbn" / "pbn_waypoint.geojson"
 
 
 @lru_cache(maxsize=1)
 def _navdata() -> NavData:
-    """Procedures-only NavData accessor over the DFD SID/STAR GeoJSON."""
+    """Procedures-only NavData accessor over the DFD SID/STAR/approach GeoJSON."""
     return NavData(
         sid_source=_SID_SOURCE if _SID_SOURCE.is_file() else None,
         star_source=_STAR_SOURCE if _STAR_SOURCE.is_file() else None,
+        approach_source=_APPROACH_SOURCE if _APPROACH_SOURCE.is_file() else None,
     )
 
 
 class _RouteCtx(NamedTuple):
     """What the en-route route tells us about the right terminal-procedure
     transition: every route fix ident, plus the endpoint that connects to the
-    procedure — the route's LAST fix for a STAR (its entry), FIRST for a SID."""
+    procedure — the route's LAST fix for a STAR/approach (its entry), FIRST for
+    a SID."""
 
     idents: frozenset
     end_ident: str | None
@@ -442,11 +492,16 @@ def _route_ctx(
     route_pts: "list[tuple[str, float, float]]",
     proc_type: "ProcedureType",
 ) -> "_RouteCtx | None":
-    """Build the route context for picking ``proc_type``'s transition."""
+    """Build the route context for picking ``proc_type``'s transition.
+
+    For an approach the ``route_pts`` should already include the STAR's fixes,
+    so its last fix (the STAR's terminal fix, e.g. KALIM) is the connecting
+    point the approach's IAF transition is scored against.
+    """
     if not route_pts:
         return None
     idents = frozenset(p[0].upper() for p in route_pts)
-    end = route_pts[-1] if proc_type is ProcedureType.STAR else route_pts[0]
+    end = route_pts[0] if proc_type is ProcedureType.SID else route_pts[-1]
     return _RouteCtx(idents, end[0].upper(), (end[1], end[2]))
 
 
@@ -485,7 +540,11 @@ def _score_transition(
         ids = {w.ident.upper() for w in wps}
         conn = None
         if wps:
-            conn = wps[0] if proc.proc_type is ProcedureType.STAR else wps[-1]
+            # A SID re-joins enroute on its LAST fix (exit); a STAR/approach is
+            # entered on its FIRST fix (the STAR entry / the approach IAF). The
+            # approach IAF is the one that varies per transition — scoring its
+            # last fix (the shared MAPt) can't tell the IAFs apart.
+            conn = wps[-1] if proc.proc_type is ProcedureType.SID else wps[0]
         p1 = c.upper() in ctx.idents
         p2 = bool(conn and ctx.end_ident and conn.ident.upper() == ctx.end_ident)
         p3 = bool(ids & ctx.idents)
@@ -561,6 +620,102 @@ def _resolve_procedure_auto(
                 pt = ProcedureType(pick)
 
 
+def _turn_deg(a: float | None, b: float | None) -> float:
+    """Smallest turn (0..180°) between two bearings; 0 if either is None."""
+    if a is None or b is None:
+        return 0.0
+    return abs((a - b + 180.0) % 360.0 - 180.0)
+
+
+def _suggest_procedure(
+    nav: NavData,
+    airport: str,
+    proc_type: "ProcedureType",
+    route_ctx: "_RouteCtx | None",
+    runway: str | None,
+) -> str | None:
+    """Pick the SID/STAR that best connects to the enroute route.
+
+    A SID connects on its LAST fix (its enroute exit); a STAR on its FIRST (its
+    entry). Each candidate is resolved to the transition the route would fly
+    first (via :func:`_resolve_procedure_auto`), so the connecting fix reflects
+    that. Candidates are ranked by, in order:
+
+      0. connecting fix == the route's first (SID) / last (STAR) en-route fix
+      1. connecting fix lies ON the route (any expanded route fix) — the SID
+         delivers you straight onto the filed path (e.g. VTSF GIFB1A exits at
+         UPNEP, an A464 fix the route "NKS W94 GUPMO A464 GUTSO" flies through)
+      2. connecting fix shares an airway with the endpoint en-route fix
+      3. shortest great-circle distance to that en-route fix
+      4. least turn from the procedure's leg onto the joining track
+      5. published order (stable tie-break)
+
+    Returns the chosen procedure name, or ``None`` when nothing resolves or the
+    route has no usable endpoint (so the caller can leave the pick empty).
+    """
+    if route_ctx is None or route_ctx.end_ident is None:
+        return None
+    names = nav.list_procedures(airport, proc_type)
+    if not names:
+        return None
+    target_id = route_ctx.end_ident
+    target_ll = route_ctx.end_ll
+    airways = [
+        [w.upper() for w in seq] for seq in _airways().values()
+    ]
+
+    def _shares_airway(fix: str) -> bool:
+        f = fix.upper()
+        t = target_id
+        return any(f in seq and t in seq for seq in airways)
+
+    best_key: "tuple[int, float, float, int] | None" = None
+    best_name: str | None = None
+    is_sid = proc_type is ProcedureType.SID
+    for idx, name in enumerate(names):
+        try:
+            proc, _ = _resolve_procedure_auto(
+                nav, airport, name, proc_type=proc_type,
+                runway=runway, route_ctx=route_ctx,
+            )
+        except (ProcedureNotFoundError, AmbiguousProcedureError):
+            continue
+        wps = proc.waypoints()
+        if not wps:
+            continue
+        conn = wps[-1] if is_sid else wps[0]
+        cid = (conn.ident or "").upper()
+        if cid == target_id:
+            tier = 0
+        elif cid in route_ctx.idents:  # exits/enters directly onto the route
+            tier = 1
+        elif _shares_airway(cid):
+            tier = 2
+        else:
+            tier = 3
+        if target_ll is not None:
+            dist = haversine_distance(conn.lat, conn.lon, target_ll[0], target_ll[1])
+        else:
+            dist = 0.0
+        # Turn at the join: SID exits along (penultimate→exit) then turns to
+        # the target; STAR is entered from the target then turns to (entry→next).
+        turn = 0.0
+        if target_ll is not None and len(wps) >= 2:
+            if is_sid:
+                prev = wps[-2]
+                leg_in = compute_bearing(prev.lat, prev.lon, conn.lat, conn.lon)
+                leg_out = compute_bearing(conn.lat, conn.lon, target_ll[0], target_ll[1])
+            else:
+                nxt = wps[1]
+                leg_in = compute_bearing(target_ll[0], target_ll[1], conn.lat, conn.lon)
+                leg_out = compute_bearing(conn.lat, conn.lon, nxt.lat, nxt.lon)
+            turn = _turn_deg(leg_in, leg_out)
+        key = (tier, round(dist, 3), round(turn, 3), idx)
+        if best_key is None or key < best_key:
+            best_key, best_name = key, name
+    return best_name
+
+
 def _resolve_proc_for_splice(
     nav: NavData,
     airport: str,
@@ -621,10 +776,13 @@ def _route_constraints(
     route_pts: "list[tuple[str, float, float]]",
     sid_proc: "Procedure | None",
     star_proc: "Procedure | None",
+    approach_proc: "Procedure | None" = None,
 ) -> "list[RouteConstraint]":
-    """Map each SID/STAR leg's crossing restriction to its along-track distance
-    on the spliced route (Phase 4, sub-task 6). SID legs are tagged climb,
-    STAR legs descent; only an upper speed limit (AT / AT-or-below) is kept."""
+    """Map each SID/STAR/approach leg's crossing restriction to its along-track
+    distance on the spliced route (Phase 4/5, sub-task 6). SID legs are tagged
+    climb; STAR and approach legs descent; only an upper speed limit (AT /
+    AT-or-below) is kept. The approach's FAF/step-down altitudes shape the
+    final descent to the runway."""
     # ident -> along-track distance (NM), first occurrence in flight order.
     dist_by_ident: dict[str, float] = {}
     acc = 0.0
@@ -636,7 +794,11 @@ def _route_constraints(
             dist_by_ident[ident.upper()] = acc
 
     out: list[RouteConstraint] = []
-    for proc, phase in ((sid_proc, "climb"), (star_proc, "descent")):
+    for proc, phase in (
+        (sid_proc, "climb"),
+        (star_proc, "descent"),
+        (approach_proc, "descent"),
+    ):
         if proc is None:
             continue
         for leg in proc.legs:
@@ -696,22 +858,24 @@ def _splice_terminal_procedures(
     route_pts: "list[tuple[str, float, float]]",
     warnings: list[str],
 ) -> "tuple[list[tuple[str, float, float]], list[RouteConstraint], dict[str, str | None]]":
-    """Fold the requested SID (ADEP) and STAR (ADES) into the enroute fixes.
+    """Fold the requested SID (ADEP), STAR + approach (ADES) into the fixes.
 
     Returns ``(spliced_route, crossing_restrictions, terminal)`` where
-    ``terminal`` maps ``sid``/``star``/``dep_rwy``/``arr_rwy`` to the resolved
-    selection (runway is the one the resolver picked, even for an "Auto"
-    request) — empty ``{}`` when neither procedure is requested (Phase 4).
+    ``terminal`` maps ``sid``/``star``/``approach``/``dep_rwy``/``arr_rwy`` to
+    the resolved selection (runway is the one the resolver picked, even for an
+    "Auto" request) — empty ``{}`` when no procedure is requested (Phase 4/5).
 
     The SID's fixes lead the sequence (it flies first, right after ADEP); the
-    STAR's fixes trail it (right before ADES). Shared boundary fixes — the SID
-    enroute-transition fix vs. the route's first fix, and the route's last fix
-    vs. the STAR entry fix — collapse via :func:`splice_procedures`. With
-    neither procedure requested the route passes through untouched.
+    STAR's fixes trail it, then the PBN approach's fixes trail those (right
+    before ADES). Shared boundary fixes — SID enroute-transition vs. route's
+    first fix, route's last fix vs. STAR entry, STAR's terminal fix vs. the
+    approach IAF — collapse via :func:`splice_procedures`. With no procedure
+    requested the route passes through untouched.
     """
     sid_name = (req.sid or "").strip()
     star_name = (req.star or "").strip()
-    if not sid_name and not star_name:
+    approach_name = (req.approach or "").strip()
+    if not sid_name and not star_name and not approach_name:
         return route_pts, [], {}
 
     nav = _navdata()
@@ -737,21 +901,51 @@ def _splice_terminal_procedures(
         if star_name
         else None
     )
-    if sid_proc is None and star_proc is None:
+    # The approach's IAF connects to the STAR's terminal fix (e.g. KALIM), so
+    # score its transition against a context ending at the STAR's last fix;
+    # fall back to the enroute end when there's no STAR.
+    approach_ctx_pts = list(route_pts)
+    if star_proc is not None:
+        approach_ctx_pts += [
+            (w.ident, w.lat, w.lon) for w in star_proc.waypoints()
+        ]
+    approach_proc = (
+        _resolve_proc_for_splice(
+            nav, ades, approach_name, ProcedureType.APPROACH,
+            req.star_runway, req.approach_transition, warnings,
+            route_ctx=_route_ctx(approach_ctx_pts, ProcedureType.APPROACH),
+        )
+        if approach_name
+        else None
+    )
+    if sid_proc is None and star_proc is None and approach_proc is None:
         return route_pts, [], {}
 
     enroute = [RouteWaypoint(ident=i, lat=la, lon=lo) for i, la, lo in route_pts]
-    spliced = splice_procedures(enroute, sid=sid_proc, star=star_proc)
+    spliced = splice_procedures(
+        enroute, sid=sid_proc, star=star_proc, approach=approach_proc
+    )
     spliced_pts = [(w.ident, w.lat, w.lon) for w in spliced]
     # Resolved terminal selection for the export — the runway is the one the
     # resolver actually picked (so an "Auto" request still records a runway).
+    # A specific request wins over the resolved group so an "RW21L" pick is
+    # recorded as RW21L, not the ARINC "both" group (RW21B) it matched.
+    def _rwy(requested: str | None, proc: "Procedure | None") -> str | None:
+        req = (requested or "").strip().upper()
+        return req or _proc_runway(proc)
+
     terminal = {
         "sid": sid_name or None,
         "star": star_name or None,
-        "dep_rwy": _proc_runway(sid_proc),
-        "arr_rwy": _proc_runway(star_proc),
+        "approach": approach_name or None,
+        "dep_rwy": _rwy(req.sid_runway, sid_proc),
+        "arr_rwy": _rwy(req.star_runway, star_proc),
     }
-    return spliced_pts, _route_constraints(spliced_pts, sid_proc, star_proc), terminal
+    return (
+        spliced_pts,
+        _route_constraints(spliced_pts, sid_proc, star_proc, approach_proc),
+        terminal,
+    )
 
 
 def _constraint_json(con: object) -> dict[str, object]:
@@ -785,6 +979,39 @@ def list_procedures(
         "SID": nav.list_procedures(airport, ProcedureType.SID),
         "STAR": nav.list_procedures(airport, ProcedureType.STAR),
     }
+
+
+@app.get("/api/suggest-procedure/{airport}")
+def suggest_procedure(
+    airport: str,
+    response: Response,
+    type: str | None = None,
+    route: str | None = None,
+    runway: str | None = None,
+) -> dict[str, object]:
+    """Suggest the SID/STAR that best connects to the enroute ``route``.
+
+    ``type`` = "SID" or "STAR"; ``route`` = the Item-15 enroute string;
+    ``runway`` (optional) restricts to procedures serving it. Returns the best
+    procedure name (or ``null``) per :func:`_suggest_procedure` — the priority
+    is exact-fix, then same-airway, then nearest, then least-turn, then AIP
+    order. Lets the generator auto-select a SID/STAR for a route whose first/
+    last fix isn't itself a procedure exit (e.g. a route filed off a VOR).
+    """
+    response.headers["Cache-Control"] = _STATIC_CACHE
+    proc_type = _parse_proc_type(type)
+    if proc_type is None or proc_type is ProcedureType.APPROACH:
+        raise HTTPException(400, "type must be SID or STAR")
+    nav = _navdata()
+    route_ctx: "_RouteCtx | None" = None
+    if route and route.strip():
+        idx = _airway_waypoint_index()
+        pts = [
+            (i, *idx[i]) for i in parse_route(_expand_airways(route)) if i in idx
+        ]
+        route_ctx = _route_ctx(pts, proc_type)
+    name = _suggest_procedure(nav, airport.upper(), proc_type, route_ctx, runway)
+    return {"airport": airport.upper(), "type": proc_type.value, "name": name}
 
 
 @app.get("/api/procedures/{airport}/{name}")
@@ -1019,7 +1246,13 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
         waypoint_sequence.insert(0, adep_ll)
     if ades_ll is not None:
         gap = _sq_dist(waypoint_sequence[-1], ades_ll)
-        if gap > _COINCIDENT_SQ:
+        # With a PBN approach the route ends at the MAPt — near the field but
+        # at the approach's decision altitude (e.g. MR09 at 391 ft), not the
+        # threshold. Always close that final leg to ADES so the aircraft lands
+        # (descends to the arrival-runway threshold), matching the AIP's
+        # "MAPt → runway" landing path.
+        flew_approach = bool(terminal.get("approach"))
+        if gap > _COINCIDENT_SQ or flew_approach:
             waypoint_sequence.append(ades_ll)
         if gap > _FAR_SQ:
             warnings.append(
@@ -1087,6 +1320,7 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
                 # in the exported trajectory (GeoPackage/CSV/GeoJSON).
                 sid=terminal.get("sid"),
                 star=terminal.get("star"),
+                approach=terminal.get("approach"),
                 dep_rwy=terminal.get("dep_rwy"),
                 arr_rwy=terminal.get("arr_rwy"),
             )

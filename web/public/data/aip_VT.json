@@ -1,10 +1,10 @@
 {
-  "airac": "2026-05-14",
-  "source_url": "https://aip.caat.or.th/2026-05-14-AIRAC/html/eAIP/",
-  "fetched_at_utc": "2026-05-28T07:08:07Z",
-  "waypoint_count": 340,
+  "airac": "2026-07-09",
+  "source_url": "https://aip.caat.or.th/2026-07-09-AIRAC/html/eAIP/",
+  "fetched_at_utc": "2026-07-10T10:00:52Z",
+  "waypoint_count": 342,
   "airway_count": 134,
-  "airport_count": 46,
+  "airport_count": 47,
   "waypoints": {
     "ABTOK": {
       "lat": 6.305,
@@ -325,6 +325,10 @@
     "ELNET": {
       "lat": 17.773611,
       "lon": 102.629444
+    },
+    "ELPUT": {
+      "lat": 9.365833,
+      "lon": 98.514722
     },
     "ELREM": {
       "lat": 7.437778,
@@ -1050,6 +1054,10 @@
       "lat": 11.615,
       "lon": 103.0
     },
+    "SAKUB": {
+      "lat": 10.100833,
+      "lon": 98.853333
+    },
     "SANOT": {
       "lat": 14.859444,
       "lon": 103.43
@@ -1366,6 +1374,30 @@
       "lat": 17.7375,
       "lon": 101.514444
     },
+    "SAV": {
+      "lat": 16.562139,
+      "lon": 104.766667
+    },
+    "SAGAG": {
+      "lat": 21.191667,
+      "lon": 101.623333
+    },
+    "PAK": {
+      "lat": 15.19675,
+      "lon": 105.738056
+    },
+    "REP": {
+      "lat": 13.360556,
+      "lon": 104.219694
+    },
+    "VTN": {
+      "lat": 18.010361,
+      "lon": 102.540472
+    },
+    "LPB": {
+      "lat": 19.910961,
+      "lon": 102.171908
+    },
     "BLUVY": {
       "lat": 15.151925,
       "lon": 102.455936
@@ -1373,6 +1405,46 @@
     "SAPUD": {
       "lat": 9.129511,
       "lon": 99.134747
+    },
+    "ISVOD": {
+      "lat": 13.844839,
+      "lon": 103.589756
+    },
+    "OBMOG": {
+      "lat": 11.901944,
+      "lon": 96.391944
+    },
+    "DALER": {
+      "lat": 13.49425,
+      "lon": 98.524433
+    },
+    "UXARO": {
+      "lat": 13.706861,
+      "lon": 103.769728
+    },
+    "VKB": {
+      "lat": 6.163444,
+      "lon": 102.314194
+    },
+    "ODONO": {
+      "lat": 6.603889,
+      "lon": 103.024722
+    },
+    "AKNAT": {
+      "lat": 12.233333,
+      "lon": 103.711667
+    },
+    "ATVOP": {
+      "lat": 11.907289,
+      "lon": 103.981453
+    },
+    "VAS": {
+      "lat": 6.185667,
+      "lon": 100.397
+    },
+    "NTW": {
+      "lat": 6.527278,
+      "lon": 101.745139
     },
     "SITTA": {
       "lat": 15.213994,
@@ -1382,9 +1454,21 @@
       "lat": 11.474372,
       "lon": 103.046519
     },
+    "LAVEV": {
+      "lat": 10.916028,
+      "lon": 103.230639
+    },
     "IVROL": {
       "lat": 10.138308,
       "lon": 102.820761
+    },
+    "IPLIS": {
+      "lat": 9.815217,
+      "lon": 102.651019
+    },
+    "RIMSO": {
+      "lat": 13.091667,
+      "lon": 103.223333
     },
     "BS410": {
       "lat": 13.466239,
@@ -2349,82 +2433,6 @@
     "GOPVI": {
       "lat": 15.126431,
       "lon": 104.535397
-    },
-    "SAV": {
-      "lat": 16.562139,
-      "lon": 104.766667
-    },
-    "SAGAG": {
-      "lat": 21.191667,
-      "lon": 101.623333
-    },
-    "PAK": {
-      "lat": 15.19675,
-      "lon": 105.738056
-    },
-    "REP": {
-      "lat": 13.360556,
-      "lon": 104.219694
-    },
-    "VTN": {
-      "lat": 18.010361,
-      "lon": 102.540472
-    },
-    "LPB": {
-      "lat": 19.910961,
-      "lon": 102.171908
-    },
-    "ISVOD": {
-      "lat": 13.844839,
-      "lon": 103.589756
-    },
-    "OBMOG": {
-      "lat": 11.901944,
-      "lon": 96.391944
-    },
-    "DALER": {
-      "lat": 13.49425,
-      "lon": 98.524433
-    },
-    "UXARO": {
-      "lat": 13.706861,
-      "lon": 103.769728
-    },
-    "VKB": {
-      "lat": 6.163444,
-      "lon": 102.314194
-    },
-    "ODONO": {
-      "lat": 6.603889,
-      "lon": 103.024722
-    },
-    "AKNAT": {
-      "lat": 12.233333,
-      "lon": 103.711667
-    },
-    "ATVOP": {
-      "lat": 11.907289,
-      "lon": 103.981453
-    },
-    "VAS": {
-      "lat": 6.185667,
-      "lon": 100.397
-    },
-    "NTW": {
-      "lat": 6.527278,
-      "lon": 101.745139
-    },
-    "LAVEV": {
-      "lat": 10.916028,
-      "lon": 103.230639
-    },
-    "IPLIS": {
-      "lat": 9.815217,
-      "lon": 102.651019
-    },
-    "RIMSO": {
-      "lat": 13.091667,
-      "lon": 103.223333
     }
   },
   "airways": {
@@ -2745,6 +2753,7 @@
       "CMA",
       "MONLO",
       "IKISU",
+      "CRIST",
       "NAN",
       "ANBOK"
     ],
@@ -2845,6 +2854,7 @@
       "CMA",
       "MONLO",
       "IKISU",
+      "CRIST",
       "NAN"
     ],
     "W13": [
@@ -3018,7 +3028,9 @@
     "W34": [
       "MENEX",
       "CPN",
+      "SAKUB",
       "RAN",
+      "ELPUT",
       "IGEVI",
       "PUT"
     ],
@@ -3484,7 +3496,7 @@
     "VTBU": {
       "lat": 12.679722,
       "lon": 101.005,
-      "elev_ft": 59.0,
+      "elev_ft": 59.1,
       "name": "U-TAPAO RAYONG PATTAYA INTERNATIONAL AIRPORT"
     },
     "VTBW": {
@@ -3496,14 +3508,14 @@
     "VTCC": {
       "lat": 18.771389,
       "lon": 98.962778,
-      "elev_ft": 1036.0,
+      "elev_ft": 1036.7,
       "name": "CHIANG MAI/CHIANG MAI INTERNATIONAL AIRPORT"
     },
     "VTCH": {
-      "lat": 19.301717,
-      "lon": 97.975056,
-      "name": "MAE HONG SON AIRPORT",
-      "elev_ft": 929.0
+      "lat": 19.301667,
+      "lon": 97.975,
+      "elev_ft": 929.0,
+      "name": "MAE HONG SON AIRPORT"
     },
     "VTCI": {
       "lat": 19.372008,
@@ -3520,19 +3532,19 @@
     "VTCN": {
       "lat": 18.807914,
       "lon": 100.783419,
-      "name": "NAN NAKHON AIRPORT",
-      "elev_ft": 685.0
+      "elev_ft": 685.0,
+      "name": "NAN NAKHON AIRPORT"
     },
     "VTCP": {
       "lat": 18.132222,
       "lon": 100.164722,
-      "name": "PHRAE AIRPORT",
-      "elev_ft": 540.0
+      "elev_ft": 540.0,
+      "name": "PHRAE AIRPORT"
     },
     "VTCT": {
       "lat": 19.95235,
       "lon": 99.882956,
-      "elev_ft": 1280.0,
+      "elev_ft": 1280.3,
       "name": "CHIANG RAI/MAE FAH LUANG- CHIANG RAI INTERNATIONAL AIRPORT"
     },
     "VTPB": {
@@ -3542,10 +3554,10 @@
       "elev_ft": 450.0
     },
     "VTPH": {
-      "lat": 12.630319,
-      "lon": 99.953444,
-      "name": "HUA HIN AIRPORT",
-      "elev_ft": 62.0
+      "lat": 12.630278,
+      "lon": 99.953333,
+      "elev_ft": 62.0,
+      "name": "HUA HIN AIRPORT"
     },
     "VTPI": {
       "lat": 15.277319,
@@ -3574,8 +3586,8 @@
     "VTPP": {
       "lat": 16.782942,
       "lon": 100.279133,
-      "name": "PHITSANULOK AIRPORT",
-      "elev_ft": 148.0
+      "elev_ft": 148.0,
+      "name": "PHITSANULOK AIRPORT"
     },
     "VTPT": {
       "lat": 16.895986,
@@ -3604,8 +3616,8 @@
     "VTSF": {
       "lat": 8.539617,
       "lon": 99.944725,
-      "name": "NAKHON SI THAMMARAT AIRPORT",
-      "elev_ft": 13.0
+      "elev_ft": 13.1,
+      "name": "NAKHON SI THAMMARAT AIRPORT"
     },
     "VTSG": {
       "lat": 8.100278,
@@ -3640,19 +3652,19 @@
     "VTSP": {
       "lat": 8.1125,
       "lon": 98.309167,
-      "elev_ft": 84.0,
+      "elev_ft": 85.3,
       "name": "PHUKET INTERNATIONAL AIRPORT"
     },
     "VTSR": {
-      "lat": 9.777622,
-      "lon": 98.585483,
-      "name": "RANONG AIRPORT",
-      "elev_ft": 61.0
+      "lat": 9.7775,
+      "lon": 98.585556,
+      "elev_ft": 61.0,
+      "name": "RANONG AIRPORT"
     },
     "VTSS": {
       "lat": 6.932778,
       "lon": 100.395,
-      "elev_ft": 90.0,
+      "elev_ft": 91.9,
       "name": "SONGKHLA / HAT YAI INTERNATIONAL AIRPORT"
     },
     "VTST": {
@@ -3662,16 +3674,16 @@
       "elev_ft": 67.0
     },
     "VTUD": {
-      "lat": 17.386436,
-      "lon": 102.788247,
+      "lat": 17.386389,
+      "lon": 102.788333,
       "elev_ft": 579.0,
       "name": "UDON THANI AIRPORT"
     },
     "VTUI": {
-      "lat": 17.195142,
-      "lon": 104.118628,
-      "name": "SAKON NAKHON AIRPORT",
-      "elev_ft": 529.0
+      "lat": 17.195278,
+      "lon": 104.118611,
+      "elev_ft": 529.0,
+      "name": "SAKON NAKHON AIRPORT"
     },
     "VTUK": {
       "lat": 16.466667,
@@ -3682,8 +3694,8 @@
     "VTUL": {
       "lat": 17.439167,
       "lon": 101.721944,
-      "name": "LOEI AIRPORT",
-      "elev_ft": 864.0
+      "elev_ft": 864.0,
+      "name": "LOEI AIRPORT"
     },
     "VTUN": {
       "lat": 14.934444,
@@ -3716,10 +3728,15 @@
       "name": "ROI ET AIRPORT"
     },
     "VTUW": {
-      "lat": 17.385339,
-      "lon": 104.641889,
+      "lat": 17.385278,
+      "lon": 104.641944,
       "elev_ft": 587.0,
       "name": "NAKHON PHANOM AIRPORT"
+    },
+    "VTUZ": {
+      "lat": 16.652778,
+      "lon": 102.967778,
+      "name": "KHON-KAEN / NAM PHONG"
     }
   }
 }

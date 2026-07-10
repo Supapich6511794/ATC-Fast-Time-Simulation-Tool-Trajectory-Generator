@@ -49,7 +49,20 @@ _ROOT = Path(__file__).resolve().parent.parent
 import sys  # noqa: E402
 
 sys.path.insert(0, str(_ROOT))
-from trajectory_sim.validation import cab_cruising_level  # noqa: E402
+from _dummy_procs import (  # noqa: E402
+    load_proc_runways,
+    load_thr_elevs,
+    make_expand_runway,
+)
+from trajectory_sim.performance import (  # noqa: E402
+    reachable_ceiling_ft,
+    register_field_elevations,
+    register_runway_elevations,
+    runway_threshold_elevation_ft,
+)
+from trajectory_sim.validation import (  # noqa: E402
+    cab_cruising_level_capped,
+)
 
 OUT_DIR = _ROOT / "dummy_data"
 AIP_PATH = _ROOT / "web" / "public" / "data" / "aip_VT.json"
@@ -81,31 +94,17 @@ def _load_aip() -> tuple[dict, dict, dict]:
 WAYPOINTS, AIRWAYS, AIRPORTS = _load_aip()
 
 
-def _load_procs(path: Path) -> tuple[dict[str, list[str]], dict[tuple, str]]:
-    """Return (airport -> sorted procedure names, (airport, proc) -> runway).
+SIDS, SID_RWY = load_proc_runways(_SID_LINE)
+STARS, STAR_RWY = load_proc_runways(_STAR_LINE)
 
-    The runway is the first ``RW…`` transition_identifier on that procedure
-    (e.g. OLVU1B → "RW03L"); enroute-transition fixes are ignored for this.
-    """
-    names: dict[str, set[str]] = {}
-    rwy: dict[tuple, str] = {}
-    try:
-        gj = json.loads(path.read_text(encoding="utf-8"))
-    except OSError:
-        return {}, {}
-    for f in gj.get("features", []):
-        p = f.get("properties") or {}
-        a, pr = p.get("airport_identifier"), p.get("procedure_identifier")
-        tr = p.get("transition_identifier")
-        if a and pr:
-            names.setdefault(a, set()).add(pr)
-            if tr and str(tr).upper().startswith("RW"):
-                rwy.setdefault((a, pr), str(tr).upper())
-    return {k: sorted(v) for k, v in names.items()}, rwy
-
-
-SIDS, SID_RWY = _load_procs(_SID_LINE)
-STARS, STAR_RWY = _load_procs(_STAR_LINE)
+# Feed the same elevation tables the engine uses so the dummy's cosmetic
+# samples (and any later round-trip through the engine) share one source of
+# truth: runway-threshold elevations, with the AIP field elevation as the
+# fallback for runways/airports not in the threshold table.
+THR_ELEV = load_thr_elevs()
+register_runway_elevations(THR_ELEV)
+register_field_elevations({icao: elev for icao, (_la, _lo, elev) in AIRPORTS.items()})
+_expand_runway = make_expand_runway(THR_ELEV)
 
 
 def _load_cat062_start_times() -> list[datetime]:
@@ -373,22 +372,36 @@ def main() -> None:
             + [(f, la, lo) for (f, la, lo) in coords]
             + [(ades, la2, lo2)]
         )
+        actype = ACTYPES[i % len(ACTYPES)]
+        # Concrete departure/arrival runway (expand a "both-parallels" STAR
+        # runway RWxxB to a real side so it matches the app + threshold table).
+        dep_rwy = _expand_runway(adep, _rwy(SID_RWY, adep, sid)) if sid else ""
+        arr_rwy = _expand_runway(ades, _rwy(STAR_RWY, ades, star)) if star else ""
+        # Snap the picked level to a CAB-compliant cruising level for the
+        # ADEP->ADES track (odd FL eastbound 000-179, even FL westbound
+        # 180-359; CAB Rules of the Air §2.4.2), capped to the level this
+        # airframe can actually reach under the Thai APM data (e.g. B738 tops
+        # at FL380) so the filed level == cruise level when the sim runs it.
+        desired = (
+            _RFL_RNAV[i % len(_RFL_RNAV)] if r.get("rnav")
+            else _RFL_NON[i % len(_RFL_NON)]
+        )
+        rfl = cab_cruising_level_capped(
+            bearing(la1, lo1, la2, lo2), desired,
+            int(reachable_ceiling_ft(actype) // 100),
+        )
         prelim.append({
             "callsign": f"{AIRLINES[i % len(AIRLINES)]}{100 + i:03d}",
-            "actype": ACTYPES[i % len(ACTYPES)],
+            "actype": actype,
             "adep": adep, "ades": ades, "sid": sid, "star": star,
-            "dep_rwy": _rwy(SID_RWY, adep, sid) if sid else "",
-            "arr_rwy": _rwy(STAR_RWY, ades, star) if star else "",
-            # Snap the picked level to a CAB-compliant cruising level for the
-            # ADEP->ADES track (odd FL eastbound 000-179, even FL westbound
-            # 180-359; CAB Rules of the Air §2.4.2).
-            "rfl": cab_cruising_level(
-                bearing(la1, lo1, la2, lo2),
-                _RFL_RNAV[i % len(_RFL_RNAV)] if r.get("rnav")
-                else _RFL_NON[i % len(_RFL_NON)],
-            ),
+            "dep_rwy": dep_rwy,
+            "arr_rwy": arr_rwy,
+            "rfl": rfl,
             "route_str": r["route"], "route_pts": route_pts,
-            "dep_elev": e1, "des_elev": e2,
+            # Anchor the cosmetic climb/descent to the selected runway
+            # thresholds (falls back to field elevation for an Auto runway).
+            "dep_elev": runway_threshold_elevation_ft(adep, dep_rwy),
+            "des_elev": runway_threshold_elevation_ft(ades, arr_rwy),
             "base": REF_TIMES[i % len(REF_TIMES)] if REF_TIMES else None,
             "dur": round(route_seconds(route_pts)),  # whole seconds
         })

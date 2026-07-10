@@ -44,9 +44,10 @@ class NavData:
         *,
         sid_source: str | Path | None = None,
         star_source: str | Path | None = None,
+        approach_source: str | Path | None = None,
         procedure_schema: "SidStarSchema | None" = None,
     ) -> None:
-        """Load the waypoints layer and/or SID/STAR procedure sources.
+        """Load the waypoints layer and/or SID/STAR/approach procedure sources.
 
         Args:
             gpkg_path: Filesystem path to the BearCat navdata GeoPackage
@@ -54,12 +55,13 @@ class NavData:
                 layer with column `ident` (str) and POINT geometry in
                 EPSG:4326. Optional — omit it to build a procedures-only
                 accessor (the procedure legs carry their own coordinates).
-            sid_source / star_source: Explicit path to a SID / STAR source
-                that GeoPandas can read (e.g. the DFD
-                ``sid_waypoint_thai.geojson`` / ``star_waypoint.geojson``).
-                When given, these override the GeoPackage layers. When
-                omitted, procedures are read from the GeoPackage's
-                ``sids``/``stars`` layers if a ``gpkg_path`` is set.
+            sid_source / star_source / approach_source: Explicit path to a
+                SID / STAR / PBN-approach source that GeoPandas can read (e.g.
+                the DFD ``sid_waypoint_thai.geojson`` / ``star_waypoint.geojson``
+                / ``pbn_waypoint.geojson``). When given, these override the
+                GeoPackage layers. When omitted, procedures are read from the
+                GeoPackage's ``sids``/``stars``/``approaches`` layers if a
+                ``gpkg_path`` is set.
             procedure_schema: Overrides the layer/column names used to read
                 the SID/STAR data (defaults to the ARINC 424 "DFD" schema —
                 see :data:`DEFAULT_SIDSTAR_SCHEMA`).
@@ -85,6 +87,7 @@ class NavData:
         )
         self._sid_source = Path(sid_source) if sid_source else None
         self._star_source = Path(star_source) if star_source else None
+        self._approach_source = Path(approach_source) if approach_source else None
         self._proc_loaded = False
         # (airport, ProcedureType, procedure_name) -> list[_RawLeg], ordered
         # by seqno. Built on first procedure lookup.
@@ -231,14 +234,16 @@ class NavData:
         """Read one procedure source — an explicit file path if given, else
         the matching layer of the GeoPackage. None if neither is available."""
         s = self._proc_schema
-        explicit = (
-            self._sid_source
-            if proc_type is ProcedureType.SID
-            else self._star_source
-        )
-        layer = (
-            s.sid_layer if proc_type is ProcedureType.SID else s.star_layer
-        )
+        explicit = {
+            ProcedureType.SID: self._sid_source,
+            ProcedureType.STAR: self._star_source,
+            ProcedureType.APPROACH: self._approach_source,
+        }[proc_type]
+        layer = {
+            ProcedureType.SID: s.sid_layer,
+            ProcedureType.STAR: s.star_layer,
+            ProcedureType.APPROACH: s.approach_layer,
+        }[proc_type]
         try:
             if explicit is not None:
                 return gpd.read_file(explicit)
@@ -253,7 +258,7 @@ class NavData:
         return None
 
     def _load_procedures(self) -> None:
-        """Lazily read + index the SID and STAR sources (once)."""
+        """Lazily read + index the SID / STAR / approach sources (once)."""
         if self._proc_loaded:
             return
         self._proc_loaded = True
@@ -299,6 +304,8 @@ class NavData:
                 route_type=_clean_str(get(s.route_type)),
                 transition=_clean_str(get(s.transition)),
                 path_terminator=_clean_str(get(s.path_termination)).upper(),
+                desc_code=_clean_str(get(s.waypoint_description_code)).upper()
+                or None,
                 ident=ident,
                 lat=lat,
                 lon=lon,
@@ -357,6 +364,13 @@ class NavData:
 
         if proc_type is ProcedureType.SID:
             ordered = [*rwy_legs, *common, *trn_legs]
+        elif proc_type is ProcedureType.APPROACH:
+            # An approach flies the chosen IAF transition into the common
+            # final segment. The runway is baked into the procedure name
+            # (R09-Z), so there is no runway group. The common segment runs
+            # past the runway/MAPt into the missed-approach hold; a landing
+            # trajectory stops AT the MAPt, so truncate there.
+            ordered = [*trn_legs, *_truncate_at_mapt(common)]
         else:  # STAR flies transition -> common -> runway
             ordered = [*trn_legs, *common, *rwy_legs]
 
@@ -371,6 +385,7 @@ class NavData:
                 speed=r.speed,
                 transition=r.transition or None,
                 turn_direction=r.turn_direction,
+                desc_code=r.desc_code,
             )
             for r in ordered
         )
@@ -407,10 +422,21 @@ class NavData:
         if requested is not None:
             req = requested.strip().upper()
             # Accept "19L" as a match for "RW19L" on runway selection.
-            candidates = {req, f"RW{req}"} if kind == "runway" else {req}
-            for k in keys:
-                if k in candidates:
-                    return k
+            primary = {req, f"RW{req}"} if kind == "runway" else {req}
+            # A procedure serving both parallels of a pair is coded with the
+            # ARINC "both" suffix (e.g. a STAR for 21L/21R is one RW21B group).
+            # A request for either side (RW21L / RW21R) must match it — but
+            # only after an exact same-side group, so a real per-side group
+            # still wins. See the AIP: one STAR chart covers "RWY 21L/21R".
+            both: set[str] = set()
+            if kind == "runway":
+                digits = "".join(ch for ch in req if ch.isdigit())
+                if digits:
+                    both.add(f"RW{digits}B")
+            for cands in (primary, both):
+                for k in keys:
+                    if k in cands:
+                        return k
             if wildcard is not None:
                 return wildcard
             raise ProcedureNotFoundError(
@@ -575,6 +601,7 @@ class SidStarSchema:
 
     sid_layer: str = "sids"
     star_layer: str = "stars"
+    approach_layer: str = "approaches"
     airport: str = "airport_identifier"
     procedure: str = "procedure_identifier"
     route_type: str = "route_type"
@@ -584,6 +611,7 @@ class SidStarSchema:
     latitude: str = "waypoint_latitude"
     longitude: str = "waypoint_longitude"
     path_termination: str = "path_termination"
+    waypoint_description_code: str = "waypoint_description_code"
     altitude_description: str = "altitude_description"
     altitude1: str = "altitude1"
     altitude2: str = "altitude2"
@@ -600,6 +628,7 @@ class ProcedureType(str, Enum):
 
     SID = "SID"
     STAR = "STAR"
+    APPROACH = "APPROACH"
 
 
 class AltitudeConstraintType(str, Enum):
@@ -666,6 +695,10 @@ class ProcedureLeg:
     speed: SpeedConstraint
     transition: str | None = None
     turn_direction: str | None = None
+    #: ARINC 424 waypoint description code (4 chars). Its 4th char flags the
+    #: approach fix role — ``F`` = FAF, ``M`` = MAPt. Present on PBN approach
+    #: legs; ``None`` for SID/STAR sources that don't carry the column.
+    desc_code: str | None = None
 
     @property
     def has_fix(self) -> bool:
@@ -728,14 +761,15 @@ def splice_procedures(
     *,
     sid: "Procedure | None" = None,
     star: "Procedure | None" = None,
+    approach: "Procedure | None" = None,
 ) -> list[RouteWaypoint]:
-    """Splice a SID before, and a STAR after, the enroute fix sequence.
+    """Splice a SID before, and a STAR + approach after, the enroute fixes.
 
     Produces the ordered fix sequence that runs *between* the aerodromes —
     SID fixes first (they begin just after ADEP), then the enroute fixes,
-    then the STAR fixes (they end just before ADES). The caller anchors ADEP
-    and ADES around the result; this function never invents an aerodrome
-    point.
+    then the STAR fixes, then the PBN approach fixes (which end at the runway/
+    MAPt, just before ADES). The caller anchors ADEP and ADES around the
+    result; this function never invents an aerodrome point.
 
     The joins are where a SID/STAR meets the enroute portion:
 
@@ -755,6 +789,10 @@ def splice_procedures(
             transition. ``None`` when no SID applies (direct departure).
         star: Arrival procedure for ADES, likewise resolved. ``None`` when no
             STAR applies (direct arrival).
+        approach: PBN instrument-approach for ADES, resolved to the landing
+            runway + IAF transition and already truncated at the MAPt. Its IAF
+            typically coincides with the STAR's last fix (e.g. KALIM), so the
+            boundary collapses. ``None`` when no approach applies.
 
     Returns:
         The spliced :class:`RouteWaypoint` sequence with shared boundary
@@ -768,6 +806,8 @@ def splice_procedures(
     sequence.extend(enroute)
     if star is not None:
         sequence.extend(star.waypoints())
+    if approach is not None:
+        sequence.extend(approach.waypoints())
     return _collapse_consecutive_idents(sequence)
 
 
@@ -823,6 +863,7 @@ class _RawLeg:
     altitude: AltitudeConstraint
     speed: SpeedConstraint
     turn_direction: str | None
+    desc_code: str | None = None
 
 
 def _clean_str(value: object) -> str:
@@ -904,11 +945,40 @@ _SID_TRANS_TYPES = frozenset({"3", "6", "V"})
 _STAR_TRANS_TYPES = frozenset({"1", "4", "7", "F"})
 _STAR_COMMON_TYPES = frozenset({"2", "5", "8", "M", "S"})
 _STAR_RUNWAY_TYPES = frozenset({"3", "6", "9", "R"})
+# PBN approach: route_type 'A' = an IAF transition (IAF -> IF), 'R' = the
+# common final segment (transition None: IF -> FAF -> MAPt -> missed). The
+# landing runway is encoded in the procedure name (R09-Z), so there is no
+# separate runway group.
+_APPROACH_TRANS_TYPES = frozenset({"A"})
+_APPROACH_COMMON_TYPES = frozenset({"R"})
 
 
 def _is_runway_transition(name: str) -> bool:
     """True if a transition_identifier names a runway (e.g. RW19L, RW27)."""
     return name.upper().startswith("RW")
+
+
+def _is_mapt_leg(leg: _RawLeg) -> bool:
+    """True if an approach leg is the Missed Approach Point.
+
+    The ARINC 424 waypoint description code's 4th column is ``M`` at the MAPt
+    (e.g. ``EY M`` at MR09, ``GY M`` at RW09).
+    """
+    dc = leg.desc_code or ""
+    return len(dc) >= 4 and dc[3] == "M"
+
+
+def _truncate_at_mapt(common: list[_RawLeg]) -> list[_RawLeg]:
+    """Cut an approach's final segment at the MAPt (inclusive).
+
+    A landing trajectory ends at the runway/MAPt; everything after it is the
+    missed-approach (hold), which is dropped. If no MAPt marker is present the
+    segment is returned unchanged (defensive — better a full path than none).
+    """
+    for i, leg in enumerate(common):
+        if _is_mapt_leg(leg):
+            return common[: i + 1]
+    return common
 
 
 def _segment_of(proc_type: ProcedureType, raw: _RawLeg) -> str:
@@ -920,6 +990,11 @@ def _segment_of(proc_type: ProcedureType, raw: _RawLeg) -> str:
         if rt in _SID_TRANS_TYPES:
             return "transition"
         if rt in _SID_COMMON_TYPES:
+            return "common"
+    elif proc_type is ProcedureType.APPROACH:
+        if rt in _APPROACH_TRANS_TYPES:
+            return "transition"
+        if rt in _APPROACH_COMMON_TYPES:
             return "common"
     else:
         if rt in _STAR_RUNWAY_TYPES:

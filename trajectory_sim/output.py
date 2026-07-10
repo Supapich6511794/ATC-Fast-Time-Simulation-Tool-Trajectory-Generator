@@ -16,7 +16,10 @@ import pandas as pd
 from shapely.geometry import Point
 
 from trajectory_sim.geodesy import compute_bearing, interpolate_great_circle
-from trajectory_sim.performance import VerticalProfile, field_elevation_ft
+from trajectory_sim.performance import (
+    VerticalProfile,
+    runway_threshold_elevation_ft,
+)
 
 
 def build_trajectory_gdf(
@@ -36,6 +39,7 @@ def build_trajectory_gdf(
     constraints: "list | None" = None,
     sid: str | None = None,
     star: str | None = None,
+    approach: str | None = None,
     dep_rwy: str | None = None,
     arr_rwy: str | None = None,
 ) -> gpd.GeoDataFrame:
@@ -66,11 +70,11 @@ def build_trajectory_gdf(
 
     Returns:
         GeoDataFrame, EPSG:4326, with columns: flight_key, callsign,
-        aircraft_type, adep, ades, dep_rwy, arr_rwy, sid, star, epoch_ts
-        (UTC), altitude_ft, tas_kt (None until Phase 3), gs_kt, track_deg,
-        phase, geometry. The dep_rwy/arr_rwy/sid/star columns carry the
-        terminal-procedure selection ("" when none), so the exported
-        trajectory records which SID/STAR/runways were flown.
+        aircraft_type, adep, ades, dep_rwy, arr_rwy, sid, star, approach,
+        epoch_ts (UTC), altitude_ft, tas_kt (None until Phase 3), gs_kt,
+        track_deg, phase, geometry. The dep_rwy/arr_rwy/sid/star/approach
+        columns carry the terminal-procedure selection ("" when none), so the
+        exported trajectory records which SID/STAR/approach/runways were flown.
 
     Raises:
         ValueError: if waypoint_sequence has fewer than 2 points or
@@ -93,6 +97,7 @@ def build_trajectory_gdf(
         "arr_rwy": (arr_rwy or "").strip(),
         "sid": (sid or "").strip(),
         "star": (star or "").strip(),
+        "approach": (approach or "").strip(),
     }
 
     # Phase 3 — variable speed timeline. Only kicks in when an RFL is
@@ -111,6 +116,9 @@ def build_trajectory_gdf(
             wind_kt=wind_kt,
             output_every_s=output_every_s,
             constraints=constraints,
+            # Anchor climb/descent to the selected runway thresholds.
+            dep_runway=dep_rwy,
+            ades_runway=arr_rwy,
         )
         records = [
             {
@@ -173,8 +181,8 @@ def build_trajectory_gdf(
             total_time_s=total_time_s,
             rfl_ft=rfl * 100.0,
             aircraft_type=aircraft_type,
-            dep_elev_ft=field_elevation_ft(adep),
-            des_elev_ft=field_elevation_ft(ades),
+            dep_elev_ft=runway_threshold_elevation_ft(adep, dep_rwy),
+            des_elev_ft=runway_threshold_elevation_ft(ades, arr_rwy),
         )
 
     records: list[dict[str, object]] = []
@@ -275,6 +283,7 @@ def write_csv(
         ARR RWY: <arr_rwy>
         SID: <sid>
         STAR: <star>
+        APPROACH: <approach>
         FL: F<rfl>
         ATD: YYYY-MM-DD HH:MM:SS
 
@@ -312,7 +321,7 @@ def write_csv(
         return str(gdf[col].iloc[0]) if col in gdf.columns else ""
 
     dep_rwy, arr_rwy = _const("dep_rwy"), _const("arr_rwy")
-    sid, star = _const("sid"), _const("star")
+    sid, star, approach = _const("sid"), _const("star"), _const("approach")
     eobt_raw = gdf["epoch_ts"].iloc[0]
     eobt = (
         eobt_raw.to_pydatetime()
@@ -350,6 +359,7 @@ def write_csv(
         f.write(f"ARR RWY: {arr_rwy}\n")
         f.write(f"SID: {sid}\n")
         f.write(f"STAR: {star}\n")
+        f.write(f"APPROACH: {approach}\n")
         if rfl is not None:
             f.write(f"FL: F{rfl}\n")
         f.write(f"ATD: {eobt.strftime('%Y-%m-%d %H:%M:%S')}\n")

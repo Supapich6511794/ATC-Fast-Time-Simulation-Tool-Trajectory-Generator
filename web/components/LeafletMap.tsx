@@ -1271,11 +1271,27 @@ export default function LeafletMap({
         // it interpolates the full-resolution `samplesByRoute` table.
         const MAX_SEG = 120;
         const step = Math.max(1, Math.ceil((pts.length - 1) / MAX_SEG));
-        const drawIdx: number[] = [];
-        for (let i = 0; i < pts.length; i += step) drawIdx.push(i);
-        if (drawIdx[drawIdx.length - 1] !== pts.length - 1) {
-          drawIdx.push(pts.length - 1);
+        const keep = new Set<number>([0, pts.length - 1]);
+        for (let i = 0; i < pts.length; i += step) keep.add(i);
+        // Force-keep the exact vertex at every route waypoint (enroute + SID +
+        // STAR + PBN approach) so the decimated line TURNS at each fix instead
+        // of chording across the turn. The engine emits a sample exactly on
+        // each fix, so its nearest point is that on-fix sample.
+        for (const wp of route) {
+          let best = 0;
+          let bestD = Infinity;
+          for (let i = 0; i < pts.length; i++) {
+            const dy = pts[i].lat - wp.lat;
+            const dx = pts[i].lon - wp.lon;
+            const d = dy * dy + dx * dx;
+            if (d < bestD) {
+              bestD = d;
+              best = i;
+            }
+          }
+          keep.add(best);
         }
+        const drawIdx: number[] = [...keep].sort((a, b) => a - b);
         const line: L.LatLngExpression[] = drawIdx.map((i) => [
           pts[i].lat,
           pts[i].lon,

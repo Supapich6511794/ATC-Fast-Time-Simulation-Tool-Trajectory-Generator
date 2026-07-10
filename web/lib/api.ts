@@ -63,6 +63,11 @@ export interface GenerateInput {
   star?: string;
   star_runway?: string;
   star_transition?: string;
+  /** PBN instrument approach (IAP) at ADES, e.g. "R09-Z". Its landing runway
+   *  is encoded in the name and reuses `star_runway`; the IAF transition
+   *  auto-picks from the STAR's terminal fix unless set here. */
+  approach?: string;
+  approach_transition?: string;
 }
 
 export interface GenerateResponse {
@@ -451,4 +456,33 @@ export async function fetchProcedure(
     throw new Error(detail);
   }
   return (await res.json()) as ProcedureDto;
+}
+
+/**
+ * Suggest the SID (type "SID") or STAR ("STAR") that best connects to the
+ * enroute ``route`` at ``airport`` (GET /api/suggest-procedure). ``runway``
+ * (optional) restricts to procedures serving it. Returns the best procedure
+ * name, or ``null`` when nothing connects / the backend is unreachable — a
+ * miss is never fatal, the picker just leaves the choice empty.
+ */
+export async function suggestProcedure(
+  airport: string,
+  type: "SID" | "STAR",
+  route: string,
+  runway?: string,
+): Promise<string | null> {
+  const code = airport.trim().toUpperCase();
+  if (!code || !route.trim()) return null;
+  const q = new URLSearchParams({ type, route: route.trim() });
+  if (runway) q.set("runway", runway);
+  try {
+    const res = await fetch(
+      `${API_BASE}/api/suggest-procedure/${encodeURIComponent(code)}?${q}`,
+    );
+    if (!res.ok) return null;
+    const j = (await res.json()) as { name?: string | null };
+    return j?.name ?? null;
+  } catch {
+    return null;
+  }
 }

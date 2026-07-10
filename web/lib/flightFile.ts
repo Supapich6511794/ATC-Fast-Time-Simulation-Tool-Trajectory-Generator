@@ -37,6 +37,8 @@ export interface FlightRecord {
   /** SID name spliced at ADEP / STAR name spliced at ADES (optional). */
   sid?: string;
   star?: string;
+  /** PBN instrument approach (IAP) at ADES, e.g. "R09-Z" (optional). */
+  approach?: string;
   /** Departure runway at ADEP / arrival runway at ADES, as the RW… transition
    *  identifier (e.g. "RW03L") so it matches the runway picker options. */
   depRwy?: string;
@@ -83,6 +85,7 @@ function fromObject(o: Record<string, unknown>): FlightRecord {
     route: get("route", "route_string", "item15"),
     sid: get("sid", "sid_name")?.toUpperCase(),
     star: get("star", "star_name")?.toUpperCase(),
+    approach: get("approach", "iap", "approach_name")?.toUpperCase(),
     depRwy: get("dep_rwy", "departure_runway", "dep_runway", "sid_runway")
       ?.toUpperCase(),
     arrRwy: get("arr_rwy", "arrival_runway", "arr_runway", "star_runway")
@@ -186,6 +189,7 @@ function parseTrajectoryBlock(block: string): FlightRecord | null {
   const eobt = normEobt(field("ATD"));
   const sid = field("SID")?.toUpperCase();
   const star = field("STAR")?.toUpperCase();
+  const approach = field("APPROACH")?.toUpperCase();
   const depRwy = field("DEP RWY")?.toUpperCase();
   const arrRwy = field("ARR RWY")?.toUpperCase();
 
@@ -205,7 +209,8 @@ function parseTrajectoryBlock(block: string): FlightRecord | null {
   // Skip a block that yielded nothing identifiable.
   if (!route && !adep && !ades && !actype) return null;
   return {
-    callsign, actype, adep, ades, eobt, rfl, route, sid, star, depRwy, arrRwy,
+    callsign, actype, adep, ades, eobt, rfl, route, sid, star, approach,
+    depRwy, arrRwy,
   };
 }
 

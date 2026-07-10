@@ -233,6 +233,35 @@ def test_unknown_runway_raises_not_found(navdata: NavData) -> None:
         )
 
 
+def test_runway_both_group_matched_by_either_side() -> None:
+    # A STAR that serves both parallels is coded with the ARINC "both"
+    # suffix (one RW21B group for 21L/21R, per the AIP's single 21L/21R
+    # chart). A request for either side must resolve to that group.
+    both = {"RW21B": [], "RW03B": []}
+    sel = NavData._select_group
+    for req in ("RW21L", "RW21R", "21L"):
+        assert sel("VTBD", "ENDU3A", both, req, "runway") == "RW21B"
+    assert sel("VTBD", "ENDU3A", both, "RW03R", "runway") == "RW03B"
+    # Back-compat: an explicit RW21B still matches.
+    assert sel("VTBD", "ENDU3A", both, "RW21B", "runway") == "RW21B"
+
+
+def test_runway_exact_side_wins_over_both_group() -> None:
+    # When a real per-side group exists alongside a both-group, the exact
+    # side is preferred (the B fallback only fires when no side matches).
+    sel = NavData._select_group
+    groups = {"RW21L": [], "RW21B": []}
+    assert sel("X", "P", groups, "RW21L", "runway") == "RW21L"
+
+
+def test_runway_both_fallback_does_not_cross_pairs() -> None:
+    # The both-group fallback is keyed on the runway number, so a request
+    # for a different pair with no matching group still raises.
+    sel = NavData._select_group
+    with pytest.raises(ProcedureNotFoundError):
+        sel("X", "P", {"RW09B": []}, "RW27L", "runway")
+
+
 def test_unknown_procedure_lists_available(navdata: NavData) -> None:
     with pytest.raises(ProcedureNotFoundError) as exc:
         navdata.lookup_procedure("VTBS", "NOPE9X")

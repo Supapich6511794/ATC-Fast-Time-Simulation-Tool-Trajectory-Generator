@@ -11,6 +11,8 @@ from trajectory_sim.performance import (
     aircraft_roc_rod,
     aircraft_speeds,
     field_elevation_ft,
+    register_runway_elevations,
+    runway_threshold_elevation_ft,
     service_ceiling_ft,
 )
 
@@ -32,6 +34,38 @@ def test_field_elevation_known_and_default() -> None:
     assert field_elevation_ft("VTBS") == 8.0    # published AIP elevation
     assert field_elevation_ft("vtsp") == 84.0   # case-insensitive
     assert field_elevation_ft("ZZZZ") == 0.0
+
+
+def test_runway_threshold_elevation_known_and_fallback() -> None:
+    # AIP AD 2 threshold elevations, keyed (ICAO, runway).
+    register_runway_elevations({("VTSP", "09"): 22.0, ("VTBD", "RW21L"): 6.4})
+    # "RW" prefix stripped, case-insensitive on both ICAO and side.
+    assert runway_threshold_elevation_ft("VTSP", "RW09") == 22.0
+    assert runway_threshold_elevation_ft("vtbd", "21l") == 6.4
+    # Auto (no runway) or an unrecorded runway falls back to field elevation.
+    assert runway_threshold_elevation_ft("VTSP", None) == field_elevation_ft("VTSP")
+    assert runway_threshold_elevation_ft("VTSP", "RW99") == field_elevation_ft("VTSP")
+
+
+def test_profile_anchored_to_runway_thresholds() -> None:
+    # Phase 2: the altitude profile must start at the departure runway
+    # threshold and end at the arrival runway threshold (AIP AD 2) — e.g.
+    # VTSP RW09 (22 ft) → VTBD RW21L (6.4 ft).
+    register_runway_elevations({("VTSP", "09"): 22.0, ("VTBD", "21L"): 6.4})
+    gdf = build_trajectory_gdf(
+        waypoint_sequence=_WAYPOINTS,
+        eobt=_EOBT,
+        callsign="THA9",
+        aircraft_type="B738",
+        adep="VTSP",
+        ades="VTBD",
+        rfl=330,
+        dep_rwy="RW09",
+        arr_rwy="RW21L",
+    )
+    alts = gdf["altitude_ft"].tolist()
+    assert alts[0] == 22.0    # climb starts at the RW09 threshold
+    assert alts[-1] == 6.4    # descent ends at the RW21L threshold
 
 
 def test_profile_phases_and_continuity() -> None:
@@ -167,11 +201,11 @@ def test_merged_3d_profile_continuous_and_monotonic() -> None:
         )
 
     # 6. Continuity at the joins: a single 4-second sample step is bounded
-    #    by the airframe's peak BADA rate. Descent dominates — the B738
-    #    (ISA+20) peaks near ~3240 fpm, so ~216 ft per 4 s sample is a
-    #    legitimate single step (not a discontinuity). The check still
-    #    catches any multi-sample vertical JUMP.
-    max_step_ft = 3240.0 * 4.0 / 60.0  # one 4 s sample at peak ROCD ≈ 216 ft
+    #    by the airframe's peak ROCD. In the Thai APM (ISA+15) dataset the
+    #    B738 peaks near ~2600 fpm (climb ~2594 fpm at FL80), so ~173 ft per
+    #    4 s sample is a legitimate single step (not a discontinuity). The
+    #    check still catches any multi-sample vertical JUMP.
+    max_step_ft = 2600.0 * 4.0 / 60.0  # one 4 s sample at peak ROCD ≈ 173 ft
     cruise_alt = altitudes[toc_i]
     assert abs(cruise_alt - 35000.0) < 1.0  # exact RFL was reachable
     assert cruise_alt - altitudes[toc_i - 1] <= max_step_ft + 1e-6
@@ -206,9 +240,12 @@ def test_service_ceiling_known_and_fallback() -> None:
     assert service_ceiling_ft("XXXX") == 41000.0
 
 
-def test_rfl_clamped_to_service_ceiling() -> None:
-    # An RFL above the B738 ceiling (FL410) is clipped to the ceiling
-    # instead of producing a fantasy cruise altitude.
+def test_rfl_clamped_to_reachable_ceiling() -> None:
+    # An RFL above what the airframe can actually reach is clipped instead
+    # of producing a fantasy cruise altitude. With the Thai APM dataset the
+    # binding ceiling is the top of the OBSERVED climb table (B738 tops at
+    # FL380 in Bangkok ops), which sits at or below the FL410 service
+    # ceiling — the "cap at observed top" project decision.
     p = VerticalProfile.build(
         total_time_s=4 * 3600.0,
         rfl_ft=45000.0,
@@ -216,7 +253,8 @@ def test_rfl_clamped_to_service_ceiling() -> None:
         dep_elev_ft=0.0,
         des_elev_ft=0.0,
     )
-    assert p.cruise_alt_ft == service_ceiling_ft("B738")
+    assert p.cruise_alt_ft == p.climb_top_ft
+    assert p.cruise_alt_ft <= service_ceiling_ft("B738")
 
 
 def test_altitude_at_distance_matches_time_indexed() -> None:

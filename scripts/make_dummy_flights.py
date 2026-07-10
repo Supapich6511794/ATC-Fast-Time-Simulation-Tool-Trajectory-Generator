@@ -39,7 +39,18 @@ _ROOT = Path(__file__).resolve().parent.parent
 import sys  # noqa: E402
 
 sys.path.insert(0, str(_ROOT))
-from trajectory_sim.validation import cab_cruising_level  # noqa: E402
+from _dummy_procs import (  # noqa: E402
+    load_proc_runways,
+    load_thr_elevs,
+    make_expand_runway,
+)
+from trajectory_sim.performance import (  # noqa: E402
+    reachable_ceiling_ft,
+    register_field_elevations,
+    register_runway_elevations,
+    runway_threshold_elevation_ft,
+)
+from trajectory_sim.validation import cab_cruising_level_capped  # noqa: E402
 
 OUT_DIR = _ROOT / "dummy_data"
 AIP_PATH = _ROOT / "web" / "public" / "data" / "aip_VT.json"
@@ -70,23 +81,15 @@ _SID_LINE = _ROOT / "web" / "public" / "data" / "sid" / "sid_line_thai.geojson"
 _STAR_LINE = _ROOT / "web" / "public" / "data" / "star" / "star_line.geojson"
 
 
-def _load_procs(path: Path) -> dict[str, list[str]]:
-    """airport ICAO -> sorted procedure names (SID or STAR)."""
-    out: dict[str, set[str]] = {}
-    try:
-        gj = json.loads(path.read_text(encoding="utf-8"))
-    except OSError:
-        return {}
-    for f in gj.get("features", []):
-        p = f.get("properties") or {}
-        a, pr = p.get("airport_identifier"), p.get("procedure_identifier")
-        if a and pr:
-            out.setdefault(a, set()).add(pr)
-    return {k: sorted(v) for k, v in out.items()}
+SIDS, SID_RWY = load_proc_runways(_SID_LINE)
+STARS, STAR_RWY = load_proc_runways(_STAR_LINE)
 
-
-SIDS = _load_procs(_SID_LINE)
-STARS = _load_procs(_STAR_LINE)
+# Share the engine's elevation tables (runway-threshold, AIP field fallback)
+# and expand ARINC "both parallels" STAR runways (RWxxB) to a concrete side.
+THR_ELEV = load_thr_elevs()
+register_runway_elevations(THR_ELEV)
+register_field_elevations({icao: elev for icao, (_la, _lo, elev) in AIRPORTS.items()})
+_expand_runway = make_expand_runway(THR_ELEV)
 
 
 def _pick_proc(opts: list[str], fix: str | None) -> str:
@@ -196,7 +199,7 @@ def sample_points(route_pts, eobt, rfl_ft, dep_elev, des_elev):
 
 
 def csv_block(callsign, actype, adep, ades, rfl, route_str, eobt, samples,
-              sid="", star=""):
+              sid="", star="", dep_rwy="", arr_rwy=""):
     lines = [
         f"ROUTE: {route_str}",
         f"DEP: {adep}",
@@ -205,6 +208,10 @@ def csv_block(callsign, actype, adep, ades, rfl, route_str, eobt, samples,
         f"FL: F{rfl}",
         f"ATD: {eobt.strftime('%Y-%m-%d %H:%M:%S')}",
     ]
+    if dep_rwy:
+        lines.append(f"DEP RWY: {dep_rwy}")
+    if arr_rwy:
+        lines.append(f"ARR RWY: {arr_rwy}")
     if sid:
         lines.append(f"SID: {sid}")
     if star:
@@ -269,8 +276,14 @@ def main() -> None:
         first0, last0 = _route_fixes(r["route"])
         sid = _pick_proc(SIDS.get(adep, []), first0)
         star = _pick_proc(STARS.get(ades, []), last0)
-        la1, lo1, e1 = AIRPORTS[adep]
-        la2, lo2, e2 = AIRPORTS[ades]
+        la1, lo1, _e1 = AIRPORTS[adep]
+        la2, lo2, _e2 = AIRPORTS[ades]
+        # Concrete runway from the chosen SID/STAR (expand RWxxB -> a side),
+        # and the runway-threshold elevations for the cosmetic profile.
+        dep_rwy = _expand_runway(adep, SID_RWY.get((adep, sid), "")) if sid else ""
+        arr_rwy = _expand_runway(ades, STAR_RWY.get((ades, star), "")) if star else ""
+        dep_elev = runway_threshold_elevation_ft(adep, dep_rwy)
+        des_elev = runway_threshold_elevation_ft(ades, arr_rwy)
         # Multi-route: the picked route + the pair's other published routes
         # (up to 3 total, deduped) so the flight has more than one route.
         group = [(r, coords)] + [
@@ -283,9 +296,12 @@ def main() -> None:
                 continue
             seen_rt.add(rr["route"])
             ri = len(routes_out) + 1
-            rfl = cab_cruising_level(
+            # Cap the filed level to what this airframe can reach under the
+            # Thai APM data (e.g. B738 tops at FL380) so cruise == RFL.
+            rfl = cab_cruising_level_capped(
                 bearing(la1, lo1, la2, lo2),
                 _RFL_RNAV[i % len(_RFL_RNAV)] if rr.get("rnav") else _RFL_NON[i % len(_RFL_NON)],
+                int(reachable_ceiling_ft(actype) // 100),
             )
             route_pts = (
                 [(adep, la1, lo1)]
@@ -297,13 +313,14 @@ def main() -> None:
                 "route_str": rr["route"],
                 "rfl": rfl,
                 "route_pts": route_pts,
-                "samples": sample_points(route_pts, eobt, rfl * 100.0, e1, e2),
+                "samples": sample_points(route_pts, eobt, rfl * 100.0, dep_elev, des_elev),
             })
             if len(routes_out) >= 3:
                 break
         flights.append({
             "callsign": callsign, "actype": actype, "adep": adep, "ades": ades,
-            "eobt": eobt, "sid": sid, "star": star, "routes": routes_out,
+            "eobt": eobt, "sid": sid, "star": star,
+            "dep_rwy": dep_rwy, "arr_rwy": arr_rwy, "routes": routes_out,
         })
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -326,6 +343,7 @@ def main() -> None:
                 fl["callsign"], fl["actype"], fl["adep"], fl["ades"],
                 rt["rfl"], rt["route_str"], fl["eobt"], rt["samples"],
                 sid=fl["sid"], star=fl["star"],
+                dep_rwy=fl["dep_rwy"], arr_rwy=fl["arr_rwy"],
             )
         )
     csv_path = OUT_DIR / "dummy_100_flights.csv"
@@ -348,6 +366,8 @@ def main() -> None:
                     "rfl": rt["rfl"],
                     "sid": fl["sid"],
                     "star": fl["star"],
+                    "dep_rwy": fl["dep_rwy"],
+                    "arr_rwy": fl["arr_rwy"],
                     "eobt": fl["eobt"].isoformat(),
                     "idents": [p[0] for p in rt["route_pts"]],
                 },

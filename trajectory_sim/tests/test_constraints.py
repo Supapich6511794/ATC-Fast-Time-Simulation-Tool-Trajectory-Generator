@@ -65,11 +65,14 @@ def test_descent_floor_does_not_pin_climb_start() -> None:
 
 def test_at_or_below_caps_descent() -> None:
     base = _alt_at_nm(_build(None), 150.0)
+    # Cap safely below the unconstrained descent profile at this fix, so the
+    # test exercises the ceiling regardless of the dataset's descent rate.
+    cap = base - 2000.0
     capped = _alt_at_nm(
-        _build([RouteConstraint(150.0, "descent", alt_ceil_ft=8000.0)]), 150.0
+        _build([RouteConstraint(150.0, "descent", alt_ceil_ft=cap)]), 150.0
     )
-    assert base > 8000.0  # the unconstrained profile is higher here
-    assert capped <= 8000.0 + 1.0  # the constraint pulled it down to the cap
+    assert base > cap  # the unconstrained profile is higher here
+    assert capped <= cap + 1.0  # the constraint pulled it down to the cap
 
 
 def test_at_or_above_floors_climb() -> None:

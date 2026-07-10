@@ -215,6 +215,31 @@ def test_cab_cruising_level_snaps_to_direction() -> None:
     assert cab_cruising_level(90.0, 350) == 350
 
 
+def test_cab_cruising_level_capped_respects_ceiling() -> None:
+    from trajectory_sim.validation import cab_cruising_level_capped
+
+    # Westbound wants FL400 but the airframe tops at FL380 → highest even
+    # compliant level at/under the cap.
+    fl = cab_cruising_level_capped(270.0, 400, 380)
+    assert fl <= 380 and fl % 2 == 0
+    # Below the cap, it behaves like the uncapped snap.
+    assert cab_cruising_level_capped(270.0, 350, 400) == cab_cruising_level(270.0, 350)
+    # An exactly-reachable requested level is kept.
+    assert cab_cruising_level_capped(90.0, 350, 380) == 350
+
+
+def test_reachable_ceiling_below_service_ceiling() -> None:
+    # Thai APM caps the B738 climb table at FL380, below its FL410 service
+    # ceiling — this is the level a flight planner must not file above.
+    from trajectory_sim.performance import (
+        reachable_ceiling_ft,
+        service_ceiling_ft as svc,
+    )
+
+    assert reachable_ceiling_ft("B738") == 38000.0
+    assert reachable_ceiling_ft("B738") <= svc("B738")
+
+
 def test_cruise_level_with_real_profile_exact_and_short() -> None:
     ac = "B738"
     ceil = service_ceiling_ft(ac)

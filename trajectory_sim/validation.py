@@ -408,6 +408,24 @@ def cab_cruising_level(track_deg: float, desired_fl: int) -> int:
     return min(levels, key=lambda fl: (abs(fl - desired_fl), fl))
 
 
+def cab_cruising_level_capped(
+    track_deg: float, desired_fl: int, max_fl: int
+) -> int:
+    """CAB cruising level nearest ``desired_fl`` but never above ``max_fl``.
+
+    Snaps like :func:`cab_cruising_level`, then — if that lands above
+    ``max_fl`` (the highest level the airframe can actually reach; see
+    :func:`performance.reachable_ceiling_ft`) — drops to the highest
+    compliant level ``<= max_fl`` so a flight planner keeps cruise == RFL.
+    Falls back to the plain nearest level when none fit under the cap.
+    """
+    fl = cab_cruising_level(track_deg, min(desired_fl, max_fl))
+    if fl > max_fl:
+        fits = [lv for lv in cruising_levels_for(track_deg) if lv <= max_fl]
+        return max(fits) if fits else fl
+    return fl
+
+
 @dataclass(frozen=True)
 class CruisingLevelValidation:
     """Result of checking an RFL against the CAB table of cruising levels."""

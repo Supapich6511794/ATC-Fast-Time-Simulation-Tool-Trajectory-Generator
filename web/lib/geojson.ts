@@ -8,6 +8,7 @@
  * de-duplicate by identifier. No coordinate is invented or guessed.
  */
 
+import { fetchRunways } from "./atcLayers";
 import type {
   AirwayCollection,
   FirCollection,
@@ -22,6 +23,7 @@ const SID_LINES_URL = "/data/sid/sid_line_thai.geojson";
 const STAR_LINES_URL = "/data/star/star_line.geojson";
 const SID_WPTS_URL = "/data/sid/sid_waypoint_thai.geojson";
 const STAR_WPTS_URL = "/data/star/star_waypoint.geojson";
+const PBN_WPTS_URL = "/data/pbn/pbn_waypoint.geojson";
 
 async function fetchJson<T>(url: string): Promise<T> {
   const res = await fetch(url, { cache: "force-cache" });
@@ -41,6 +43,70 @@ export function fetchStarWaypoints(): Promise<ProcedureWaypointCollection> {
   return fetchJson<ProcedureWaypointCollection>(STAR_WPTS_URL);
 }
 
+/** Fetch PBN instrument-approach waypoints (the coded fixes). Loaded lazily. */
+export function fetchPbnWaypoints(): Promise<ProcedureWaypointCollection> {
+  return fetchJson<ProcedureWaypointCollection>(PBN_WPTS_URL);
+}
+
+// Memoised airport -> { runway -> [approach names] }, derived from the PBN
+// approach GeoJSON. PBN procedures are named `R{rwy}` or `R{rwy}-{variant}`
+// (e.g. R18, R09-Y, R09-Z), so the runway is parsed from the name; approaches
+// are grouped under the "RW{rwy}" the Arrival-RWY picker uses. Built once.
+let _approachIndex: Promise<Map<string, Record<string, string[]>>> | null = null;
+
+/** Parse the landing runway (as an "RW…" ident) out of a PBN approach name.
+ *  `R09-Y`/`R09-Z` -> `RW09`, `R18` -> `RW18`, `R02L` -> `RW02L`. */
+function runwayOfApproach(name: string): string | null {
+  const m = /^R(\d{2}[LCR]?)(?:-.*)?$/.exec(name.trim().toUpperCase());
+  return m ? `RW${m[1]}` : null;
+}
+
+function buildApproachIndex(): Promise<Map<string, Record<string, string[]>>> {
+  if (!_approachIndex) {
+    _approachIndex = fetchPbnWaypoints()
+      .then((fc) => {
+        // airport -> runway -> Set(approach names)
+        const m = new Map<string, Map<string, Set<string>>>();
+        for (const f of fc.features) {
+          const a = f.properties.airport_identifier;
+          const n = f.properties.procedure_identifier;
+          if (!a || !n) continue;
+          const rwy = runwayOfApproach(n);
+          if (!rwy) continue;
+          let byRwy = m.get(a);
+          if (!byRwy) m.set(a, (byRwy = new Map()));
+          let names = byRwy.get(rwy);
+          if (!names) byRwy.set(rwy, (names = new Set()));
+          names.add(n);
+        }
+        const out = new Map<string, Record<string, string[]>>();
+        for (const [a, byRwy] of m) {
+          const rec: Record<string, string[]> = {};
+          for (const [rwy, names] of byRwy) rec[rwy] = [...names].sort();
+          out.set(a, rec);
+        }
+        return out;
+      })
+      .catch(() => {
+        _approachIndex = null; // let a later call retry the fetch
+        return new Map();
+      });
+  }
+  return _approachIndex;
+}
+
+/** PBN instrument approaches published at an aerodrome, grouped by the arrival
+ *  runway they serve: `{ RW09: ["R09-Y","R09-Z"], RW27: ["R27-Y","R27-Z"] }`.
+ *  From the bundled PBN GeoJSON, so it works with or without the engine. */
+export async function staticApproaches(
+  airport: string,
+): Promise<Record<string, string[]>> {
+  const code = airport.trim().toUpperCase();
+  if (!code) return {};
+  const idx = await buildApproachIndex();
+  return idx.get(code) ?? {};
+}
+
 // Memoised airport -> distinct SID/STAR procedure names AND runways, derived
 // from the bundled procedure-waypoint GeoJSON (same source the engine
 // indexes). Runways are the RW* transition identifiers (SID = departure
@@ -56,6 +122,17 @@ interface _ProcEntry {
   starProcRwy: Map<string, Set<string>>;
 }
 let _procNameIndex: Promise<Map<string, _ProcEntry>> | null = null;
+
+/** Expand an ARINC "both parallels" runway transition (e.g. RW21B) into the
+ *  two real runway idents (RW21L, RW21R) so the picker shows AIP-accurate
+ *  options — the AIP publishes one SID/STAR chart for "RWY 21L/21R". A
+ *  single-runway (RW18) or already-sided (RW21L) ident is returned unchanged.
+ *  The engine matches either side back to the RW21B group (see navdata
+ *  `_select_group`), so a selection still resolves. */
+function expandRunwayIdent(tr: string): string[] {
+  const m = /^RW(\d{2})B$/.exec(tr.toUpperCase());
+  return m ? [`RW${m[1]}L`, `RW${m[1]}R`] : [tr];
+}
 
 function buildProcedureNameIndex(): Promise<Map<string, _ProcEntry>> {
   if (!_procNameIndex) {
@@ -87,8 +164,11 @@ function buildProcedureNameIndex(): Promise<Map<string, _ProcEntry>> {
             if (!procRwy.has(n)) procRwy.set(n, new Set());
             const tr = f.properties.transition_identifier;
             if (tr && /^RW/.test(tr)) {
-              (kind === "SID" ? e.sidRwy : e.starRwy).add(tr);
-              procRwy.get(n)!.add(tr);
+              const target = kind === "SID" ? e.sidRwy : e.starRwy;
+              for (const id of expandRunwayIdent(tr)) {
+                target.add(id);
+                procRwy.get(n)!.add(id);
+              }
             }
           }
         };
@@ -131,12 +211,50 @@ export async function staticRunways(
 ): Promise<{ SID: string[]; STAR: string[] }> {
   const code = airport.trim().toUpperCase();
   if (!code) return { SID: [], STAR: [] };
-  const idx = await buildProcedureNameIndex();
+  const [idx, aip] = await Promise.all([
+    buildProcedureNameIndex(),
+    buildAipRunwayIndex(),
+  ]);
   const e = idx.get(code);
-  return {
-    SID: e ? [...e.sidRwy].sort() : [],
-    STAR: e ? [...e.starRwy].sort() : [],
-  };
+  // Every physical runway at the aerodrome can be used for departure OR
+  // arrival, so both lists start from the full AIP runway set (so airports
+  // without a coded SID/STAR still expose their runways — needed to pick a
+  // PBN approach). The procedure-derived runways are unioned in for any that
+  // the AIP runway table happens not to list.
+  const all = aip.get(code) ?? [];
+  const dep = new Set<string>([...(e?.sidRwy ?? []), ...all]);
+  const arr = new Set<string>([...(e?.starRwy ?? []), ...all]);
+  return { SID: [...dep].sort(), STAR: [...arr].sort() };
+}
+
+// Memoised airport -> every runway ident published in the AIP runway table
+// (airports/runway.csv). Covers ALL Thai aerodromes, including those with no
+// coded SID/STAR, so the runway pickers are never empty for a real airport.
+let _aipRunwayIndex: Promise<Map<string, string[]>> | null = null;
+
+function buildAipRunwayIndex(): Promise<Map<string, string[]>> {
+  if (!_aipRunwayIndex) {
+    _aipRunwayIndex = fetchRunways()
+      .then((rows) => {
+        const m = new Map<string, Set<string>>();
+        for (const r of rows) {
+          const a = r.airport.trim().toUpperCase();
+          const id = r.ident.trim().toUpperCase();
+          if (!a || !id) continue;
+          let s = m.get(a);
+          if (!s) m.set(a, (s = new Set()));
+          s.add(id);
+        }
+        const out = new Map<string, string[]>();
+        for (const [a, s] of m) out.set(a, [...s].sort());
+        return out;
+      })
+      .catch(() => {
+        _aipRunwayIndex = null; // let a later call retry the fetch
+        return new Map();
+      });
+  }
+  return _aipRunwayIndex;
 }
 
 /** Procedure name → the runways it serves, split SID/STAR, for an aerodrome.

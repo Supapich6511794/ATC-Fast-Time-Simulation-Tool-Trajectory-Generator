@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import csv
 import math
+import sqlite3
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
@@ -184,9 +185,9 @@ class _Segment:
 
 
 # Legacy hand-coded BADA-*style* climb / descent schedules. These are now
-# the FALLBACK only — the real BADA 3.16 PTF dataset is loaded below and
-# takes precedence (see _load_bada_perf_tables). They are kept so the
-# engine still runs if the BADA CSV is ever missing from the package.
+# the FALLBACK only — the Thai APM dataset is loaded below and takes
+# precedence (see _load_perf_tables). They are kept so the engine still
+# runs if neither Thai APM data file ships with the package.
 # Climb ROC drops with altitude; descent ROD is roughly constant. Numbers
 # are representative published performance inside the brief's 1500–2500
 # ft/min band.
@@ -244,22 +245,38 @@ _LEGACY_PERF_TABLES: dict[
 
 
 # ---------------------------------------------------------------------------
-# Real BADA 3.16 performance data (supervisor-provided PTF dataset).
+# Thai APM performance data (BADA-format export from Bangkok FIR radar).
 #
-# Replaces the hand-coded rate tables above. Each row of the CSV gives
-# TAS / ROCD / fuel for one (aircraft, ISA offset, phase, flight level).
-# We use ROCD only — climb/descent rates — and keep the brief's CAS/Mach
-# speed schedule for TAS (project-lead decision). Two project decisions
-# are baked in here:
-#   * Raw BADA rates are used as-is, even where they exceed the brief's
-#     1500–2500 ft/min planning band (that is the airframe's real
-#     performance — the band is a planning average, not a physical limit).
-#   * The ISA+20 variant is used (matches the dataset's metadata note).
+# Replaces the hand-coded rate tables above. "Thai APM" is a BADA-shaped
+# kinematic table fitted to ~350 days of real Mode-S surveillance in the
+# Bangkok FIR (2022–2026), laid out like a BADA PTF but NOT a EUROCONTROL
+# product. See data/THAIAPM_SQLITE_GUIDE.md and data/DERIVABILITY.md.
+#
+# We use ROCD only — climb/descent rates (`rocd_nom`) — and keep the
+# brief's operational CAS/Mach speed schedule for TAS (project-lead
+# decision). Project decisions baked in here:
+#   * `rocd_nom` (the p50 typical rate) is used as-is, even where it sits
+#     outside the brief's 1500–2500 ft/min planning band (that is the
+#     fleet's real observed performance — the band is a planning average,
+#     not a physical limit). The inverted `rocd_lo`/`rocd_hi` mass bands
+#     are deliberately ignored — nom is the "typical" value to use.
+#   * The single ISA+15 variant is used (the dataset's only isa_offset,
+#     labelling the ~ISA+15 warm Bangkok conditions).
+#   * Climb tables stop at the highest FL actually observed in Bangkok, so
+#     a flight filed above that observed top is capped there rather than
+#     extrapolated to the published service ceiling (see VerticalProfile.
+#     build's reachable-ceiling clamp).
+#
+# Loaded from the SQLite package by default; the CSV export is an
+# equivalent fallback, and the hand-coded _LEGACY_PERF_TABLES are the
+# last resort if neither data file ships.
 # ---------------------------------------------------------------------------
 
-_BADA_VERSION = "3.16"
-_BADA_ISA_OFFSET = 20
-_BADA_CSV_PATH = Path(__file__).resolve().parent / "data" / "bada_performance.csv"
+_THAIAPM_VERSION = "thaiapm-202607"
+_THAIAPM_ISA_OFFSET = 15
+_DATA_DIR = Path(__file__).resolve().parent / "data"
+_THAIAPM_SQLITE_PATH = _DATA_DIR / "thaiapm_bada.sqlite"
+_THAIAPM_CSV_PATH = _DATA_DIR / "thaiapm_performance.csv"
 
 
 def _segments_from_fl_rates(
@@ -281,33 +298,28 @@ def _segments_from_fl_rates(
     return tuple(segs)
 
 
-def _load_bada_perf_tables(
-    path: Path = _BADA_CSV_PATH,
-    isa_offset: int = _BADA_ISA_OFFSET,
+def _perf_tables_from_rows(
+    rows: "list[tuple[str, str, object, object]]",
 ) -> dict[str, tuple[tuple[_Segment, ...], tuple[_Segment, ...]]]:
-    """Parse the BADA CSV into per-airframe (climb, descent) segment tables.
+    """Build per-airframe (climb, descent) segment tables from raw rows.
 
-    Keyed by upper-case ICAO type. Cruise rows (no ROCD) are ignored.
-    Raises on I/O or parse failure so the caller can fall back to the
-    legacy hand-coded tables.
+    Each row is ``(actype, phase, fl, rocd_nom)``. Cruise rows and rows
+    with a NULL/blank ROCD are ignored (Thai APM leaves cruise `rocd_*`
+    NULL, and descent populates only `rocd_nom`). Keyed by upper-case ICAO
+    type; a type is kept only if it has both a climb and a descent table.
     """
     climb: dict[str, list[tuple[int, float]]] = {}
     descent: dict[str, list[tuple[int, float]]] = {}
-    with path.open(encoding="utf-8", newline="") as fh:
-        for row in csv.DictReader(fh):
-            if int(row["isa_offset"]) != isa_offset:
-                continue
-            rocd = row["rocd_nom"]
-            phase = row["phase"]
-            if phase == "cruise" or not rocd:
-                continue
-            try:
-                fl = int(float(row["fl"]))
-                rate = float(rocd)
-            except (ValueError, KeyError):
-                continue
-            bucket = climb if phase == "climb" else descent
-            bucket.setdefault(row["actype"].upper(), []).append((fl, rate))
+    for actype, phase, fl, rocd in rows:
+        if phase == "cruise" or rocd is None or rocd == "":
+            continue
+        try:
+            fl_i = int(float(fl))  # type: ignore[arg-type]
+            rate = float(rocd)  # type: ignore[arg-type]
+        except (ValueError, TypeError):
+            continue
+        bucket = climb if phase == "climb" else descent
+        bucket.setdefault(actype.upper(), []).append((fl_i, rate))
 
     tables: dict[
         str, tuple[tuple[_Segment, ...], tuple[_Segment, ...]]
@@ -320,14 +332,70 @@ def _load_bada_perf_tables(
     return tables
 
 
-try:
-    _PERF_TABLES = _load_bada_perf_tables()
-    if "B738" not in _PERF_TABLES:  # in-scope airframe must be present
-        raise ValueError("BADA dataset missing the B738")
-    PERFORMANCE_SOURCE = f"BADA {_BADA_VERSION} (ISA+{_BADA_ISA_OFFSET})"
-except (OSError, ValueError, KeyError):  # pragma: no cover - fallback path
-    _PERF_TABLES = _LEGACY_PERF_TABLES
-    PERFORMANCE_SOURCE = "built-in BADA-style tables (BADA CSV unavailable)"
+def _load_thaiapm_sqlite(
+    path: Path = _THAIAPM_SQLITE_PATH,
+    isa_offset: int = _THAIAPM_ISA_OFFSET,
+) -> dict[str, tuple[tuple[_Segment, ...], tuple[_Segment, ...]]]:
+    """Load the Thai APM SQLite package into per-airframe segment tables.
+
+    Opens the database read-only and reads `rocd_nom` for climb/descent.
+    Raises on I/O or SQL failure so the caller can fall back to the CSV.
+    """
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        rows = con.execute(
+            "SELECT actype, phase, fl, rocd_nom FROM thaiapm_performance "
+            "WHERE isa_offset = ? AND phase IN ('climb', 'descent') "
+            "AND rocd_nom IS NOT NULL",
+            (isa_offset,),
+        ).fetchall()
+    finally:
+        con.close()
+    return _perf_tables_from_rows(rows)
+
+
+def _load_thaiapm_csv(
+    path: Path = _THAIAPM_CSV_PATH,
+    isa_offset: int = _THAIAPM_ISA_OFFSET,
+) -> dict[str, tuple[tuple[_Segment, ...], tuple[_Segment, ...]]]:
+    """Load the Thai APM CSV export — the SQLite fallback (same shape)."""
+    with path.open(encoding="utf-8", newline="") as fh:
+        rows = [
+            (row["actype"], row["phase"], row["fl"], row["rocd_nom"])
+            for row in csv.DictReader(fh)
+            if int(row["isa_offset"]) == isa_offset
+        ]
+    return _perf_tables_from_rows(rows)
+
+
+def _load_perf_tables() -> tuple[
+    dict[str, tuple[tuple[_Segment, ...], tuple[_Segment, ...]]], str
+]:
+    """Load the performance tables, preferring SQLite → CSV → legacy.
+
+    Returns ``(tables, source_label)``. A loaded dataset must contain the
+    in-scope B738; otherwise the next source is tried. Falls back to the
+    hand-coded tables only if neither Thai APM data file is usable.
+    """
+    isa = _THAIAPM_ISA_OFFSET
+    label = f"Thai APM ({_THAIAPM_VERSION}, ISA+{isa})"
+    for loader, tag in (
+        (_load_thaiapm_sqlite, "sqlite"),
+        (_load_thaiapm_csv, "csv"),
+    ):
+        try:
+            tables = loader()
+        except (OSError, sqlite3.Error, ValueError, KeyError):
+            continue
+        if "B738" in tables:  # in-scope airframe must be present
+            return tables, f"{label} [{tag}]"
+    return (
+        _LEGACY_PERF_TABLES,
+        "built-in BADA-style tables (Thai APM dataset unavailable)",
+    )
+
+
+_PERF_TABLES, PERFORMANCE_SOURCE = _load_perf_tables()
 
 
 @dataclass(frozen=True)
@@ -508,9 +576,10 @@ _BELOW_FL100_CAS_KT = 250.0
 _RESTRICTION_ALT_FT = 10000.0
 
 
-# The CAS/Mach speed schedule is operational (defined above), NOT BADA-
-# derived — BADA nominal speeds run faster than real ops. BADA still drives
-# the climb/descent RATES (see _load_bada_perf_tables / PERFORMANCE_SOURCE).
+# The CAS/Mach speed schedule is operational (defined above), NOT dataset-
+# derived — nominal BADA-style speeds run faster than real ops. Thai APM
+# still drives the climb/descent RATES (see _load_perf_tables /
+# PERFORMANCE_SOURCE).
 SPEED_SCHEDULE_SOURCE = "operational (airline LRC), calibrated to CAT062 tracks"
 
 
@@ -718,6 +787,55 @@ def register_field_elevations(mapping: dict[str, float]) -> None:
         _FIELD_ELEV_FT[icao.upper()] = float(elev_ft)
 
 
+# Runway-threshold elevations (ft AMSL), keyed ``(ICAO, runway)`` where the
+# runway is the bare designator without the "RW" prefix — e.g.
+# ``("VTSP", "09") -> 22.0``, ``("VTBD", "21L") -> 6.4``. Sourced from the
+# Thai AIP AD 2 threshold table and injected by the API at startup (see
+# api.server._register_runway_elevations); empty otherwise, in which case
+# :func:`runway_threshold_elevation_ft` falls back to the field elevation.
+_RUNWAY_ELEV_FT: dict[tuple[str, str], float] = {}
+
+
+def _norm_runway(runway: str) -> str:
+    """Normalise a runway ident to the bare designator used as a key.
+
+    Strips an optional ``RW`` prefix and surrounding space and upper-cases
+    the side letter: ``"RW09"`` -> ``"09"``, ``"rw21l"`` -> ``"21L"``.
+    """
+    r = runway.strip().upper()
+    return r[2:] if r.startswith("RW") else r
+
+
+def register_runway_elevations(mapping: dict[tuple[str, str], float]) -> None:
+    """Merge runway-threshold elevations into the lookup used by
+    :func:`runway_threshold_elevation_ft`.
+
+    Keys are ``(ICAO, runway)`` and are normalised (upper-cased ICAO, bare
+    runway designator). Lets the API inject the Thai AIP AD 2 threshold
+    table at startup without this pure-engine module reading data files.
+    """
+    for (icao, runway), elev_ft in mapping.items():
+        _RUNWAY_ELEV_FT[(icao.upper(), _norm_runway(runway))] = float(elev_ft)
+
+
+def runway_threshold_elevation_ft(
+    icao: str, runway: str | None = None
+) -> float:
+    """Threshold elevation (ft AMSL) of a specific runway end.
+
+    Returns the AIP threshold elevation for ``runway`` at ``icao`` when
+    known, so the climb starts / descent ends at the actual runway threshold
+    rather than the aerodrome's single published elevation. Falls back to
+    :func:`field_elevation_ft` when the runway is unset or has no threshold
+    elevation on record (an "Auto" runway, or a strip with no AIP data).
+    """
+    if runway:
+        elev = _RUNWAY_ELEV_FT.get((icao.upper(), _norm_runway(runway)))
+        if elev is not None:
+            return elev
+    return field_elevation_ft(icao)
+
+
 def _segments_for(aircraft_type: str) -> tuple[tuple[_Segment, ...], tuple[_Segment, ...]]:
     """Return (climb_segments, descent_segments) for an aircraft type.
 
@@ -820,6 +938,22 @@ def service_ceiling_ft(aircraft_type: str) -> float:
     return _SERVICE_CEILING_FT.get(
         aircraft_type.upper(), _SERVICE_CEILING_FT["B738"]
     )
+
+
+def reachable_ceiling_ft(aircraft_type: str) -> float:
+    """Highest altitude the loaded climb schedule can actually reach.
+
+    The top of the type's climb table — which, with the Thai APM dataset, is
+    the highest FL *observed* in Bangkok and can sit below the published
+    :func:`service_ceiling_ft` (e.g. B738 tops at FL380). This is the ceiling
+    :meth:`VerticalProfile.build` clamps a requested level to, so a flight
+    planner should cap filed levels here to keep cruise == RFL. Falls back to
+    the service ceiling when the type has no climb table.
+    """
+    climb_segs, _ = _segments_for(aircraft_type)
+    if climb_segs:
+        return climb_segs[-1].alt_hi_ft
+    return service_ceiling_ft(aircraft_type)
 
 
 def aircraft_roc_rod(aircraft_type: str) -> tuple[float, float]:
