@@ -41,6 +41,7 @@ import { BASEMAPS, type Basemap } from "@/lib/mapPrefs";
 import type { PreviewPoint } from "@/lib/routePreview";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
 import { aircraftAt, toSamples } from "@/lib/useSimPlayback";
+import { formatAirspace, type AirspaceMembership } from "@/lib/airspace";
 import type {
   AirwayCollection,
   FirCollection,
@@ -142,7 +143,16 @@ interface Props {
   typeFilter?: string;
   /** Which fields the aircraft tag (the label beside each plane) shows,
    *  controlled by the Flight Tags menu. Updates the labels in real time. */
-  tagFields?: { callsign: boolean; fl: boolean; ias: boolean; hdg: boolean };
+  tagFields?: {
+    callsign: boolean;
+    fl: boolean;
+    ias: boolean;
+    hdg: boolean;
+    airspace: boolean;
+  };
+  /** Live airspace membership per flightKey (from MapApp); the tag's second
+   *  line names the current zone when `tagFields.airspace` is on. */
+  airspace?: Record<string, AirspaceMembership>;
   /** Shared sim clock (seconds); each aircraft is interpolated at it. */
   simT: number;
   /** Which route is currently driving the playback clock — a numeric
@@ -518,11 +528,16 @@ function planeIcon(
 
 /** Small pill badge for the Top-of-Climb / Top-of-Descent map markers. */
 function profileBadge(text: string, color: string): L.DivIcon {
+  // A small red dot AT the TOC/TOD point plus a tiny bare label (no filled
+  // pill) — far less visual clutter when many routes show their TOC/TOD at
+  // once. The label keeps the route's colour so TOC vs TOD still reads apart.
   return L.divIcon({
     className: "profile-badge",
-    iconSize: [40, 18],
-    iconAnchor: [20, 9],
-    html: `<span class="profile-badge-pill" style="background:${color}">${text}</span>`,
+    iconSize: [0, 0],
+    iconAnchor: [0, 0],
+    html:
+      `<span class="profile-badge-dot"></span>` +
+      `<span class="profile-badge-text" style="color:${color}">${text}</span>`,
   });
 }
 
@@ -717,6 +732,7 @@ export default function LeafletMap({
   typeFilter,
   onProcedureClick,
   tagFields,
+  airspace,
   simT,
   playbackIdx,
   hiddenAircraft,
@@ -1272,11 +1288,29 @@ export default function LeafletMap({
         const MAX_SEG = 120;
         const step = Math.max(1, Math.ceil((pts.length - 1) / MAX_SEG));
         const keep = new Set<number>([0, pts.length - 1]);
-        for (let i = 0; i < pts.length; i += step) keep.add(i);
-        // Force-keep the exact vertex at every route waypoint (enroute + SID +
-        // STAR + PBN approach) so the decimated line TURNS at each fix instead
-        // of chording across the turn. The engine emits a sample exactly on
-        // each fix, so its nearest point is that on-fix sample.
+        // Decimate the STRAIGHT parts only. A turn is a handful of samples out
+        // of hundreds, so dropping 5 in 6 of them the way a flat stride does
+        // collapses the whole arc into one chord — a departure that curves off
+        // the runway over half a minute gets drawn as a corner. Keep every
+        // sample whose track has moved since the last one drawn, and the arcs
+        // come out at full resolution while the long straight legs still cost
+        // almost nothing.
+        const TURN_DEG = 2;
+        let lastKept = 0;
+        for (let i = 1; i < pts.length; i++) {
+          const turned =
+            Math.abs(
+              ((pts[i].track_deg - pts[lastKept].track_deg + 540) % 360) - 180,
+            ) >= TURN_DEG;
+          if (turned || i - lastKept >= step) {
+            keep.add(i);
+            lastKept = i;
+          }
+        }
+        // Force-keep the sample nearest every route waypoint (enroute + SID +
+        // STAR + PBN approach) so the decimated line passes through the fixes
+        // it is meant to. A fly-over fix has a sample exactly on it; a fly-by
+        // one is cut by the turn, so the nearest sample is the arc beside it.
         for (const wp of route) {
           let best = 0;
           let bestD = Infinity;
@@ -1589,8 +1623,13 @@ export default function LeafletMap({
         // Configurable flight tag — only the fields enabled in the Flight
         // Tags menu, in screenshot order: callsign · FL · IAS · HDG. Updates
         // live as the checkboxes toggle (re-rendered every frame anyway).
-        const tf =
-          tagFields ?? { callsign: true, fl: true, ias: true, hdg: true };
+        const tf = tagFields ?? {
+          callsign: true,
+          fl: true,
+          ias: true,
+          hdg: true,
+          airspace: true,
+        };
         const tagParts: string[] = [];
         if (tf.callsign) tagParts.push(t.meta.callsign);
         if (tf.fl && ac.altitudeFt != null)
@@ -1598,6 +1637,11 @@ export default function LeafletMap({
         if (tf.ias) tagParts.push(`${Math.round(ac.gsKt)}kt`);
         if (tf.hdg) tagParts.push(`${Math.round(ac.track)}°`);
         const tagText = tagParts.join(" ");
+        // Second line: the airspace the plane currently occupies (live,
+        // altitude-aware — computed by MapApp, keyed by flightKey).
+        const airsText = tf.airspace
+          ? formatAirspace(airspace?.[t.meta.flightKey], "compact")
+          : "";
         return (
           <Fragment key={`ac-${t.meta.flightKey}`}>
             {decayTrail}
@@ -1633,14 +1677,15 @@ export default function LeafletMap({
               )}
               zIndexOffset={t.meta.flightKey === followKey ? 1000 : 0}
             >
-              {tagText && (
+              {(tagText || airsText) && (
                 <Tooltip
                   permanent
                   direction="right"
                   offset={[10, 0]}
                   className="aircraft-tag"
                 >
-                  {tagText}
+                  {tagText && <div>{tagText}</div>}
+                  {airsText && <div className="aircraft-tag-airspace">{airsText}</div>}
                 </Tooltip>
               )}
             </Marker>

@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
+from typing import Callable
 
 import geopandas as gpd
 import pandas as pd
+
+from .geodesy import haversine_distance, project_point
 
 logger = logging.getLogger(__name__)
 
@@ -318,6 +321,7 @@ class NavData:
                     get(s.speed_limit_description), get(s.speed_limit)
                 ),
                 turn_direction=_clean_str(get(s.turn_direction)) or None,
+                magnetic_course=_to_float(get(s.magnetic_course)),
             )
             self._proc_index.setdefault(
                 (airport, proc_type, name), []
@@ -386,6 +390,7 @@ class NavData:
                 transition=r.transition or None,
                 turn_direction=r.turn_direction,
                 desc_code=r.desc_code,
+                magnetic_course=r.magnetic_course,
             )
             for r in ordered
         )
@@ -618,6 +623,7 @@ class SidStarSchema:
     speed_limit: str = "speed_limit"
     speed_limit_description: str = "speed_limit_description"
     turn_direction: str = "turn_direction"
+    magnetic_course: str = "magnetic_course"
 
 
 DEFAULT_SIDSTAR_SCHEMA = SidStarSchema()
@@ -629,6 +635,14 @@ class ProcedureType(str, Enum):
     SID = "SID"
     STAR = "STAR"
     APPROACH = "APPROACH"
+
+
+#: ARINC 424 leg types that end on a HEADING or a manual termination rather
+#: than on a fix: VM/FM (fly a heading/course until ATC intervenes — how an
+#: "open" STAR hands the arrival to radar vectors), VI (heading to an intercept)
+#: and VR (heading to a radial). Nothing on the ground marks where they end, so
+#: they contribute no waypoint — see :attr:`ProcedureLeg.has_fix`.
+VECTOR_TERMINATED = frozenset({"VM", "FM", "VI", "VR"})
 
 
 class AltitudeConstraintType(str, Enum):
@@ -699,9 +713,25 @@ class ProcedureLeg:
     #: approach fix role — ``F`` = FAF, ``M`` = MAPt. Present on PBN approach
     #: legs; ``None`` for SID/STAR sources that don't carry the column.
     desc_code: str | None = None
+    #: Published course to fly, degrees MAGNETIC. Carried by the leg types that
+    #: are defined by a course rather than by a fix (CA/CF/VA); ``None``
+    #: otherwise. :func:`expand_sid_departure` converts it to true.
+    magnetic_course: float | None = None
 
     @property
     def has_fix(self) -> bool:
+        """Does this leg end on a fix the aircraft can actually fly to?
+
+        A vector-terminated leg does not, however the source data is filled in.
+        An "open" STAR ends its runway transition with a VM ("heading to a
+        manual termination") — the arrival is handed to radar vectors there —
+        and the DFD export codes that leg with the AERODROME as its waypoint
+        (VTBS LEBI1D: ``ENKAA -> VM VTBS``). Taken at face value the aircraft
+        flies over the middle of the airport, then back out to the approach's
+        IAF and round again. It is not a fix; it is the absence of one.
+        """
+        if self.path_terminator in VECTOR_TERMINATED:
+            return False
         return (
             self.ident is not None
             and self.lat is not None
@@ -738,6 +768,184 @@ class Procedure:
         return out
 
 
+@dataclass(frozen=True)
+class RunwayEnd:
+    """A runway's landing threshold: where a departure's take-off roll starts.
+
+    Sourced from the ARINC 424 runway table (``runway.csv``), which publishes
+    the threshold coordinates and the runway's bearing both magnetic and true —
+    the pair gives the local magnetic variation for free.
+    """
+
+    icao: str
+    ident: str  # e.g. "RW21L"
+    lat: float
+    lon: float
+    magnetic_bearing: float
+    true_bearing: float
+
+    @property
+    def magnetic_variation(self) -> float:
+        """Degrees to ADD to a magnetic course to make it true (east +)."""
+        return (self.true_bearing - self.magnetic_bearing + 180.0) % 360.0 - 180.0
+
+
+#: (ICAO, normalised runway ident) -> RunwayEnd. Populated at startup from the
+#: ARINC runway table (see api.server._register_runways); empty otherwise, in
+#: which case a departure simply isn't anchored to its threshold.
+_RUNWAY_ENDS: dict[tuple[str, str], RunwayEnd] = {}
+
+
+def _norm_runway_ident(runway: str) -> str:
+    """'21L' / 'RW21L' / 'rw21l' -> 'RW21L' — the key _RUNWAY_ENDS is held on."""
+    r = (runway or "").strip().upper().replace(" ", "")
+    if r and not r.startswith("RW"):
+        r = "RW" + r
+    return r
+
+
+def register_runways(runways: "list[RunwayEnd]") -> None:
+    """Merge runway threshold geometry into the lookup :func:`runway_end` uses."""
+    for rwy in runways:
+        _RUNWAY_ENDS[(rwy.icao.upper(), _norm_runway_ident(rwy.ident))] = rwy
+
+
+def runway_end(icao: str, runway: str | None) -> RunwayEnd | None:
+    """Threshold geometry for a runway, or ``None`` if it isn't on record.
+
+    An ARINC "both" group (``RW21B``, meaning 21L *and* 21R) has no single
+    threshold and resolves to ``None`` — the caller falls back to not anchoring
+    the departure.
+    """
+    if not runway:
+        return None
+    return _RUNWAY_ENDS.get((icao.upper(), _norm_runway_ident(runway)))
+
+
+#: ARINC 424 leg types that terminate on an ALTITUDE rather than on a fix: CA
+#: (course to altitude), VA (heading to altitude), FA (fix to altitude). The
+#: source data carries them with no coordinates, so they are the legs
+#: :func:`expand_sid_departure` has to give a position to.
+#:
+#: Such a leg is ALWAYS flown over: it ends the moment the altitude is made, so
+#: the turn onto the next fix cannot begin before that point — an aircraft that
+#: cut the corner would be turning below the altitude the procedure requires.
+ALTITUDE_TERMINATED = frozenset({"CA", "VA", "FA"})
+
+#: A course-to-altitude leg is never allowed to collapse to nothing: even if the
+#: climb model says the altitude is already made, keep the aircraft on the
+#: runway track this far past the previous fix before it may turn.
+_MIN_ALT_LEG_NM = 0.5
+
+#: Fallback length for an altitude-terminated leg whose target altitude or climb
+#: model is unavailable — roughly a jet's distance to 1 500 ft at 200 kt.
+_NOMINAL_ALT_LEG_NM = 2.5
+
+
+def expand_sid_departure(
+    sid: "Procedure",
+    runway: "RunwayEnd | None",
+    climb_distance_nm: "Callable[[float], float] | None" = None,
+) -> "Procedure":
+    """Give a SID's departure legs the ground track the AIP actually depicts.
+
+    The Thai DFD SID data codes the initial climb as a fixless CA leg — "fly
+    course 209° to 1 500 ft, MAX IAS 200 KT" — which :meth:`Procedure.waypoints`
+    drops because it has no coordinates. What's left is the runway-end fix
+    (DE21L) followed straight by the first en-route fix, so the aircraft turns
+    the moment it leaves the ground and cuts diagonally back across the runway.
+
+    This restores the published geometry by:
+
+    * **prepending the departure threshold** (``RW21L``) as the SID's first fix,
+      so the take-off roll runs down the runway centreline instead of starting
+      at the aerodrome reference point (which sits off to one side); and
+    * **giving each altitude-terminated leg a fix**, projected from the previous
+      fix along the leg's course — converted from magnetic to true using the
+      runway's own published bearings — at the distance the climb model needs to
+      reach the leg's altitude. The aircraft therefore flies runway heading
+      until it genuinely has 1 500 ft, and only then turns for the first fix.
+
+    The synthesised legs keep their published altitude/speed restrictions, so
+    the "at or above 1 500 ft" and "MAX IAS 200 KT" limits now reach the
+    vertical/speed profile as well — before, they were discarded with the leg.
+
+    Args:
+        sid: The resolved departure procedure.
+        runway: Threshold geometry for the departure runway (:func:`runway_end`).
+            ``None`` — unknown runway — leaves the procedure untouched.
+        climb_distance_nm: ``altitude_ft -> NM from the threshold at which the
+            climb passes it``, normally
+            :func:`trajectory_sim.performance.climb_distance_nm` bound to the
+            aircraft type, departure elevation and cruise level. ``None`` falls
+            back to a nominal leg length.
+
+    Returns:
+        A new :class:`Procedure` with the same identity and the expanded legs.
+        Returned unchanged when there is no runway to anchor to.
+    """
+    if runway is None or sid.proc_type is not ProcedureType.SID:
+        return sid
+
+    thr = RouteWaypoint(ident=runway.ident, lat=runway.lat, lon=runway.lon)
+    legs: list[ProcedureLeg] = [
+        ProcedureLeg(
+            seqno=0,
+            path_terminator="IF",
+            ident=thr.ident,
+            lat=thr.lat,
+            lon=thr.lon,
+            altitude=AltitudeConstraint(),
+            speed=SpeedConstraint(),
+            transition=runway.ident,
+        )
+    ]
+    # Where the aircraft is when it starts the leg being placed, and how far it
+    # has flown from the threshold to get there — the climb model measures its
+    # distance-to-altitude from the threshold, so the leg only has to cover
+    # what's left of it.
+    prev_lat, prev_lon = thr.lat, thr.lon
+    flown_nm = 0.0
+
+    for leg in sid.legs:
+        if leg.has_fix:
+            flown_nm += haversine_distance(
+                prev_lat, prev_lon, leg.lat, leg.lon  # type: ignore[arg-type]
+            )
+            prev_lat, prev_lon = leg.lat, leg.lon  # type: ignore[assignment]
+            legs.append(leg)
+            continue
+        if leg.path_terminator not in ALTITUDE_TERMINATED:
+            legs.append(leg)  # VI/VM/FM — still fixless, still skipped downstream
+            continue
+
+        # Course is published magnetic; the runway's magnetic/true bearing pair
+        # gives the local variation. A leg with no course flies runway heading.
+        course = (
+            (leg.magnetic_course + runway.magnetic_variation) % 360.0
+            if leg.magnetic_course is not None
+            else runway.true_bearing
+        )
+        target_ft = leg.altitude.alt1_ft or leg.altitude.alt2_ft
+        if climb_distance_nm is not None and target_ft is not None:
+            leg_nm = max(climb_distance_nm(target_ft) - flown_nm, _MIN_ALT_LEG_NM)
+        else:
+            leg_nm = _NOMINAL_ALT_LEG_NM
+        lat, lon = project_point(prev_lat, prev_lon, course, leg_nm)
+        legs.append(
+            replace(
+                leg,
+                ident=f"({int(target_ft)})" if target_ft else f"({leg.path_terminator})",
+                lat=lat,
+                lon=lon,
+            )
+        )
+        flown_nm += leg_nm
+        prev_lat, prev_lon = lat, lon
+
+    return replace(sid, legs=tuple(legs))
+
+
 def _collapse_consecutive_idents(
     waypoints: "list[RouteWaypoint]",
 ) -> list[RouteWaypoint]:
@@ -754,6 +962,40 @@ def _collapse_consecutive_idents(
             continue
         out.append(wp)
     return out
+
+
+def _join_collapsing_overlap(
+    base: "list[RouteWaypoint]", addition: "list[RouteWaypoint]"
+) -> list[RouteWaypoint]:
+    """Append ``addition`` to ``base``, collapsing a shared boundary that spans
+    more than one fix.
+
+    A procedure often *re-lists* fixes the arriving/departing route already
+    flew, and those fixes can appear one or two deep into the procedure, not
+    just as its first fix:
+
+    * **enroute → STAR**: the route ends ``… HOTEL, SABAI`` and STAR SABA1B
+      begins ``HOTEL, SABAI, ARMUS`` → a plain concatenation gives
+      ``… HOTEL, SABAI, HOTEL, SABAI, ARMUS`` (fly back and forth).
+    * **… → approach**: the STAR ends at the IF (``PILEX``) and the approach's
+      IAF transition is ``MESUX → PILEX`` → ``… PILEX, MESUX, PILEX, …``.
+
+    A consecutive-duplicate collapse can't fix either — the repeated run isn't
+    two *adjacent* equal idents. So: if ``base``'s LAST fix already appears
+    anywhere in ``addition``, start ``addition`` right *after* its first
+    occurrence — the route joins the procedure at the fix it has actually
+    reached, dropping the lead-in it would otherwise re-fly. With no such
+    overlap (a route that ends short of the procedure) the whole thing is
+    appended as published. The shared fix's coordinates come from ``base``
+    (first-occurrence wins, the rule every join here uses).
+    """
+    if not base or not addition:
+        return list(base) + list(addition)
+    last = base[-1].ident
+    for i, wp in enumerate(addition):
+        if wp.ident == last:
+            return list(base) + list(addition[i + 1 :])
+    return list(base) + list(addition)
 
 
 def splice_procedures(
@@ -800,14 +1042,19 @@ def splice_procedures(
         both ``sid`` and ``star`` are ``None`` this is the enroute list with
         consecutive duplicates removed — i.e. direct routing is a no-op join.
     """
+    # Every join uses the overlap collapse (not a plain extend): a procedure
+    # that re-lists fixes the route already flew joins at the fix actually
+    # reached, so a shared multi-fix boundary (e.g. the route's tail HOTEL,
+    # SABAI vs STAR SABA1B's lead-in HOTEL, SABAI, or a STAR ending at the IF
+    # vs an approach's IAF transition into that IF) never doubles back.
     sequence: list[RouteWaypoint] = []
     if sid is not None:
-        sequence.extend(sid.waypoints())
-    sequence.extend(enroute)
+        sequence = _join_collapsing_overlap(sequence, sid.waypoints())
+    sequence = _join_collapsing_overlap(sequence, enroute)
     if star is not None:
-        sequence.extend(star.waypoints())
+        sequence = _join_collapsing_overlap(sequence, star.waypoints())
     if approach is not None:
-        sequence.extend(approach.waypoints())
+        sequence = _join_collapsing_overlap(sequence, approach.waypoints())
     return _collapse_consecutive_idents(sequence)
 
 
@@ -864,6 +1111,7 @@ class _RawLeg:
     speed: SpeedConstraint
     turn_direction: str | None
     desc_code: str | None = None
+    magnetic_course: float | None = None
 
 
 def _clean_str(value: object) -> str:

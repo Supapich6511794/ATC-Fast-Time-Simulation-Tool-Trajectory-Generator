@@ -67,6 +67,27 @@ def compute_bearing(
     return fwd_az % 360.0
 
 
+def project_point(
+    lat: float, lon: float, bearing_deg: float, distance_nm: float
+) -> tuple[float, float]:
+    """The point ``distance_nm`` along a true ``bearing_deg`` from (lat, lon).
+
+    The geodesic inverse of :func:`compute_bearing` — used to place a fix that
+    a procedure defines by course and distance rather than by coordinates
+    (e.g. an ARINC 424 course-to-altitude leg's terminator).
+
+    Args:
+        lat, lon: Start point in decimal degrees.
+        bearing_deg: True bearing to fly, degrees.
+        distance_nm: Distance along that bearing, nautical miles.
+
+    Returns:
+        ``(lat, lon)`` of the projected point in decimal degrees.
+    """
+    lon2, lat2, _ = _GEOD.fwd(lon, lat, bearing_deg, distance_nm * _M_PER_NM)
+    return lat2, lon2
+
+
 def interpolate_great_circle(
     lat1: float,
     lon1: float,

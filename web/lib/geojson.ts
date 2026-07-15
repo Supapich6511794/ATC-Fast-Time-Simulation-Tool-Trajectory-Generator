@@ -25,8 +25,11 @@ const SID_WPTS_URL = "/data/sid/sid_waypoint_thai.geojson";
 const STAR_WPTS_URL = "/data/star/star_waypoint.geojson";
 const PBN_WPTS_URL = "/data/pbn/pbn_waypoint.geojson";
 
+// `no-cache` (revalidate), not `force-cache` (serve stale forever): the bundled
+// geojson is edited in place when a procedure is corrected, so a hard-cached
+// copy would keep the picker/preview on the old data. See atcLayers.fetchJson.
 async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { cache: "force-cache" });
+  const res = await fetch(url, { cache: "no-cache" });
   if (!res.ok) {
     throw new Error(`Failed to load ${url}: ${res.status} ${res.statusText}`);
   }
@@ -211,19 +214,31 @@ export async function staticRunways(
 ): Promise<{ SID: string[]; STAR: string[] }> {
   const code = airport.trim().toUpperCase();
   if (!code) return { SID: [], STAR: [] };
-  const [idx, aip] = await Promise.all([
+  const [idx, approachIdx, aip] = await Promise.all([
     buildProcedureNameIndex(),
+    buildApproachIndex(),
     buildAipRunwayIndex(),
   ]);
   const e = idx.get(code);
-  // Every physical runway at the aerodrome can be used for departure OR
-  // arrival, so both lists start from the full AIP runway set (so airports
-  // without a coded SID/STAR still expose their runways — needed to pick a
-  // PBN approach). The procedure-derived runways are unioned in for any that
-  // the AIP runway table happens not to list.
+  // A runway is offered for DEPARTURE only when a SID serves it, and for
+  // ARRIVAL only when a STAR or a PBN approach serves it — you cannot fly a
+  // procedure to a runway that publishes none. (VTSG's STAR serves RW32 only,
+  // so its arrival picker shows RW32, not the physical RW14/RW32.) Approaches
+  // count towards arrival because the picker also gates the approach dropdown
+  // on the runway, and a runway may have an approach without a STAR.
+  //
+  // Only when the aerodrome has NO procedures of that direction at all do we
+  // fall back to its full physical runway set, so a direct departure/arrival
+  // can still name a runway (which anchors the threshold-elevation the vertical
+  // profile starts/ends on).
   const all = aip.get(code) ?? [];
-  const dep = new Set<string>([...(e?.sidRwy ?? []), ...all]);
-  const arr = new Set<string>([...(e?.starRwy ?? []), ...all]);
+  const depRwy = e?.sidRwy ?? new Set<string>();
+  const arrRwy = new Set<string>([
+    ...(e?.starRwy ?? []),
+    ...Object.keys(approachIdx.get(code) ?? {}),
+  ]);
+  const dep = depRwy.size ? [...depRwy] : all;
+  const arr = arrRwy.size ? [...arrRwy] : all;
   return { SID: [...dep].sort(), STAR: [...arr].sort() };
 }
 
@@ -378,7 +393,7 @@ export async function staticProcedureWaypoints(
  * polylines (the coded legs + constraints come from the procedures API).
  */
 export async function fetchSidLines(): Promise<ProcedureLineCollection> {
-  const res = await fetch(SID_LINES_URL, { cache: "force-cache" });
+  const res = await fetch(SID_LINES_URL, { cache: "no-cache" });
   if (!res.ok) {
     throw new Error(
       `Failed to load ${SID_LINES_URL}: ${res.status} ${res.statusText}`,
@@ -389,7 +404,7 @@ export async function fetchSidLines(): Promise<ProcedureLineCollection> {
 
 /** Fetch the drawn STAR (arrival) procedure tracks. Loaded lazily. */
 export async function fetchStarLines(): Promise<ProcedureLineCollection> {
-  const res = await fetch(STAR_LINES_URL, { cache: "force-cache" });
+  const res = await fetch(STAR_LINES_URL, { cache: "no-cache" });
   if (!res.ok) {
     throw new Error(
       `Failed to load ${STAR_LINES_URL}: ${res.status} ${res.statusText}`,
@@ -404,7 +419,7 @@ export async function fetchStarLines(): Promise<ProcedureLineCollection> {
  * on initial page load.
  */
 export async function fetchFir(): Promise<FirCollection> {
-  const res = await fetch(FIR_URL, { cache: "force-cache" });
+  const res = await fetch(FIR_URL, { cache: "no-cache" });
   if (!res.ok) {
     throw new Error(
       `Failed to load ${FIR_URL}: ${res.status} ${res.statusText}`,
@@ -439,7 +454,7 @@ const _SECTOR_FILE: Record<SectorKey, string> = Object.fromEntries(
  *  on; the file is small and rarely changes, so the HTTP cache may keep it. */
 export async function fetchSector(key: SectorKey): Promise<SectorCollection> {
   const url = `/data/sectors/${_SECTOR_FILE[key]}.geojson`;
-  const res = await fetch(url, { cache: "force-cache" });
+  const res = await fetch(url, { cache: "no-cache" });
   if (!res.ok) {
     throw new Error(`Failed to load ${url}: ${res.status} ${res.statusText}`);
   }

@@ -21,6 +21,7 @@ import { useMemo, useState } from "react";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
 import { totalSeconds } from "@/lib/useSimPlayback";
 import { departureOffsets, localClock, statusFromLocalT } from "@/lib/flightStatus";
+import { formatAirspace, type AirspaceMembership } from "@/lib/airspace";
 
 export interface FlightFilter {
   search: string;
@@ -113,6 +114,9 @@ interface FilterPanelProps {
   /** Shared playback clock (seconds) — drives each row's scheduled/en-route/
    *  arrived status against the flight's own departure + duration. */
   simT: number;
+  /** Live airspace membership per flightKey (from MapApp) — shown under each
+   *  en-route row as the specific zone the plane currently occupies. */
+  airspace?: Record<string, AirspaceMembership>;
 }
 
 export default function FilterPanel({
@@ -134,6 +138,7 @@ export default function FilterPanel({
   activeIndex,
   playbackIdx,
   simT,
+  airspace,
 }: FilterPanelProps) {
   const [tab, setTab] = useState<Tab>("filter");
   // Quick filter for the Results list — searches by ACID
@@ -473,6 +478,7 @@ export default function FilterPanel({
           const key = t.meta.flightKey;
           const hidden = hiddenKeys.has(key);
           const active = activeIndex === i;
+          const airsText = formatAirspace(airspace?.[key], "full");
           return (
             <li
               key={key}
@@ -490,6 +496,11 @@ export default function FilterPanel({
                   <span className="fp-row-route">
                     {t.meta.adep} → {t.meta.ades}
                   </span>
+                  {airsText && (
+                    <span className="fp-row-airspace" title="Current airspace">
+                      {airsText}
+                    </span>
+                  )}
                 </span>
                 {/* Status badge only once a flight is airborne or has arrived —
                     a not-yet-departed flight shows no status. */}

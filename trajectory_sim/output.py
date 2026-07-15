@@ -42,6 +42,7 @@ def build_trajectory_gdf(
     approach: str | None = None,
     dep_rwy: str | None = None,
     arr_rwy: str | None = None,
+    fix_indices: "list[int] | None" = None,
 ) -> gpd.GeoDataFrame:
     """Build a trajectory GeoDataFrame from a sequence of waypoints.
 
@@ -119,6 +120,8 @@ def build_trajectory_gdf(
             # Anchor climb/descent to the selected runway thresholds.
             dep_runway=dep_rwy,
             ades_runway=arr_rwy,
+            # Which of the waypoints are fixes vs. turn-arc vertices.
+            fix_indices=fix_indices,
         )
         records = [
             {

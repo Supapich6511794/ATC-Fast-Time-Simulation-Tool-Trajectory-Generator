@@ -69,7 +69,7 @@ def _idents(pts: list[tuple[str, float, float]]) -> list[str]:
 def test_splice_inserts_sid_and_star(patched_navdata: None) -> None:
     warnings: list[str] = []
     enroute = [("DAGAB", 15.0, 101.8), ("LADAR", 15.5, 101.0)]
-    out, _cons, _term = server._splice_terminal_procedures(
+    out, _cons, _term, _path = server._splice_terminal_procedures(
         _req(sid="BIDA2A", star="SARI1A"), "VTBS", "VTBS", enroute, warnings
     )
     assert _idents(out) == [
@@ -105,19 +105,58 @@ def test_proc_runway_derivation() -> None:
 
 
 def test_no_procedures_passthrough(patched_navdata: None) -> None:
+    """No SID/STAR/approach: the FIXES pass through untouched."""
     warnings: list[str] = []
     enroute = [("DAGAB", 15.0, 101.8), ("LADAR", 15.5, 101.0)]
-    out, _cons, _term = server._splice_terminal_procedures(
+    out, _cons, _term, path = server._splice_terminal_procedures(
         _req(), "VTBS", "VTBS", enroute, warnings
     )
     assert out == enroute
-    assert warnings == []
+    assert not [w for w in warnings if "procedure" in w.lower()]
+    # The PATH is not a passthrough even so: it is still anchored to the
+    # aerodromes and its corners still turned. Only a procedure is optional —
+    # departing, arriving and flying a turn are not.
+    assert len(path) > len(enroute)
+
+
+def test_a_route_that_never_reaches_the_destination_is_flagged(
+    patched_navdata: None,
+) -> None:
+    """The fixture's route ends ~120 NM from VTBS, so closing it to the field
+    means a long invented leg — a bad route, not a bad simulation, and the user
+    is told which."""
+    warnings: list[str] = []
+    server._splice_terminal_procedures(
+        _req(), "VTBS", "VTBS", [("DAGAB", 15.0, 101.8), ("LADAR", 15.5, 101.0)],
+        warnings,
+    )
+    assert any("does not reach VTBS" in w for w in warnings)
+
+
+def test_direct_route_still_carries_runways_for_elevation_anchor(
+    patched_navdata: None,
+) -> None:
+    """A direct route (no SID/STAR/approach) must still forward the user-picked
+    runways in the terminal dict, so the vertical profile anchors its climb
+    start / descent end to the runway *threshold* elevation (Thai AIP AD 2),
+    not the aerodrome field elevation. Regression: the no-procedure early
+    return used to drop the runways (returned ``{}``), silently reverting a
+    direct VTCC(RW18)->VTBD(RW03L) flight to field elevation."""
+    warnings: list[str] = []
+    enroute = [("DAGAB", 15.0, 101.8), ("LADAR", 15.5, 101.0)]
+    out, _cons, term, _path = server._splice_terminal_procedures(
+        _req(sid_runway="RW18", star_runway="RW03L"),
+        "VTCC", "VTBD", enroute, warnings,
+    )
+    assert out == enroute  # route itself untouched
+    assert term["dep_rwy"] == "RW18"
+    assert term["arr_rwy"] == "RW03L"
 
 
 def test_unknown_procedure_warns_and_keeps_route(patched_navdata: None) -> None:
     warnings: list[str] = []
     enroute = [("DAGAB", 15.0, 101.8), ("LADAR", 15.5, 101.0)]
-    out, _cons, _term = server._splice_terminal_procedures(
+    out, _cons, _term, _path = server._splice_terminal_procedures(
         _req(sid="NOPE9Z"), "VTBS", "VTBS", enroute, warnings
     )
     assert out == enroute  # unchanged
@@ -131,7 +170,7 @@ def test_ambiguous_runway_auto_resolves_with_warning(
     records the assumption rather than failing."""
     warnings: list[str] = []
     enroute = [("DAGAB", 15.0, 101.8)]
-    out, _cons, _term = server._splice_terminal_procedures(
+    out, _cons, _term, _path = server._splice_terminal_procedures(
         _req(sid="BIDA2A"), "VTBS", "VTBS", enroute, warnings
     )
     # A SID was spliced in (route grew past the single enroute fix)...
@@ -142,3 +181,46 @@ def test_ambiguous_runway_auto_resolves_with_warning(
     # request left it on "Auto".
     assert _term["sid"] == "BIDA2A"
     assert _term["dep_rwy"]  # a concrete runway, not None/empty
+
+
+def _final_gdf(alts: list[float]) -> object:
+    """A tiny GeoDataFrame of a final approach down a meridian (POINT Z in m)."""
+    import geopandas as gpd
+    from datetime import datetime, timedelta, timezone
+    from shapely.geometry import Point
+
+    t0 = datetime(2026, 1, 3, 8, 0, tzinfo=timezone.utc)
+    lats = [18.90 - 0.03 * i for i in range(len(alts))]  # marching south
+    lons = [98.98] * len(alts)
+    return gpd.GeoDataFrame(
+        {
+            "altitude_ft": list(alts),
+            "epoch_ts": [t0 + timedelta(seconds=4 * i) for i in range(len(alts))],
+            "geometry": [Point(lo, la, a * 0.3048) for la, lo, a in zip(lats, lons, alts)],
+        },
+        crs="EPSG:4326",
+        geometry="geometry",
+    )
+
+
+def test_glide_to_threshold_lands_on_the_runway() -> None:
+    """A flown approach that levels off ~50 ft above the runway (the MAPt's
+    threshold-crossing altitude) is re-glided down to touch the threshold —
+    the elevation the AIP AD 2 table publishes. Regression for VTCC R18 ending
+    at 1086 ft instead of its 1036 ft threshold."""
+    gdf = _final_gdf([3400.0, 2200.0, 1086.0, 1086.0, 1086.0])
+    faf = (18.90, 98.98)  # first (highest) sample = start of the glide
+    server._glide_to_threshold(gdf, faf, 1036.0)
+    out = gdf["altitude_ft"].tolist()
+    assert out[-1] == 1036.0  # lands on the threshold, not the +50 plateau
+    assert out[0] == 3400.0  # glide starts at the FAF, unchanged
+    assert all(out[i] >= out[i + 1] for i in range(len(out) - 1))  # monotone down
+    # POINT Z (metres) tracks the corrected altitude.
+    assert abs(gdf.geometry.iloc[-1].z - 1036.0 * 0.3048) < 1e-6
+
+
+def test_glide_to_threshold_noop_when_already_landed() -> None:
+    """When the descent already reaches the threshold, the glide leaves it be."""
+    gdf = _final_gdf([2000.0, 1200.0, 1036.0])
+    server._glide_to_threshold(gdf, (18.90, 98.98), 1036.0)
+    assert gdf["altitude_ft"].tolist() == [2000.0, 1200.0, 1036.0]

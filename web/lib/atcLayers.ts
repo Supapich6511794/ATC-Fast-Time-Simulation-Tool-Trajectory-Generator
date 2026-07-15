@@ -21,8 +21,14 @@ import type {
   ProcedureWaypointCollection,
 } from "./types";
 
+// `no-cache`, NOT `force-cache`: the bundled data files (SID/STAR/PBN/airway
+// geojson) are edited in place when a procedure is corrected, and force-cache
+// serves the browser's stale copy forever — a fixed procedure keeps drawing the
+// old one until the cache is manually cleared. no-cache still uses the HTTP
+// cache but revalidates first (a cheap 304 when the file is unchanged), so an
+// edit shows up on the next load while unchanged files stay fast.
 async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(encodeURI(url), { cache: "force-cache" });
+  const res = await fetch(encodeURI(url), { cache: "no-cache" });
   if (!res.ok) {
     throw new Error(`Failed to load ${url}: ${res.status} ${res.statusText}`);
   }
@@ -30,7 +36,7 @@ async function fetchJson<T>(url: string): Promise<T> {
 }
 
 async function fetchText(url: string): Promise<string> {
-  const res = await fetch(encodeURI(url), { cache: "force-cache" });
+  const res = await fetch(encodeURI(url), { cache: "no-cache" });
   if (!res.ok) {
     throw new Error(`Failed to load ${url}: ${res.status} ${res.statusText}`);
   }

@@ -14,9 +14,10 @@
  * 1:1 onto the chart's viewBox.
  */
 
-import { useMemo } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import type { TrajectoryResult } from "@/lib/trajectory/types";
+import { formatAirspace, type AirspaceMembership } from "@/lib/airspace";
 
 interface Props {
   trajectory: TrajectoryResult;
@@ -27,6 +28,9 @@ interface Props {
    *  the plane so it advances with the map playback; parked at the start
    *  otherwise. */
   simT?: number | null;
+  /** Live airspace membership for this route (from MapApp), shown as a small
+   *  caption pinned to the moving plane. */
+  airspace?: AirspaceMembership;
 }
 
 const PAD_L = 36;
@@ -63,6 +67,7 @@ export default function AltitudeProfile({
   trajectory,
   height = 140,
   simT,
+  airspace,
 }: Props) {
   const samples = useMemo<AltSample[]>(() => {
     const pts = trajectory.points;
@@ -161,6 +166,29 @@ export default function AltitudeProfile({
     return out;
   }, [samples, tMax, trajectory.stats.cruiseAltFt, trajectory.profile.constraints]);
 
+  // --- Magnifier zoom (e-commerce style) ---------------------------------
+  // Click the 🔍 badge to arm zoom; then the whole chart scales up around the
+  // cursor as you move over it (transform-origin follows the pointer), so you
+  // can inspect a level-off or the TOC/TOD region. Click again to exit.
+  // (Declared before the early return below so the hook order stays stable.)
+  const ZOOM = 2.4;
+  const [zoomed, setZoomed] = useState(false);
+  const [origin, setOrigin] = useState({ x: 50, y: 50 });
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const onMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!zoomed || !canvasRef.current) return;
+      const r = canvasRef.current.getBoundingClientRect();
+      const x = ((e.clientX - r.left) / r.width) * 100;
+      const y = ((e.clientY - r.top) / r.height) * 100;
+      setOrigin({
+        x: Math.min(100, Math.max(0, x)),
+        y: Math.min(100, Math.max(0, y)),
+      });
+    },
+    [zoomed],
+  );
+
   if (samples.length < 2) {
     return (
       <p className="alt-empty">
@@ -197,6 +225,24 @@ export default function AltitudeProfile({
   const planeRot =
     90 +
     (planePos.phase === "climb" ? -28 : planePos.phase === "descent" ? 28 : 0);
+  // Airspace caption text — only while this route is being animated.
+  const airsText = simT != null ? formatAirspace(airspace, "compact") : "";
+
+  // Live altitude lead-line: a dashed horizontal from the Y-axis across to the
+  // plane at its current altitude, tagged with a realtime readout on the axis.
+  // The axis sits at PAD_L in the viewBox; as a % of the full width that's
+  // where the plot (and the line) begins.
+  const axisLeftPct = (PAD_L / vbW) * 100;
+  const leadWidthPct = Math.max(0, planeLeft - axisLeftPct);
+  // The readout sits over the Y-axis SCALE labels (FL400/FL300/…), which the
+  // SVG draws left-aligned at x=4 — so it reads as the live tick on that scale.
+  const scaleLeftPct = (4 / vbW) * 100;
+  // Compact (no thousands comma) so the readout fits the narrow left margin
+  // when pinned to the Y-axis, clear of the climbing aircraft.
+  const altReadout =
+    planePos.alt >= 10000
+      ? `FL${Math.round(planePos.alt / 100)}`
+      : `${Math.round(planePos.alt)} ft`;
 
   return (
     <figure className="alt-fig">
@@ -211,7 +257,36 @@ export default function AltitudeProfile({
           </span>
         )}
       </div>
-      <div className="alt-canvas">
+      <div
+        className={`alt-canvas${zoomed ? " zoomed" : ""}`}
+        ref={canvasRef}
+        onMouseMove={onMove}
+      >
+        <button
+          type="button"
+          className={`alt-zoom-btn${zoomed ? " on" : ""}`}
+          onClick={() => setZoomed((v) => !v)}
+          title={
+            zoomed
+              ? "Exit zoom"
+              : "Zoom — then hover the chart to magnify"
+          }
+          aria-label={zoomed ? "Exit zoom" : "Zoom"}
+          aria-pressed={zoomed}
+        >
+          <span aria-hidden>🔍</span>
+        </button>
+        <div
+          className="alt-zoomable"
+          style={
+            zoomed
+              ? {
+                  transform: `scale(${ZOOM})`,
+                  transformOrigin: `${origin.x}% ${origin.y}%`,
+                }
+              : undefined
+          }
+        >
         <svg
           className="alt-svg"
           viewBox={`0 0 ${vbW} ${h}`}
@@ -343,6 +418,25 @@ export default function AltitudeProfile({
           </text>
         </svg>
 
+        {/* Live altitude lead-line — a dashed horizontal from the Y-axis to the
+            plane at its current altitude, so you can read the height straight off
+            the axis as it climbs/descends. Moves with the plane every frame. */}
+        <span
+          className="alt-alt-line"
+          aria-hidden="true"
+          style={{
+            left: `${axisLeftPct}%`,
+            top: `${planeTop}%`,
+            width: `${leadWidthPct}%`,
+          }}
+        />
+        <span
+          className="alt-alt-readout"
+          style={{ left: `${scaleLeftPct}%`, top: `${planeTop}%` }}
+        >
+          {altReadout}
+        </span>
+
         {/* Aircraft — position/rotation driven by the shared sim clock so
             it tracks the map playback exactly (play / pause / speed). */}
         <span
@@ -358,6 +452,18 @@ export default function AltitudeProfile({
             <path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z" />
           </svg>
         </span>
+
+        {/* Airspace caption pinned to the plane — the zone it's currently in,
+            live and altitude-aware (only while this route is animating). */}
+        {airsText && (
+          <span
+            className="alt-plane-airspace"
+            style={{ left: `${planeLeft}%`, top: `${planeTop}%` }}
+          >
+            {airsText}
+          </span>
+        )}
+        </div>
       </div>
     </figure>
   );

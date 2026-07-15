@@ -758,6 +758,49 @@ def average_phase_tas_kt(
         return target_tas_kt(aircraft_type, (lo_alt + hi_alt) / 2.0, phase)
     return tas_x_time / total_time_s
 
+
+def climb_distance_nm(
+    aircraft_type: str,
+    from_alt_ft: float,
+    to_alt_ft: float,
+    cruise_alt_ft: float,
+) -> float:
+    """Along-track distance at which a climb passes ``to_alt_ft``.
+
+    Placing a fix here — e.g. the terminator of a SID's "climb on 209° to
+    1 500 ft" leg — makes it a fix the aircraft genuinely crosses at that
+    altitude, so its published restriction is already satisfied and the
+    vertical profile has nothing to bend.
+
+    That only holds if this uses the SAME distance/time law
+    :func:`~trajectory_sim.trajectory.build_flight_timeline` flies: the time
+    comes from the segmented climb schedule, but the whole climb is covered at
+    ONE phase-average TAS (threshold → cruise), not at the local speed in the
+    altitude band being crossed. Averaging over the band instead — or applying
+    the procedure's own low-altitude speed limit — would place the fix short of
+    where the aircraft actually reaches the altitude, and the profile would then
+    have to lift the aircraft to meet it and sink back afterwards.
+
+    Args:
+        aircraft_type: ICAO designator, e.g. ``"B738"``. Case-insensitive.
+        from_alt_ft: Altitude the climb starts at (the departure threshold).
+        to_alt_ft: Altitude to reach.
+        cruise_alt_ft: Altitude the climb ends at — sets the phase-average TAS.
+
+    Returns:
+        Distance in nautical miles from the start of the climb; 0.0 when
+        ``to_alt_ft <= from_alt_ft``.
+    """
+    climb_segs, _ = _segments_for(aircraft_type)
+    time_s = _time_to_climb(climb_segs, from_alt_ft, to_alt_ft)
+    if time_s <= 0:
+        return 0.0
+    tas_kt = average_phase_tas_kt(
+        aircraft_type, from_alt_ft, max(cruise_alt_ft, to_alt_ft), "climb"
+    )
+    return tas_kt * time_s / 3600.0
+
+
 # Field elevations (ft AMSL) — fallback for when the AIP airports layer
 # isn't loaded. The API overwrites these with the full AIP set at startup
 # (see api.server._register_field_elevations); default 0 elsewhere. Values

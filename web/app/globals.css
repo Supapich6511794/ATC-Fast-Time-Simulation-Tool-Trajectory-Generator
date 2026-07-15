@@ -3284,6 +3284,16 @@ body {
   display: none; /* hide the tooltip pointer triangle for a flat rectangle */
 }
 
+/* Second line of the plane tag — the live airspace zone. Muted + slightly
+   smaller so the callsign/FL line stays the primary read. */
+.aircraft-tag-airspace {
+  margin-top: 1px;
+  color: #7dd3fc;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
 .ov-group {
   display: flex;
   gap: 6px;
@@ -4361,6 +4371,16 @@ select.fp-input {
 .fp-row-route {
   font-size: 11px;
   color: var(--muted);
+}
+/* Current airspace zone for an en-route flight (blue to echo the map tag). */
+.fp-row-airspace {
+  font-size: 10px;
+  color: #38bdf8;
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 .fp-row-eye {
   border: none;
@@ -5900,6 +5920,54 @@ select.fp-input {
 .alt-canvas {
   position: relative;
   width: 100%;
+  overflow: hidden; /* clip the magnifier so the zoomed chart stays in-frame */
+}
+.alt-canvas.zoomed {
+  cursor: zoom-out;
+}
+
+/* The scaled layer — the whole chart (SVG + plane) magnifies together around
+   the cursor when zoom is armed. Snappy but not instant so panning reads as
+   motion, not teleport. */
+.alt-zoomable {
+  position: relative;
+  width: 100%;
+  transition: transform 0.06s linear;
+  will-change: transform;
+}
+
+/* 🔍 Zoom toggle — pinned top-right of the chart, above the scaled layer so it
+   never zooms with the content and stays clickable (mirrors the e-commerce
+   "Zoomed" badge). */
+.alt-zoom-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  color: #e2e8f0;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid #475569;
+  border-radius: 999px;
+  cursor: pointer;
+  backdrop-filter: blur(2px);
+  transition: background 0.12s, border-color 0.12s;
+}
+.alt-zoom-btn:hover {
+  background: rgba(15, 23, 42, 0.9);
+  border-color: #64748b;
+}
+.alt-zoom-btn.on {
+  color: #0b1220;
+  background: var(--accent, #38bdf8);
+  border-color: var(--accent, #38bdf8);
 }
 
 .alt-plane {
@@ -5912,11 +5980,59 @@ select.fp-input {
   filter: drop-shadow(0 0 3px rgba(56, 189, 248, 0.55));
 }
 
+/* Live altitude lead-line — dashed horizontal at the plane's current height,
+   drawn from the Y-axis across to the plane. Centred on the plane's y (hence
+   translateY -50%) and sized in % so it tracks the plane every frame. */
+.alt-alt-line {
+  position: absolute;
+  height: 0;
+  border-top: 1.5px dashed rgba(56, 189, 248, 0.75);
+  transform: translateY(-50%);
+  pointer-events: none;
+  will-change: top, width;
+  z-index: 2;
+}
+
+/* Realtime altitude readout — bare value (no tag/pill) sitting over the Y-axis
+   SCALE labels (FL400/FL300/…) at the plane's height, so it reads as the live
+   tick on that scale. Left-aligned to the scale's x (`left` is the scale %), so
+   it lines up with the static FL labels; a dark halo keeps it legible. */
+.alt-alt-readout {
+  position: absolute;
+  transform: translateY(-50%);
+  pointer-events: none;
+  z-index: 3;
+  font: 700 9px/1.2 ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color: #7dd3fc;
+  white-space: nowrap;
+  text-shadow:
+    0 0 3px #0b1220,
+    0 0 2px #0b1220,
+    0 1px 2px #0b1220;
+  will-change: top;
+}
+
 .alt-plane svg {
   display: block;
   width: 100%;
   height: 100%;
   fill: currentColor;
+}
+
+/* Airspace caption riding just above the moving plane on the chart. Anchored
+   at the plane's %-position, nudged up so it clears the icon. */
+.alt-plane-airspace {
+  position: absolute;
+  transform: translate(-50%, -180%);
+  pointer-events: none;
+  white-space: nowrap;
+  font: 600 9px/1.2 ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color: #e0f2fe;
+  background: rgba(11, 18, 32, 0.85);
+  border: 1px solid #38bdf888;
+  border-radius: 3px;
+  padding: 1px 4px;
+  will-change: left, top;
 }
 
 .alt-empty {
@@ -6028,18 +6144,33 @@ select.fp-input {
   border: none !important;
 }
 
-.profile-badge-pill {
-  display: inline-block;
-  padding: 2px 6px;
+/* Red dot marking the exact TOC / TOD point, centred on the marker origin. */
+.profile-badge-dot {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  border-radius: 50%;
+  background: #ef4444;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.7);
+}
+
+/* Bare TOC/TOD label beside the dot — no pill; a hard shadow keeps it legible
+   on the dark map even with many overlapping routes. Colour is set inline. */
+.profile-badge-text {
+  position: absolute;
+  left: 6px;
+  top: -13px;
   font-size: 9px;
   font-weight: 800;
   font-family: ui-monospace, "SFMono-Regular", monospace;
-  color: #06283d;
-  border: 1px solid rgba(15, 23, 42, 0.6);
-  border-radius: 999px;
   letter-spacing: 0.06em;
   white-space: nowrap;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  text-shadow:
+    0 0 2px #000,
+    0 0 3px #000,
+    0 1px 2px #000;
 }
 
 /* ============================================================= *

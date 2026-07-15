@@ -99,3 +99,53 @@ def test_splice_star_end_collapses_into_approach_iaf(nav: NavData) -> None:
     out = [w.ident for w in splice_procedures(enroute, approach=ap)]
     assert out == ["VANKO", "KALIM", "LAZAM", "HKTWF", "MR09"]
     assert out.count("KALIM") == 1  # boundary fix not duplicated
+
+
+def test_splice_arrival_at_if_skips_iaf_transition_no_zigzag(nav: NavData) -> None:
+    # VTCC R18: IAF transition MESUX->PILEX, then PILEX(IF)->CC181(FAF)->CC180
+    # (MAPt). Many VTCC STARs end AT the IF (…MESUX, PILEX). Splicing the
+    # approach must NOT re-fly the IAF transition (which flew the aircraft out
+    # to MESUX and back: …MESUX, PILEX, MESUX, PILEX, CC181 — a real bug the
+    # user hit); it joins at PILEX and continues straight down the final segment.
+    ap = nav.lookup_procedure(
+        "VTCC", "R18", proc_type=ProcedureType.APPROACH, transition="MESUX"
+    )
+    assert [w.ident for w in ap.waypoints()] == [
+        "MESUX", "PILEX", "CC181", "CC180",
+    ]
+    arrival = [  # a STAR that ends at the IF via the MESUX IAF
+        RouteWaypoint("SUSEG", 19.0, 99.2),
+        RouteWaypoint("MESUX", 18.95, 99.1),
+        RouteWaypoint("PILEX", 18.9, 98.98),
+    ]
+    out = [w.ident for w in splice_procedures(arrival, approach=ap)]
+    assert out == ["SUSEG", "MESUX", "PILEX", "CC181", "CC180"]
+    assert out.count("PILEX") == 1
+    assert out.count("MESUX") == 1  # flown once, not out-and-back
+
+
+def test_splice_arrival_via_other_iaf_still_no_backtrack(nav: NavData) -> None:
+    # The STAR reaches the IF via the OTHER IAF (SANRA) while the approach was
+    # resolved on the MESUX transition. Reaching the IF still drops the MESUX
+    # transition — no fly-out to MESUX and back.
+    ap = nav.lookup_procedure(
+        "VTCC", "R18", proc_type=ProcedureType.APPROACH, transition="MESUX"
+    )
+    arrival = [
+        RouteWaypoint("SANRA", 18.8, 98.6),
+        RouteWaypoint("PILEX", 18.9, 98.98),
+    ]
+    out = [w.ident for w in splice_procedures(arrival, approach=ap)]
+    assert out == ["SANRA", "PILEX", "CC181", "CC180"]
+    assert "MESUX" not in out
+
+
+def test_splice_direct_arrival_flies_full_iaf_transition(nav: NavData) -> None:
+    # A direct arrival that ends SHORT of the approach flies the whole thing,
+    # IAF transition included — nothing overlaps, so nothing is collapsed.
+    ap = nav.lookup_procedure(
+        "VTCC", "R18", proc_type=ProcedureType.APPROACH, transition="MESUX"
+    )
+    arrival = [RouteWaypoint("MARNI", 18.5, 99.5)]  # not a fix on the approach
+    out = [w.ident for w in splice_procedures(arrival, approach=ap)]
+    assert out == ["MARNI", "MESUX", "PILEX", "CC181", "CC180"]

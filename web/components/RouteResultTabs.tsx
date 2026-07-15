@@ -24,6 +24,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import AltitudeProfile from "@/components/AltitudeProfile";
 import type { Phase, TrajectoryResult } from "@/lib/trajectory/types";
+import type { AirspaceMembership } from "@/lib/airspace";
 
 export type RouteSection = "vertical" | "summary";
 
@@ -52,6 +53,9 @@ interface Props {
    *  altitude chart so its plane tracks the map playback. Null when this
    *  route isn't the one being animated. */
   simT?: number | null;
+  /** Live airspace membership for this route (from MapApp) — shown on the
+   *  altitude chart next to the moving plane. */
+  airspace?: AirspaceMembership;
   /** Collapsible card mode for the Route Profile list. */
   collapsible?: boolean;
   /** Whether the card is collapsed (header only). */
@@ -89,6 +93,7 @@ export default function RouteResultTabs({
   forceSection,
   stacked,
   simT,
+  airspace,
   collapsible,
   collapsed,
   onToggleCollapse,
@@ -163,7 +168,7 @@ export default function RouteResultTabs({
         </div>
       </dl>
 
-      <AltitudeProfile trajectory={trajectory} simT={simT} />
+      <AltitudeProfile trajectory={trajectory} simT={simT} airspace={airspace} />
 
       {/* Phase-3: planned speed schedule. */}
       {profile.speedSchedule && (

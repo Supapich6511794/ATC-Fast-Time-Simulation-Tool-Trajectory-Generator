@@ -15,6 +15,7 @@ export interface TagFields {
   fl: boolean;
   ias: boolean;
   hdg: boolean;
+  airspace: boolean;
 }
 
 const ROWS: { key: keyof TagFields; label: string }[] = [
@@ -22,6 +23,7 @@ const ROWS: { key: keyof TagFields; label: string }[] = [
   { key: "fl", label: "FL" },
   { key: "ias", label: "IAS" },
   { key: "hdg", label: "HDG" },
+  { key: "airspace", label: "Airspace" },
 ];
 
 function FlightTagsMenu({
