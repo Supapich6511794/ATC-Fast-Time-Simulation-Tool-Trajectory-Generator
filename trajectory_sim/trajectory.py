@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Sequence
 
 import pyproj
 
@@ -47,6 +47,11 @@ _M_PER_NM = 1852.0
 #: How far before a descent fix (NM) a procedure speed limit starts slowing the
 #: aircraft, so it crosses the fix already at/under the limit.
 _SPD_LEAD_NM = 40.0
+
+#: Closest two emitted samples may be (seconds). The sample grid is the output
+#: cadence PLUS a sample at every route vertex, and a cadence tick can fall all
+#: but on top of a vertex; anything tighter than this is one plot, not two.
+_MIN_SAMPLE_GAP_S = 0.25
 
 
 @dataclass(frozen=True)
@@ -175,12 +180,15 @@ def build_flight_timeline(
     constraints: "Optional[list[RouteConstraint]]" = None,
     dep_runway: Optional[str] = None,
     ades_runway: Optional[str] = None,
+    fix_indices: "Optional[Sequence[int]]" = None,
 ) -> FlightTimeline:
     """Construct a variable-speed flight timeline from EOBT.
 
     Args:
         waypoint_sequence: Ordered (lat, lon) waypoints, ADEP at index 0,
-            ADES at index -1. Must have ≥ 2 points.
+            ADES at index -1. Must have ≥ 2 points. May carry points that are
+            not fixes — the vertices approximating a turn arc — in which case
+            ``fix_indices`` says which ones are the real fixes.
         aircraft_type: ICAO type designator (e.g. ``"B738"``).
         adep, ades: ICAO codes for ADEP / ADES; used to look up field
             elevations.
@@ -194,6 +202,13 @@ def build_flight_timeline(
             ``"RW21L"``) for the departure/arrival ends. When given, the
             profile starts/ends at that runway's AIP threshold elevation
             instead of the aerodrome field elevation. None ⇒ field elevation.
+        fix_indices: Indices into ``waypoint_sequence`` that are real fixes.
+            An extra sample is emitted as each of these is crossed (so the
+            track lands exactly on every fix); the rest of the sequence — the
+            vertices approximating a turn arc — is flown but not sampled, so
+            arcs don't inject off-cadence points into the surveillance track.
+            None ⇒ every point is a fix (the behaviour when no arcs are spliced
+            in).
 
     Returns:
         A :class:`FlightTimeline` whose ``samples`` list carries one
@@ -451,25 +466,37 @@ def build_flight_timeline(
             + (d - climb_distance_nm - cruise_distance_nm) * 3600.0 / max(descent_gs, 1e-9)
         )
 
-    # Sample every `output_every_s`, PLUS a sample at EVERY route waypoint (each
-    # leg boundary) so the drawn path runs exactly through each fix — enroute,
-    # SID, STAR and PBN-approach alike — instead of chording across the turn.
-    # Every fix is already in `waypoint_sequence`; we fold its crossing time
-    # into the sample grid. The ADEP/ADES endpoints come from {0, total}.
+    # Sample every `output_every_s`, PLUS a sample at every route FIX (leg
+    # boundary) so the drawn path runs exactly through each one — enroute, SID,
+    # STAR and PBN-approach alike — AND at every vertex of a turn arc, so a turn
+    # is traced point by point instead of chorded across. Both are already in
+    # `waypoint_sequence`; we fold each one's crossing time into the sample grid.
+    # The ADEP/ADES endpoints come from {0, total}.
+    #
+    # `fix_indices` narrows this to the fixes alone, leaving the arcs flown but
+    # unsampled — a strictly-cadenced track, at the cost of a turn drawn as a
+    # handful of long chords. The API doesn't use it: an arc vertex is a place
+    # the aircraft really is, so a sample there is a real plot, and the grid is
+    # already off-cadence at every fix anyway.
+    fixes = None if fix_indices is None else set(fix_indices)
     wp_times: list[float] = []
     _acc = 0.0
-    for _ld in leg_distances[:-1]:  # interior boundaries only (skip ADES)
+    for _i, _ld in enumerate(leg_distances[:-1]):  # interior only (skip ADES)
         _acc += _ld
-        wp_times.append(_time_at_dist(_acc))
+        if fixes is None or (_i + 1) in fixes:
+            wp_times.append(_time_at_dist(_acc))
 
     n_grid = int(total_time_s / output_every_s) if output_every_s > 0 else 0
     grid = {i * output_every_s for i in range(n_grid + 1)}
     grid |= {0.0, total_time_s}
     grid |= {t for t in wp_times if 0.0 < t < total_time_s}
+    # Two plots a fraction of a second apart are the same plot — a cadence tick
+    # landing all but on top of a fix or an arc vertex would otherwise emit both,
+    # metres apart in the same second. Collapse them (the earlier one wins).
     times: list[float] = []
     for tt in sorted(grid):
         tt = min(max(tt, 0.0), total_time_s)
-        if not times or tt - times[-1] > 1e-3:  # collapse near-duplicates
+        if not times or tt - times[-1] > _MIN_SAMPLE_GAP_S:
             times.append(tt)
 
     samples: list[TimelineSample] = []

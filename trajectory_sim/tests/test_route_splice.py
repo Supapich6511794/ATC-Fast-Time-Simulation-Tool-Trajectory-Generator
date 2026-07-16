@@ -161,6 +161,20 @@ def test_star_entry_kept_when_route_ends_elsewhere(navdata: NavData) -> None:
     assert idents == ["DAGAB", "WULTA", "LADAR", "RECID", "FINAL"]
 
 
+def test_star_multi_fix_overlap_collapses_no_backtrack(navdata: NavData) -> None:
+    """A route whose TAIL re-lists more than the STAR's single entry fix joins
+    the STAR at the fix reached — no fly-out-and-back. Enroute ends LADAR, RECID
+    and STAR SARI1A begins LADAR, RECID, FINAL; the shared LADAR, RECID run must
+    appear once, not twice (regression for VTSP→VTBD … HOTEL, SABAI, HOTEL,
+    SABAI, ARMUS with STAR SABA1B — a consecutive-dup collapse can't fix it)."""
+    enroute = [_wp("MOTNA"), _wp("LADAR"), _wp("RECID")]
+    spliced = splice_procedures(enroute, star=_star(navdata))
+    idents = [w.ident for w in spliced]
+    assert idents == ["MOTNA", "LADAR", "RECID", "FINAL"]
+    assert idents.count("LADAR") == 1
+    assert idents.count("RECID") == 1
+
+
 # --- subtask 2: edge cases -------------------------------------------------
 
 

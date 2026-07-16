@@ -1078,12 +1078,23 @@ function GeneratorPanel({
     if (star && !servesRwy(starProcRwy, star, arrRwy)) setStar("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [arrRwy, starProcRwy]);
-  // An approach belongs to one arrival runway; drop it when the runway
-  // changes to one the current approach doesn't serve (or is cleared).
+  // An approach belongs to one arrival runway; drop it when the runway is
+  // cleared or changed to one it doesn't serve. The runway is derived from the
+  // approach NAME (R36 → RW36, R09-Z → RW09), NOT from `approachShown`, so an
+  // imported approach survives the async `approachByRwy` load — that index is
+  // momentarily empty right after a draft sets ades/arrRwy/approach together,
+  // and keying off it would wrongly wipe the just-imported value.
   useEffect(() => {
-    if (approach && !approachShown.includes(approach)) setApproach("");
+    if (!approach) return;
+    if (!arrRwy) {
+      setApproach("");
+      return;
+    }
+    const m = /^R(\d{2}[LCR]?)(?:-.*)?$/.exec(approach.trim().toUpperCase());
+    const rwyOfApproach = m ? `RW${m[1]}` : null;
+    if (rwyOfApproach && rwyOfApproach !== arrRwy) setApproach("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [arrRwy, approachShown]);
+  }, [arrRwy, approach]);
 
   /** Queue one (route, SID, STAR) combination (deduped + capped). */
   const addCombo = (c: RouteCombo) => {

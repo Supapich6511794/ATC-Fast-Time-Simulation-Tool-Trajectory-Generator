@@ -44,6 +44,7 @@ from trajectory_sim.geodesy import (
     route_distance_nm,
 )
 from trajectory_sim.navdata import (
+    ALTITUDE_TERMINATED,
     AltitudeConstraintType,
     AmbiguousProcedureError,
     NavData,
@@ -51,7 +52,11 @@ from trajectory_sim.navdata import (
     ProcedureNotFoundError,
     ProcedureType,
     RouteWaypoint,
+    RunwayEnd,
     SpeedConstraintType,
+    expand_sid_departure,
+    register_runways,
+    runway_end,
     splice_procedures,
 )
 from trajectory_sim.output import (
@@ -62,15 +67,28 @@ from trajectory_sim.output import (
 from trajectory_sim.performance import (
     PERFORMANCE_SOURCE,
     aircraft_speeds,
+    cas_to_tas_kt,
+    climb_distance_nm,
     crossover_altitude_ft,
     get_speed_restriction,
+    reachable_ceiling_ft,
     register_field_elevations,
     register_runway_elevations,
+    runway_threshold_elevation_ft,
     set_speed_restriction,
     set_speed_schedule,
+    target_tas_kt,
     tune_speed_schedule,
 )
 from trajectory_sim.trajectory import RouteConstraint, build_flight_timeline
+from trajectory_sim.turns import (
+    MAX_FLYBY_DEG,
+    bank_angle_deg,
+    flyby_arc,
+    signed_turn_deg,
+    turn_arc,
+    turn_radius_nm,
+)
 from trajectory_sim.validation import CAT62Reference
 
 # Project root = parent of this `api/` package.
@@ -356,8 +374,44 @@ def _register_runway_elevations() -> None:
         register_runway_elevations(elevs)
 
 
-# Inject real AIP field + runway elevations at startup. Guarded so a missing
-# cache (fresh checkout before the first ingest) never blocks boot.
+# ARINC 424 runway table: threshold coordinates + magnetic/true bearing.
+_RUNWAY_SOURCE = _DATA / "airports" / "runway.csv"
+
+
+def _register_runways() -> None:
+    """Push runway threshold geometry into the nav-data model so a departure
+    rolls down the runway centreline (VTBD RW21L = 13.9246N 100.6155E, 208.6°T)
+    and its SID's course-to-altitude legs can be placed on that track — see
+    :func:`trajectory_sim.navdata.expand_sid_departure`."""
+    if not _RUNWAY_SOURCE.exists():
+        return
+    runways: list[RunwayEnd] = []
+    with _RUNWAY_SOURCE.open(encoding="utf-8-sig", newline="") as fh:
+        for row in csv.DictReader(fh):
+            icao = (row.get("airport_identifier") or "").strip().upper()
+            ident = (row.get("runway_identifier") or "").strip().upper()
+            if not icao or not ident:
+                continue
+            try:
+                runways.append(
+                    RunwayEnd(
+                        icao=icao,
+                        ident=ident,
+                        lat=float(row["runway_latitude"]),
+                        lon=float(row["runway_longitude"]),
+                        magnetic_bearing=float(row["runway_magnetic_bearing"]),
+                        true_bearing=float(row["runway_true_bearing"]),
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                continue  # incomplete row — that runway just isn't anchored
+    if runways:
+        register_runways(runways)
+
+
+# Inject real AIP field + runway elevations and runway geometry at startup.
+# Guarded so a missing cache (fresh checkout before the first ingest) never
+# blocks boot.
 try:
     _register_field_elevations()
 except Exception:  # noqa: BLE001 — fall back to the hardcoded set
@@ -366,6 +420,73 @@ try:
     _register_runway_elevations()
 except Exception:  # noqa: BLE001 — fall back to field elevations
     pass
+try:
+    _register_runways()
+except Exception:  # noqa: BLE001 — departures just aren't runway-anchored
+    pass
+
+
+# VOR/DME navaids, for spotting a route that ends on a terminal VOR. The bundled
+# airway_vor.geojson is a global set; only the Thai-area idents matter here.
+_VOR_SOURCE = _DATA / "airways" / "airway_vor.geojson"
+
+
+@lru_cache(maxsize=1)
+def _vor_idents() -> frozenset[str]:
+    """Idents of VOR/DME navaids inside the Thai FIR (from airway_vor.geojson).
+
+    Used only to recognise a route that has been filed to a VOR; a miss just
+    means no trim happens, so a parse failure degrades to 'not a VOR'.
+    """
+    if not _VOR_SOURCE.is_file():
+        return frozenset()
+    idents: set[str] = set()
+    try:
+        fc = json.loads(_VOR_SOURCE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return frozenset()
+    for f in fc.get("features", []):
+        geom = f.get("geometry") or {}
+        coords = geom.get("coordinates") or []
+        if geom.get("type") == "MultiPoint":
+            coords = coords[0] if coords else []
+        if len(coords) < 2:
+            continue
+        lon, lat = coords[0], coords[1]
+        if 5.0 < lat < 21.0 and 96.0 < lon < 106.0:  # Thai FIR bbox
+            ident = (f.get("properties") or {}).get("waypoint_identifier")
+            if ident:
+                idents.add(ident.upper())
+    return frozenset(idents)
+
+
+#: A VOR nearer than this to the destination (NM) is that field's terminal
+#: navaid — the one a route is filed to as shorthand for "the airport". A VOR
+#: farther out (e.g. VTUD routed via KKN, 55 NM away) is just a fix on the way,
+#: not a terminal overshoot, so it is left alone.
+_FIELD_VOR_NM = 10.0
+
+
+def _ends_at_field_vor(
+    route_pts: "list[tuple[str, float, float]]", ades: str
+) -> bool:
+    """True when the route's last fix is the destination's own terminal VOR.
+
+    That is the overshoot pattern this module trims: an Item-15 route filed to
+    the field VOR (RAN, NKS, LPN, BKK), which sits past the STAR/approach entry
+    so flying to it doubles the aircraft back. A route ending on an ordinary
+    fix, or on a VOR far from the field, is not touched.
+    """
+    if not route_pts:
+        return False
+    ident, lat, lon = route_pts[-1]
+    if ident.upper() not in _vor_idents():
+        return False
+    ades_ll = _airport_ll(ades)
+    return (
+        ades_ll is not None
+        and haversine_distance(lat, lon, ades_ll[0], ades_ll[1]) < _FIELD_VOR_NM
+    )
 
 
 def _airway_sequence(designator: str) -> list[str]:
@@ -773,26 +894,22 @@ def _alt_floor_ceil(
 
 
 def _route_constraints(
-    route_pts: "list[tuple[str, float, float]]",
+    dist_by_ident: "dict[str, float]",
     sid_proc: "Procedure | None",
     star_proc: "Procedure | None",
     approach_proc: "Procedure | None" = None,
 ) -> "list[RouteConstraint]":
     """Map each SID/STAR/approach leg's crossing restriction to its along-track
-    distance on the spliced route (Phase 4/5, sub-task 6). SID legs are tagged
+    distance on the flown path (Phase 4/5, sub-task 6). SID legs are tagged
     climb; STAR and approach legs descent; only an upper speed limit (AT /
     AT-or-below) is kept. The approach's FAF/step-down altitudes shape the
-    final descent to the runway."""
-    # ident -> along-track distance (NM), first occurrence in flight order.
-    dist_by_ident: dict[str, float] = {}
-    acc = 0.0
-    for i, (ident, lat, lon) in enumerate(route_pts):
-        if i > 0:
-            pa = route_pts[i - 1]
-            acc += haversine_distance(pa[1], pa[2], lat, lon)
-        if ident and ident.upper() not in dist_by_ident:
-            dist_by_ident[ident.upper()] = acc
+    final descent to the runway.
 
+    ``dist_by_ident`` comes from :func:`_smooth_turns` and is measured along the
+    *curved* path — the one with the turn arcs in it, which is longer than the
+    fix-to-fix polyline and is the one the aircraft flies. A fly-by fix that the
+    path cuts rather than crosses is placed at the arc that cuts it.
+    """
     out: list[RouteConstraint] = []
     for proc, phase in (
         (sid_proc, "climb"),
@@ -832,6 +949,60 @@ def _route_constraints(
     return out
 
 
+def _glide_to_threshold(
+    gdf: object,  # geopandas GeoDataFrame (gpd not imported here)
+    faf_ll: "tuple[float, float]",
+    des_elev_ft: float,
+) -> None:
+    """In place: straighten the final approach into a glideslope that touches
+    down on the runway threshold elevation.
+
+    The Thai APM descent RATE is shallower near the ground than a 3° approach
+    glideslope, and the MAPt carries an "AT" crossing altitude ~50 ft above the
+    threshold (its threshold-crossing height), so a flown approach otherwise
+    LEVELS OFF and ends ~50 ft above the runway instead of landing (e.g. VTCC
+    R18 stops at 1086 ft, its 1036 ft threshold + 50). From the final approach
+    fix to the last sample we replace altitude with a straight line down to
+    ``des_elev_ft`` (spread by along-track distance), so the trajectory lands on
+    the threshold — the elevation the AIP AD 2 table publishes and the profile
+    started from. No-op when the descent already reached the threshold.
+    """
+    from shapely.geometry import Point
+
+    n = len(gdf)
+    if n < 2:
+        return
+    lats = [float(g.y) for g in gdf.geometry]
+    lons = [float(g.x) for g in gdf.geometry]
+    alts = [None if a is None else float(a) for a in gdf["altitude_ft"]]
+    if alts[-1] is None or alts[-1] <= des_elev_ft + 1.0:
+        return  # already landed on (or below) the threshold — nothing to do
+    # The final glide begins at the sample nearest the FAF (fix before the MAPt).
+    i_faf = min(
+        range(n),
+        key=lambda i: (lats[i] - faf_ll[0]) ** 2 + (lons[i] - faf_ll[1]) ** 2,
+    )
+    start_alt = alts[i_faf]
+    if i_faf >= n - 1 or start_alt is None or start_alt <= des_elev_ft:
+        return
+    cum = [0.0] * n
+    for j in range(i_faf + 1, n):
+        cum[j] = cum[j - 1] + haversine_distance(
+            lats[j - 1], lons[j - 1], lats[j], lons[j]
+        )
+    total = cum[-1]
+    if total <= 0:
+        return
+    new_alts = list(alts)
+    for j in range(i_faf, n):
+        new_alts[j] = start_alt + (des_elev_ft - start_alt) * (cum[j] / total)
+    gdf["altitude_ft"] = [round(a, 1) for a in new_alts]
+    gdf["geometry"] = [
+        Point(lon, lat, a * 0.3048)
+        for lat, lon, a in zip(lats, lons, new_alts)
+    ]
+
+
 def _proc_runway(proc: "Procedure | None") -> str | None:
     """The runway a resolved SID/STAR serves — for the trajectory export.
 
@@ -851,32 +1022,579 @@ def _proc_runway(proc: "Procedure | None") -> str | None:
     return None
 
 
+#: Altitude assumed at a turning fix that publishes no crossing restriction —
+#: mid-terminal-area, where the 250 kt limit still caps the speed anyway, so the
+#: radius it implies is barely sensitive to the guess.
+_DEFAULT_TURN_ALT_FT = 5000.0
+
+
+def _turn_speed_kt(
+    actype: str, alt_ft: float, cap_kt: float | None, phase: str
+) -> float:
+    """TAS the aircraft holds through a turn — what sets its radius."""
+    tas_kt = target_tas_kt(actype, alt_ft, phase)  # type: ignore[arg-type]
+    if cap_kt:
+        tas_kt = min(tas_kt, cas_to_tas_kt(cap_kt, alt_ft))
+    return tas_kt
+
+
+class _TurnFix(NamedTuple):
+    """What the procedure data says about flying a turn at one fix."""
+
+    #: Published turn direction "L"/"R" of the leg LEAVING this fix, or None.
+    #: A leg that names one is a "turn this way, then direct to my fix" (DF)
+    #: leg, so the fix it leaves is crossed before the turn starts.
+    direction: str | None
+    #: Must the fix be crossed before turning? Two things say so: the 2nd
+    #: character of the waypoint description code is "Y" ("EY" on the runway
+    #: departure end DE21L — a corner you cannot cut), or the leg TERMINATES ON
+    #: AN ALTITUDE (CA/VA/FA), which by definition ends where the altitude is
+    #: made and so cannot be cut short. Everything else is a fly-by.
+    flyover: bool
+    #: The fix's own crossing restrictions, and which phase it is flown in.
+    alt_ft: float | None
+    speed_kt: float | None
+    phase: str
+    #: Maximum bank for the segment this fix belongs to — PANS-OPS Table 2-1.
+    bank_deg: float
+
+
+def _turn_fixes(
+    procs: "list[tuple[Procedure | None, str]]",
+) -> "dict[str, _TurnFix]":
+    """Index the resolved procedures' legs by fix ident for :func:`_smooth_turns`.
+
+    Each fix is tagged with the bank angle PANS-OPS allows in its *segment of
+    operation* (Doc 8168 Vol I, Table 2-1): 25° in the en-route structure, on a
+    SID/STAR and through the initial and intermediate approach, but only 15°
+    once established on final — a turn low and slow is flown gently, and the
+    wider radius it gives is what keeps a jet inside the protected area.
+    """
+    out: dict[str, _TurnFix] = {}
+    for proc, phase in procs:
+        if proc is None:
+            continue
+        # An approach's legs run initial -> intermediate -> final; the final
+        # segment starts at the FAF, which ARINC flags in the description code's
+        # 4th character. Everything from there in is the 15° segment.
+        on_final = False
+        for leg in proc.legs:
+            desc = leg.desc_code or ""
+            if proc.proc_type is not ProcedureType.APPROACH:
+                segment = (
+                    "sid" if proc.proc_type is ProcedureType.SID else "star"
+                )
+            else:
+                on_final = on_final or (len(desc) > 3 and desc[3] == "F")
+                segment = (
+                    "final_approach" if on_final else "intermediate_approach"
+                )
+            if not leg.has_fix:
+                continue
+            speed_kt = (
+                leg.speed.speed_kt
+                if leg.speed.type
+                in (SpeedConstraintType.AT, SpeedConstraintType.AT_OR_BELOW)
+                else None
+            )
+            out[(leg.ident or "").upper()] = _TurnFix(
+                direction=leg.turn_direction or None,
+                flyover=(len(desc) > 1 and desc[1] == "Y")
+                or leg.path_terminator in ALTITUDE_TERMINATED,
+                alt_ft=leg.altitude.alt1_ft or leg.altitude.alt2_ft,
+                speed_kt=speed_kt,
+                phase=phase,
+                bank_deg=bank_angle_deg(segment),
+            )
+    return out
+
+
+def _smooth_turns(
+    route_pts: "list[tuple[str, float, float]]",
+    actype: str,
+    rfl_ft: float,
+    procs: "list[tuple[Procedure | None, str]]",
+    head: "tuple[float, float] | None" = None,
+    tail: "tuple[float, float] | None" = None,
+) -> "tuple[list[tuple[str, float, float]], dict[str, float]]":
+    """Turn the route's corners into the arcs an aircraft actually flies.
+
+    A route drawn as straight lines between fixes pivots on the spot at every
+    course change — the aircraft changes heading by 90° between one sample and
+    the next. Real turns are banked and take distance, and ARINC 424 says how
+    each one is flown (see :mod:`trajectory_sim.turns`):
+
+    * an ordinary fix is a **fly-by** — the corner is cut, tangent to both legs,
+      and the fix itself is never crossed;
+    * a fix flagged fly-over (description code ``·Y·``, e.g. the runway
+      departure end) or left on a published ``turn_direction`` (a DF leg, e.g. a
+      SID's "turn right, direct INTOS" after the initial climb) is **crossed
+      first**, and the aircraft then curves round onto the next fix.
+
+    The radius comes from the speed the aircraft actually holds at that fix — its
+    published restrictions where it has them, cruise otherwise — so a slow, low
+    SID turn is tight and a cruise-level one is wide.
+
+    Args:
+        route_pts: The spliced ``(ident, lat, lon)`` route.
+        actype: ICAO aircraft type — sets the turn speed, hence the radius.
+        rfl_ft: Cruise level, the altitude assumed at fixes outside a procedure.
+        procs: The resolved ``(procedure, phase)`` pairs the route was spliced
+            from — the source of every turn direction and crossing restriction.
+        head: Where the aircraft leaves the ground, and ``tail`` where it lands
+            — the aerodrome anchors. They belong here rather than being tacked
+            on afterwards: an anchor added later leaves the route's FIRST and
+            LAST fixes with a corner apiece, since neither had a leg on both
+            sides of it while the turns were being built.
+
+    Returns:
+        ``(path, fix_distance_nm)``. ``path`` is the flown polyline: the
+        anchors and the fixes, with arcs spliced in. Everything on it that is
+        not a fix — the arc vertices and the anchors — carries an EMPTY ident,
+        so anything keyed on fixes ignores it. ``fix_distance_nm`` maps each
+        fix's ident to its along-track distance on that path, which is where its
+        crossing restriction bites — and is why this must run *before* they are
+        built. A fly-by fix is not on the path at all, so its distance is the
+        point of the arc that cuts it.
+    """
+    fixes = _turn_fixes(procs)
+    route_pts = [
+        *([("", *head)] if head is not None else []),
+        *route_pts,
+        *([("", *tail)] if tail is not None else []),
+    ]
+    if len(route_pts) < 2:
+        # Nothing to turn between. The caller rejects such a route anyway; this
+        # just keeps the walk below from indexing off the end of it.
+        return list(route_pts), {p[0].upper(): 0.0 for p in route_pts if p[0]}
+
+    def _radius_nm(ident: str, speed_from: str) -> float:
+        """PANS-OPS turn radius at ``ident``: the speed the aircraft is really
+        holding there, banked as far as its segment of operation allows."""
+        fix = fixes.get(ident)
+        phase = fix.phase if fix else "cruise"
+        alt_ft = (fix.alt_ft if fix else None) or (
+            rfl_ft if phase == "cruise" else _DEFAULT_TURN_ALT_FT
+        )
+        cap = fixes.get(speed_from)
+        return turn_radius_nm(
+            _turn_speed_kt(actype, alt_ft, cap.speed_kt if cap else None, phase),
+            bank_deg=fix.bank_deg if fix else bank_angle_deg("enroute"),
+        )
+
+    path: list[tuple[str, float, float]] = [route_pts[0]]
+    # Where each fix's restriction bites, as an index into `path`. A fly-by fix
+    # is off the path, so it points at the arc vertex that replaces it.
+    anchor: list[tuple[str, int]] = [(route_pts[0][0], 0)]
+
+    for i in range(1, len(route_pts) - 1):
+        prev_ll = (path[-1][1], path[-1][2])
+        _, fix_lat, fix_lon = route_pts[i]
+        _, next_lat, next_lon = route_pts[i + 1]
+        ident = (route_pts[i][0] or "").upper()
+        next_ident = (route_pts[i + 1][0] or "").upper()
+        fix = fixes.get(ident)
+
+        inbound_deg = compute_bearing(prev_ll[0], prev_ll[1], fix_lat, fix_lon)
+        corner_deg = signed_turn_deg(
+            inbound_deg, compute_bearing(fix_lat, fix_lon, next_lat, next_lon)
+        )
+        # The turn out of this fix is published on the leg that LEAVES it —
+        # i.e. on the next fix's leg.
+        leaving = fixes.get(next_ident)
+        direction = leaving.direction if leaving else None
+        # A fly-over is turned AT the fix, so the speed limit that shapes it is
+        # the one on the leg being turned onto; a fly-by straddles the fix and
+        # flies its own.
+        must_cross = direction is not None or (fix is not None and fix.flyover)
+        radius_nm = _radius_nm(ident, next_ident if must_cross else ident)
+
+        if not must_cross:
+            arc = flyby_arc(
+                prev_ll[0], prev_ll[1],
+                fix_lat, fix_lon,
+                next_lat, next_lon,
+                radius_nm,
+            )
+            if arc:
+                anchor.append((ident, len(path) + len(arc) // 2))
+                path.extend(("", lat, lon) for lat, lon in arc)
+                continue
+            # No corner to cut. If it is a near-reversal the fly-by geometry
+            # can't express it — cross the fix and capture the next one instead.
+            # Anything else is already straight: leave the fix where it is.
+            must_cross = abs(corner_deg) > MAX_FLYBY_DEG
+
+        anchor.append((ident, len(path)))
+        path.append(route_pts[i])
+        if not must_cross:
+            continue
+        if direction is None:
+            # A fly-over with no published direction still has to get round the
+            # corner — take the short way.
+            direction = "R" if corner_deg > 0 else "L"
+        path.extend(
+            ("", lat, lon)
+            for lat, lon in turn_arc(
+                fix_lat, fix_lon,
+                inbound_deg,
+                next_lat, next_lon,
+                direction,
+                radius_nm,
+            )
+        )
+
+    anchor.append((route_pts[-1][0], len(path)))
+    path.append(route_pts[-1])
+
+    cumulative_nm = [0.0]
+    for a, b in zip(path, path[1:]):
+        cumulative_nm.append(
+            cumulative_nm[-1] + haversine_distance(a[1], a[2], b[1], b[2])
+        )
+    fix_distance_nm: dict[str, float] = {}
+    for ident, index in anchor:  # first occurrence wins, as flight order demands
+        if ident:
+            fix_distance_nm.setdefault(ident.upper(), cumulative_nm[index])
+    return path, fix_distance_nm
+
+
+#: ~3 NM: the route already starts/ends over the aerodrome, so anchoring it
+#: there would only add a zero-length leg.
+_COINCIDENT_SQ = 0.0025
+#: ~30 NM: the route's last fix is nowhere near the destination — it does not
+#: actually serve the city pair.
+_FAR_SQ = 0.25
+#: A closing leg shorter than this (NM) is no leg at all. Some approaches put
+#: their MAPt right on the threshold, so closing to the runway would append a
+#: point on top of the last fix — a zero-length leg whose bearing is meaningless
+#: and which reads as a violent turn.
+_MIN_CLOSING_LEG_NM = 0.05
+
+
+def _approach_runway(name: str | None) -> str | None:
+    """Landing runway of a PBN approach, from its name: ``R09-Z`` -> ``RW09``.
+
+    A PBN approach is named for the runway it lands on, and that — not the
+    STAR's runway — is the runway the aircraft touches down on. They can differ:
+    a STAR resolved to RW01 followed by the R02L approach lands on 02L.
+    """
+    m = re.match(r"^R(\d{2}[LCR]?)(?:-.*)?$", (name or "").strip().upper())
+    return f"RW{m.group(1)}" if m else None
+
+
+def _aerodrome_anchors(
+    adep: str,
+    ades: str,
+    route_pts: "list[tuple[str, float, float]]",
+    terminal: "dict[str, str | None]",
+    warnings: list[str],
+) -> "tuple[tuple[float, float] | None, tuple[float, float] | None]":
+    """Where the flown path starts and ends: the aerodromes themselves.
+
+    An FPL trajectory is gate-to-gate, so it must DEPART ADEP and ARRIVE ADES
+    whatever fixes the Item-15 route happens to list. Either anchor is skipped
+    when the route already begins/ends on the field (a SID starts on the runway
+    threshold; PUT sits on VTSP), which would only add a zero-length leg.
+
+    The arrival anchor is the landing RUNWAY THRESHOLD when the runway is known.
+    An aerodrome reference point is not where an aircraft touches down — at a
+    two-runway field like VTBS it sits between the two, so closing an approach to
+    it ends the flight in the middle of the airport, abeam the runway the
+    aircraft just flew a glideslope onto.
+    """
+    if not route_pts:
+        return None, None
+
+    head = None
+    adep_ll = _airport_ll(adep)
+    if adep_ll is not None and _sq_dist(route_pts[0][1:], adep_ll) > _COINCIDENT_SQ:
+        head = adep_ll
+
+    tail = None
+    landing = runway_end(ades, terminal.get("arr_rwy"))
+    ades_ll = (
+        (landing.lat, landing.lon) if landing is not None else _airport_ll(ades)
+    )
+    if ades_ll is not None:
+        gap = _sq_dist(route_pts[-1][1:], ades_ll)
+        # With a PBN approach the route ends at the MAPt — over the field but at
+        # the approach's decision altitude, not on the runway. Always close that
+        # last leg so the aircraft actually lands, matching the AIP's
+        # "MAPt → runway" path. Unless the MAPt IS the threshold (some
+        # approaches put it there), in which case there is nothing left to fly.
+        closing_nm = haversine_distance(*route_pts[-1][1:], *ades_ll)
+        if closing_nm > _MIN_CLOSING_LEG_NM and (
+            gap > _COINCIDENT_SQ or terminal.get("approach")
+        ):
+            tail = ades_ll
+        if gap > _FAR_SQ:
+            warnings.append(
+                f"Route does not reach {ades}: its last fix is far from the "
+                f"destination, so a direct leg to {ades} was added. Pick a "
+                f"route that ends near {ades} for a realistic profile."
+            )
+    return head, tail
+
+
+def _expand_departure(
+    req: "GenerateRequest", adep: str, sid_proc: "Procedure"
+) -> "Procedure":
+    """Anchor a resolved SID to its departure runway threshold.
+
+    Wires the request's aircraft type and the departure threshold's elevation
+    into :func:`~trajectory_sim.navdata.expand_sid_departure`, which prepends
+    the threshold and turns the SID's course-to-altitude legs (e.g. VTBD
+    OLVU3C's "209° to 1 500 ft, MAX IAS 200 KT") into fixes on the runway
+    track. Without it the aircraft starts at the runway END and turns straight
+    for the first fix, cutting back across the runway. Returned unchanged when
+    no departure threshold can be identified.
+
+    The runway to anchor to is the one the SID's *legs* are coded for, not the
+    one requested: a Thai SID name serves a single runway (ALBO3C is RW21L
+    only), so a request for the opposite end — which the runway-filtered SID
+    dropdown never offers — must not start the aircraft on a threshold its legs
+    don't leave from. Only an ARINC "both" group (RW21B, one leg set for 21L and
+    21R) names no single threshold, and there the request picks the side.
+    """
+    rwy = runway_end(adep, _proc_runway(sid_proc)) or runway_end(
+        adep, (req.sid_runway or "").strip().upper()
+    )
+    if rwy is None:
+        return sid_proc
+    actype = req.actype.strip().upper() or _DEFAULT_ACTYPE
+    thr_elev_ft = runway_threshold_elevation_ft(adep, rwy.ident)
+    # The climb is flown at a phase-average speed set by its TOP, so the fix
+    # placement needs the cruise level the profile will actually reach.
+    cruise_ft = min(float(req.rfl) * 100.0, reachable_ceiling_ft(actype))
+    return expand_sid_departure(
+        sid_proc,
+        rwy,
+        lambda alt_ft: climb_distance_nm(actype, thr_elev_ft, alt_ft, cruise_ft),
+    )
+
+
+def _terminal_runways_only(req: "GenerateRequest") -> "dict[str, str | None]":
+    """Terminal dict carrying only the user-picked runways.
+
+    Used when no SID/STAR/approach is flown (a direct route) so the vertical
+    profile still anchors its climb start / descent end to the departure /
+    arrival runway *threshold* elevation (Thai AIP AD 2) rather than the
+    aerodrome's single field elevation. The runways ride in on
+    ``sid_runway``/``star_runway`` (the same fields a SID/STAR would use).
+    """
+    dep = (req.sid_runway or "").strip().upper()
+    arr = (req.star_runway or "").strip().upper()
+    return {"dep_rwy": dep or None, "arr_rwy": arr or None}
+
+
+def _finish(
+    req: "GenerateRequest",
+    adep: str,
+    ades: str,
+    route_pts: "list[tuple[str, float, float]]",
+    terminal: "dict[str, str | None]",
+    sid_proc: "Procedure | None",
+    star_proc: "Procedure | None",
+    approach_proc: "Procedure | None",
+    warnings: list[str],
+) -> "tuple[list[tuple[str, float, float]], list[RouteConstraint], dict[str, str | None], list[tuple[str, float, float]]]":
+    """Turn a resolved route into the path the aircraft flies, and the crossing
+    restrictions placed along it. The single exit from
+    :func:`_splice_terminal_procedures` — a route with no procedure at all comes
+    through here too, so it is anchored and its corners turned like any other.
+
+    The order matters: anchor the aerodromes, THEN build the turns, THEN measure
+    the restrictions. Anchoring last would leave the route's first and last fixes
+    with a corner apiece (neither had a leg on both sides when the turns were
+    built), and measuring before the turns would place every restriction at a
+    distance the aircraft never flies.
+    """
+    head, tail = _aerodrome_anchors(adep, ades, route_pts, terminal, warnings)
+    path_pts, fix_distance_nm = _smooth_turns(
+        route_pts,
+        req.actype.strip().upper() or _DEFAULT_ACTYPE,
+        float(req.rfl) * 100.0,
+        [(sid_proc, "climb"), (star_proc, "descent"), (approach_proc, "descent")],
+        head=head,
+        tail=tail,
+    )
+    return (
+        route_pts,
+        _route_constraints(fix_distance_nm, sid_proc, star_proc, approach_proc),
+        terminal,
+        path_pts,
+    )
+
+
+def _procedure_entries(
+    nav: NavData,
+    ades: str,
+    name: str,
+    proc_type: "ProcedureType",
+    runway: str | None,
+) -> "list[tuple[str | None, str, float, float]]":
+    """Every fix a terminal procedure can be entered on: (transition, ident,
+    lat, lon).
+
+    Enumerates the procedure's transitions and reads each one's FIRST fix — a
+    STAR's enroute-entry fix, or an approach's IAF. A single-transition procedure
+    resolves directly (transition ``None``). ``[]`` if it can't be resolved.
+    """
+    try:
+        proc = nav.lookup_procedure(
+            ades, name, proc_type=proc_type, runway=runway
+        )
+        trans: list[str | None] = [proc.transition]
+    except AmbiguousProcedureError as e:
+        trans = sorted(e.candidates)
+    except ProcedureNotFoundError:
+        return []
+    out: list[tuple[str | None, str, float, float]] = []
+    for t in trans:
+        try:
+            proc = nav.lookup_procedure(
+                ades, name, proc_type=proc_type, runway=runway, transition=t
+            )
+        except (AmbiguousProcedureError, ProcedureNotFoundError):
+            continue
+        wps = proc.waypoints()
+        if wps:
+            out.append((t, wps[0].ident.upper(), wps[0].lat, wps[0].lon))
+    return out
+
+
+def _is_overfly_in_procedure(
+    nav: NavData,
+    ades: str,
+    name: str,
+    proc_type: "ProcedureType",
+    runway: str | None,
+    ident: str,
+) -> bool:
+    """True if ``ident`` is a fly-over waypoint of the procedure (desc code 2nd
+    char ``Y``). Such a fix must be crossed, so a route ending on it is left in
+    place — the exception to the VOR trim."""
+    entries = _procedure_entries(nav, ades, name, proc_type, runway)
+    for t, *_ in entries or [(None,)]:
+        try:
+            proc = nav.lookup_procedure(
+                ades, name, proc_type=proc_type, runway=runway, transition=t
+            )
+        except (AmbiguousProcedureError, ProcedureNotFoundError):
+            continue
+        for leg in proc.legs:
+            dc = leg.desc_code or ""
+            if (
+                (leg.ident or "").upper() == ident.upper()
+                and len(dc) > 1
+                and dc[1] == "Y"
+            ):
+                return True
+    return False
+
+
+def _connect_route_to_terminal(
+    nav: NavData,
+    ades: str,
+    name: str,
+    proc_type: "ProcedureType",
+    runway: str | None,
+    route_pts: "list[tuple[str, float, float]]",
+    warnings: list[str],
+) -> "tuple[list[tuple[str, float, float]], str | None]":
+    """Trim a VOR-terminated route back to the fix that joins a STAR/approach
+    cleanly, and pick that fix's entry transition.
+
+    The caller has already checked the route ends on the destination's terminal
+    VOR (:func:`_ends_at_field_vor`) — the VOR sits PAST the procedure's entry,
+    so flying to it and then out to the entry doubles the aircraft back. This
+    finds the join the AIP intends:
+
+    * **a route fix that IS a procedure entry** — e.g. SAKUB, which airway W34
+      passes through on the way to the RAN VOR: end the route there (the last
+      one, if several); otherwise
+    * **no route fix is an entry** — pick the entry nearest the route's terminal
+      fix, then end the route at the route fix nearest THAT entry, so the last
+      enroute fix is the one that best leads in (e.g. Y94's DOXAS → TAWIT).
+
+    Exception: if the terminal VOR is itself a fly-over waypoint of the
+    procedure, it must be crossed — leave the route as is.
+
+    Returns ``(trimmed_route, transition | None)``; unchanged with ``None`` when
+    the procedure has no resolvable entry.
+    """
+    entries = _procedure_entries(nav, ades, name, proc_type, runway)
+    if not entries or len(route_pts) < 2:
+        return route_pts, None
+    kind = "STAR" if proc_type is ProcedureType.STAR else "approach"
+    entry_idents = {e[1] for e in entries}
+    vor = route_pts[-1]
+    # The VOR IS the procedure's entry (e.g. VTCC's CMA) — enter there, no trim.
+    if vor[0].upper() in entry_idents:
+        return route_pts, next(e[0] for e in entries if e[1] == vor[0].upper())
+    if _is_overfly_in_procedure(nav, ades, name, proc_type, runway, vor[0]):
+        return route_pts, None  # the VOR must be overflown — keep it
+    # Otherwise the terminal VOR sits at the field, PAST the entry: the procedure
+    # is what flies TO the field, so drop the VOR and join from the fix before
+    # it. Among those, an entry ON the route wins; else take the entry nearest
+    # the VOR (the arrival direction) and end at the route fix nearest it.
+    body = route_pts[:-1]
+    on_route = [k for k, p in enumerate(body) if p[0].upper() in entry_idents]
+    if on_route:
+        k = max(on_route)
+        trn = next(e[0] for e in entries if e[1] == body[k][0].upper())
+    else:
+        trn, _eid, ela, elo = min(
+            entries, key=lambda e: _sq_dist((e[2], e[3]), (vor[1], vor[2]))
+        )
+        k = min(
+            range(len(body)),
+            key=lambda j: _sq_dist((body[j][1], body[j][2]), (ela, elo)),
+        )
+    dropped = ", ".join(p[0] for p in route_pts[k + 1 :])
+    warnings.append(
+        f"Trimmed the route at {body[k][0]} to join {kind} {name} at its entry "
+        f"(dropped {dropped})."
+    )
+    return body[: k + 1], trn
+
+
 def _splice_terminal_procedures(
     req: "GenerateRequest",
     adep: str,
     ades: str,
     route_pts: "list[tuple[str, float, float]]",
     warnings: list[str],
-) -> "tuple[list[tuple[str, float, float]], list[RouteConstraint], dict[str, str | None]]":
+) -> "tuple[list[tuple[str, float, float]], list[RouteConstraint], dict[str, str | None], list[tuple[str, float, float]]]":
     """Fold the requested SID (ADEP), STAR + approach (ADES) into the fixes.
 
-    Returns ``(spliced_route, crossing_restrictions, terminal)`` where
-    ``terminal`` maps ``sid``/``star``/``approach``/``dep_rwy``/``arr_rwy`` to
-    the resolved selection (runway is the one the resolver picked, even for an
-    "Auto" request) — empty ``{}`` when no procedure is requested (Phase 4/5).
+    Returns ``(spliced_route, crossing_restrictions, terminal, flown_path)``:
+
+    * ``spliced_route`` — the fixes, in flight order. This is the *route*: what
+      the FPL string, the route payload and the fix markers are made of.
+    * ``terminal`` — maps ``sid``/``star``/``approach``/``dep_rwy``/``arr_rwy``
+      to the resolved selection (the runway is the one the resolver picked, even
+      for an "Auto" request); empty ``{}`` when no procedure is requested.
+    * ``flown_path`` — the same fixes with turn arcs spliced in (:func:`_smooth_
+      turns`), so course changes the procedures publish a turn for are curves
+      rather than corners. This is the *path*: what the aircraft actually flies,
+      and what the crossing restrictions' along-track distances are measured on.
+      Arc vertices carry an empty ident, which is what tells the two apart.
 
     The SID's fixes lead the sequence (it flies first, right after ADEP); the
     STAR's fixes trail it, then the PBN approach's fixes trail those (right
     before ADES). Shared boundary fixes — SID enroute-transition vs. route's
     first fix, route's last fix vs. STAR entry, STAR's terminal fix vs. the
     approach IAF — collapse via :func:`splice_procedures`. With no procedure
-    requested the route passes through untouched.
+    requested the route passes through untouched, path == route (Phase 4/5).
     """
     sid_name = (req.sid or "").strip()
     star_name = (req.star or "").strip()
     approach_name = (req.approach or "").strip()
     if not sid_name and not star_name and not approach_name:
-        return route_pts, [], {}
+        return _finish(req, adep, ades, route_pts, _terminal_runways_only(req),
+                       None, None, None, warnings)
 
     nav = _navdata()
     # The route's own fixes pick the right terminal-procedure transition when
@@ -892,10 +1610,33 @@ def _splice_terminal_procedures(
         if sid_name
         else None
     )
+    # A route filed to the destination's terminal VOR (RAN, NKS, LPN, BKK) ends
+    # PAST the first terminal procedure's entry, so flying to it doubles the
+    # aircraft back. Trim it to the fix that leads in and lock that entry's
+    # transition — for the STAR if one is flown (it bridges the enroute route to
+    # the runway), otherwise for the approach. Only when the route ends on that
+    # field VOR, and only when the user hasn't picked the transition themselves.
+    forced_star_trans = req.star_transition
+    forced_appr_trans = req.approach_transition
+    if _ends_at_field_vor(route_pts, ades):
+        if star_name and not (req.star_transition or "").strip():
+            route_pts, forced_star_trans = _connect_route_to_terminal(
+                nav, ades, star_name, ProcedureType.STAR,
+                req.star_runway, route_pts, warnings,
+            )
+        elif (
+            approach_name
+            and not star_name
+            and not (req.approach_transition or "").strip()
+        ):
+            route_pts, forced_appr_trans = _connect_route_to_terminal(
+                nav, ades, approach_name, ProcedureType.APPROACH,
+                req.star_runway, route_pts, warnings,
+            )
     star_proc = (
         _resolve_proc_for_splice(
             nav, ades, star_name, ProcedureType.STAR,
-            req.star_runway, req.star_transition, warnings,
+            req.star_runway, forced_star_trans, warnings,
             route_ctx=_route_ctx(route_pts, ProcedureType.STAR),
         )
         if star_name
@@ -912,14 +1653,21 @@ def _splice_terminal_procedures(
     approach_proc = (
         _resolve_proc_for_splice(
             nav, ades, approach_name, ProcedureType.APPROACH,
-            req.star_runway, req.approach_transition, warnings,
+            req.star_runway, forced_appr_trans, warnings,
             route_ctx=_route_ctx(approach_ctx_pts, ProcedureType.APPROACH),
         )
         if approach_name
         else None
     )
     if sid_proc is None and star_proc is None and approach_proc is None:
-        return route_pts, [], {}
+        return _finish(req, adep, ades, route_pts, _terminal_runways_only(req),
+                       None, None, None, warnings)
+
+    # Give the SID its published ground track before anything reads its fixes:
+    # start on the runway threshold, fly runway heading through the initial
+    # course-to-altitude leg, and only then turn for the first en-route fix.
+    if sid_proc is not None:
+        sid_proc = _expand_departure(req, adep, sid_proc)
 
     enroute = [RouteWaypoint(ident=i, lat=la, lon=lo) for i, la, lo in route_pts]
     spliced = splice_procedures(
@@ -939,12 +1687,16 @@ def _splice_terminal_procedures(
         "star": star_name or None,
         "approach": approach_name or None,
         "dep_rwy": _rwy(req.sid_runway, sid_proc),
-        "arr_rwy": _rwy(req.star_runway, star_proc),
+        # An approach names the runway it lands on, and that beats the STAR's:
+        # they can disagree (a STAR resolved to RW01 flown into the R02L
+        # approach lands on 02L), and it is the approach that puts the aircraft
+        # on the tarmac.
+        "arr_rwy": _approach_runway(approach_name)
+        or _rwy(req.star_runway, star_proc),
     }
-    return (
-        spliced_pts,
-        _route_constraints(spliced_pts, sid_proc, star_proc, approach_proc),
-        terminal,
+    return _finish(
+        req, adep, ades, spliced_pts, terminal,
+        sid_proc, star_proc, approach_proc, warnings,
     )
 
 
@@ -1176,7 +1928,7 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
     # Phase 4: splice the SID (at ADEP) and STAR (at ADES) around the now
     # ADEP-oriented enroute fixes, before the < 2 check — a thin route can
     # become valid once its terminal procedures are folded in.
-    route_pts, route_constraints, terminal = _splice_terminal_procedures(
+    route_pts, route_constraints, terminal, path_pts = _splice_terminal_procedures(
         req, adep, ades, route_pts, warnings
     )
 
@@ -1209,57 +1961,10 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
     except ValueError as e:
         raise HTTPException(400, f"Invalid flight plan: {e}") from None
 
-    # Anchor the trajectory to the real aerodromes. An FPL trajectory is
-    # gate-to-gate, so it must DEPART ADEP and ARRIVE ADES regardless of
-    # which fixes the Item-15 route lists. Prepend/append the aerodrome
-    # reference points unless the route already starts/ends right on them
-    # (e.g. PUT sits on VTSP) — which would only add a zero-length leg. If
-    # the route's last fix is far from ADES, the route doesn't actually
-    # serve the city pair (e.g. a VTBS->VTSP route that ends at Chiang Mai);
-    # we still close it to ADES but flag it so the FAIL is read as a bad
-    # route, not a bad simulation.
-    _COINCIDENT_SQ = 0.0025  # ~3 NM: treat as already over the aerodrome
-    _FAR_SQ = 0.25  # ~30 NM: the route never reaches the destination field
-    waypoint_sequence = [(lat, lon) for _, lat, lon in route_pts]
-    adep_ll = _airport_ll(adep)
-    ades_ll = _airport_ll(ades)
-    if (
-        adep_ll is not None
-        and _sq_dist(waypoint_sequence[0], adep_ll) > _COINCIDENT_SQ
-    ):
-        # Prepending ADEP shifts every fix's along-track distance forward by
-        # the new ADEP->first-fix leg, so shift the constraints to match.
-        off = haversine_distance(
-            adep_ll[0], adep_ll[1],
-            waypoint_sequence[0][0], waypoint_sequence[0][1],
-        )
-        route_constraints = [
-            RouteConstraint(
-                distance_nm=c.distance_nm + off,
-                phase=c.phase,
-                alt_floor_ft=c.alt_floor_ft,
-                alt_ceil_ft=c.alt_ceil_ft,
-                spd_max_kt=c.spd_max_kt,
-            )
-            for c in route_constraints
-        ]
-        waypoint_sequence.insert(0, adep_ll)
-    if ades_ll is not None:
-        gap = _sq_dist(waypoint_sequence[-1], ades_ll)
-        # With a PBN approach the route ends at the MAPt — near the field but
-        # at the approach's decision altitude (e.g. MR09 at 391 ft), not the
-        # threshold. Always close that final leg to ADES so the aircraft lands
-        # (descends to the arrival-runway threshold), matching the AIP's
-        # "MAPt → runway" landing path.
-        flew_approach = bool(terminal.get("approach"))
-        if gap > _COINCIDENT_SQ or flew_approach:
-            waypoint_sequence.append(ades_ll)
-        if gap > _FAR_SQ:
-            warnings.append(
-                f"Route does not reach {ades}: its last fix is far from the "
-                f"destination, so a direct leg to {ades} was added. Pick a "
-                f"route that ends near {ades} for a realistic profile."
-            )
+    # `path_pts` is already the whole flown path: the aerodrome anchors, the
+    # fixes, and the turn arcs between them (see `_finish`). The timeline emits
+    # a track sample at every one of its vertices.
+    waypoint_sequence = [(lat, lon) for _, lat, lon in path_pts]
 
     # Multi-route requests share (callsign, EOBT) — disambiguate the
     # flight_key/filename with an R-prefixed suffix instead of mangling
@@ -1338,6 +2043,20 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
             set_speed_restriction(
                 cas_kt=orig_restrict[0], below_alt_ft=orig_restrict[1]
             )
+
+    # Land a flown approach ON the runway threshold. The shallow near-ground
+    # descent rate + the MAPt's threshold-crossing altitude otherwise leave the
+    # aircraft ~50 ft high; glide the final approach straight down to the
+    # arrival-runway threshold elevation (AIP AD 2) — the same height the climb
+    # departed from. Done on the GDF so the JSON points AND the file exports
+    # (GeoPackage/CSV/GeoJSON) all land on the threshold.
+    if terminal.get("approach") and len(route_pts) >= 2:
+        faf = route_pts[-2]  # fix just before the MAPt = start of the final glide
+        _glide_to_threshold(
+            gdf,
+            (faf[1], faf[2]),
+            runway_threshold_elevation_ft(ades, terminal.get("arr_rwy")),
+        )
 
     flight_key = str(gdf["flight_key"].iloc[0])
 

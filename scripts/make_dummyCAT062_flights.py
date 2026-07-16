@@ -71,6 +71,7 @@ CAT062_PATH = _ROOT / "web" / "Data" / "cat062_20251223.csv"
 
 _SID_LINE = _ROOT / "web" / "public" / "data" / "sid" / "sid_line_thai.geojson"
 _STAR_LINE = _ROOT / "web" / "public" / "data" / "star" / "star_line.geojson"
+_PBN_WPTS = _ROOT / "web" / "public" / "data" / "pbn" / "pbn_waypoint.geojson"
 
 
 def _load_aip() -> tuple[dict, dict, dict]:
@@ -96,6 +97,43 @@ WAYPOINTS, AIRWAYS, AIRPORTS = _load_aip()
 
 SIDS, SID_RWY = load_proc_runways(_SID_LINE)
 STARS, STAR_RWY = load_proc_runways(_STAR_LINE)
+
+
+def _load_approaches() -> dict[str, dict[str, list[str]]]:
+    """Airport -> {"RW09": ["R09-Y", "R09-Z"], …} PBN instrument approaches,
+    grouped by the arrival runway they serve.
+
+    Mirrors ``web/lib/geojson.ts`` ``buildApproachIndex``: PBN procedures are
+    named ``R{rwy}`` / ``R{rwy}-{variant}`` (e.g. R18, R09-Y), so the landing
+    runway is parsed from the name and the approach is filed under the same
+    ``RW{rwy}`` ident the web app's Arrival-RWY picker lists — so an imported
+    flight pre-selects it instead of falling back to "None".
+    """
+    fc = json.loads(_PBN_WPTS.read_text(encoding="utf-8"))
+    out: dict[str, dict[str, set[str]]] = {}
+    for f in fc["features"]:
+        p = f.get("properties") or {}
+        airport = p.get("airport_identifier")
+        name = p.get("procedure_identifier")
+        if not airport or not name:
+            continue
+        m = re.match(r"^R(\d{2}[LCR]?)(?:-.*)?$", name.strip().upper())
+        if not m:
+            continue
+        out.setdefault(airport, {}).setdefault(f"RW{m.group(1)}", set()).add(name)
+    return {a: {r: sorted(v) for r, v in byr.items()} for a, byr in out.items()}
+
+
+APPROACHES = _load_approaches()
+
+
+def _pick_approach(ades: str, arr_rwy: str) -> str:
+    """First published PBN approach that lands on ``arr_rwy`` at ``ades``
+    (sorted, matching the web picker's order), or "" when none is coded."""
+    if not arr_rwy:
+        return ""
+    opts = APPROACHES.get(ades, {}).get(arr_rwy, [])
+    return opts[0] if opts else ""
 
 # Feed the same elevation tables the engine uses so the dummy's cosmetic
 # samples (and any later round-trip through the engine) share one source of
@@ -262,7 +300,7 @@ def sample_points(route_pts, eobt, rfl_ft, dep_elev, des_elev):
 
 
 def csv_block(callsign, actype, adep, ades, rfl, route_str, eobt, samples,
-              sid="", star="", dep_rwy="", arr_rwy=""):
+              sid="", star="", approach="", dep_rwy="", arr_rwy=""):
     lines = [
         f"ROUTE: {route_str}",
         f"DEP: {adep}",
@@ -279,6 +317,8 @@ def csv_block(callsign, actype, adep, ades, rfl, route_str, eobt, samples,
         lines.append(f"SID: {sid}")
     if star:
         lines.append(f"STAR: {star}")
+    if approach:
+        lines.append(f"APPROACH: {approach}")
     lines += [
         "",
         "---",
@@ -377,6 +417,10 @@ def main() -> None:
         # runway RWxxB to a real side so it matches the app + threshold table).
         dep_rwy = _expand_runway(adep, _rwy(SID_RWY, adep, sid)) if sid else ""
         arr_rwy = _expand_runway(ades, _rwy(STAR_RWY, ades, star)) if star else ""
+        # PBN instrument approach that lands on the chosen arrival runway (so
+        # the imported flight pre-fills the Approach picker). Needs a resolved
+        # arrival runway — no runway, no coded approach to attach.
+        approach = _pick_approach(ades, arr_rwy)
         # Snap the picked level to a CAB-compliant cruising level for the
         # ADEP->ADES track (odd FL eastbound 000-179, even FL westbound
         # 180-359; CAB Rules of the Air §2.4.2), capped to the level this
@@ -394,6 +438,7 @@ def main() -> None:
             "callsign": f"{AIRLINES[i % len(AIRLINES)]}{100 + i:03d}",
             "actype": actype,
             "adep": adep, "ades": ades, "sid": sid, "star": star,
+            "approach": approach,
             "dep_rwy": dep_rwy,
             "arr_rwy": arr_rwy,
             "rfl": rfl,
@@ -456,6 +501,7 @@ def main() -> None:
             "callsign": p["callsign"], "actype": p["actype"],
             "adep": p["adep"], "ades": p["ades"],
             "eobt": eobt, "sid": p["sid"], "star": p["star"],
+            "approach": p["approach"],
             "dep_rwy": p["dep_rwy"], "arr_rwy": p["arr_rwy"],
             "routes": [{
                 "flight_key": flight_key,
@@ -487,7 +533,7 @@ def main() -> None:
             + csv_block(
                 fl["callsign"], fl["actype"], fl["adep"], fl["ades"],
                 rt["rfl"], rt["route_str"], fl["eobt"], rt["samples"],
-                sid=fl["sid"], star=fl["star"],
+                sid=fl["sid"], star=fl["star"], approach=fl["approach"],
                 dep_rwy=fl["dep_rwy"], arr_rwy=fl["arr_rwy"],
             )
         )
@@ -511,6 +557,7 @@ def main() -> None:
                     "rfl": rt["rfl"],
                     "sid": fl["sid"],
                     "star": fl["star"],
+                    "approach": fl["approach"],
                     "dep_rwy": fl["dep_rwy"],
                     "arr_rwy": fl["arr_rwy"],
                     "eobt": fl["eobt"].isoformat(),
@@ -553,12 +600,13 @@ def main() -> None:
 
     proc = sum(1 for fl in flights if fl["sid"] or fl["star"])
     rwys = sum(1 for fl in flights if fl["dep_rwy"] or fl["arr_rwy"])
+    apps = sum(1 for fl in flights if fl["approach"])
     span = (
         f"{min(f['eobt'] for f in flights).isoformat()} … "
         f"{max(f['eobt'] for f in flights).isoformat()}"
     )
     print(f"Flights: {len(flights)} (1 FPL = 1 route) | with SID/STAR: {proc} "
-          f"| with RWY: {rwys}")
+          f"| with RWY: {rwys} | with APPROACH: {apps}")
     print(f"UTC span: {span}")
     print(f"CSV:     {csv_path}")
     print(f"GeoJSON: {geojson_path}")

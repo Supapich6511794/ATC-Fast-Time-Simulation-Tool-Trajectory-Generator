@@ -90,7 +90,16 @@ import {
   totalSeconds,
   useSimPlayback,
 } from "@/lib/useSimPlayback";
-import { statusFromLocalT } from "@/lib/flightStatus";
+import {
+  departureOffsets,
+  localClock,
+  statusFromLocalT,
+} from "@/lib/flightStatus";
+import {
+  airspaceAt,
+  buildAirspaceIndex,
+  type AirspaceMembership,
+} from "@/lib/airspace";
 
 const LeafletMap = dynamic(() => import("@/components/LeafletMap"), {
   ssr: false,
@@ -228,6 +237,7 @@ export default function MapApp() {
     fl: false,
     ias: false,
     hdg: false,
+    airspace: false,
   });
   // Trail drawing options (the Trails menu).
   const [trailOpts, setTrailOpts] = useState<TrailOpts>(DEFAULT_TRAIL_OPTS);
@@ -666,6 +676,52 @@ export default function MapApp() {
     return safePlaybackIdx === i ? sim.simT : null;
   };
 
+  // --- Live airspace membership (which controlled volume each plane is in) ---
+  // Built here because MapApp is the one owner of the trajectories, the shared
+  // clock, the per-route EOBT offsets and the sector polygons. The result is
+  // keyed by flightKey and fanned out to the map label, the Results rows and the
+  // profile graph so all three show the SAME zone.
+  const airspaceIndex = useMemo(
+    () => buildAirspaceIndex(sectorData),
+    [sectorData],
+  );
+  const samplesByIdx = useMemo(
+    () => trajectories.map((t) => toSamples(t.points)),
+    [trajectories],
+  );
+  const routeOffsets = useMemo(
+    () => departureOffsets(trajectories),
+    [trajectories],
+  );
+  // Throttle the (otherwise 60 fps) recompute to ~1 Hz — point-in-polygon on
+  // ~184 polygons per plane is cheap, but there's no reason to redo it every
+  // frame; whole-second resolution reads live enough.
+  const simSec = Math.round(sim.simT);
+  const airspaceByKey = useMemo(() => {
+    const out: Record<string, AirspaceMembership> = {};
+    if (!airspaceIndex.bacc) return out; // polygons not loaded yet
+    trajectories.forEach((t, i) => {
+      const localT = localClock(i, simSec, routeOffsets, safePlaybackIdx);
+      if (statusFromLocalT(localT, totalSeconds(t.points)) !== "enroute") return;
+      const ac = aircraftAt(samplesByIdx[i], localT);
+      if (!ac) return;
+      out[t.meta.flightKey] = airspaceAt(
+        airspaceIndex,
+        ac.lon,
+        ac.lat,
+        ac.altitudeFt,
+      );
+    });
+    return out;
+  }, [
+    trajectories,
+    samplesByIdx,
+    airspaceIndex,
+    routeOffsets,
+    safePlaybackIdx,
+    simSec,
+  ]);
+
   useEffect(() => {
     let cancelled = false;
     fetchAirways()
@@ -719,6 +775,28 @@ export default function MapApp() {
       }
     }
   }, [sectorsOn, sectorData]);
+
+  // Once any flight exists, load ALL sector polygons (regardless of toggle) so
+  // the live airspace-membership readout has geometry to test against. The
+  // visual overlay still renders only toggled layers, so this is invisible; the
+  // files are small and HTTP-cached. Fetched lazily (not on mount) so a session
+  // that never generates a flight pays nothing.
+  useEffect(() => {
+    if (trajectories.length === 0) return;
+    for (const s of SECTORS) {
+      if (!sectorData[s.key]) {
+        fetchSector(s.key)
+          .then((d) =>
+            setSectorData((prev) =>
+              prev[s.key] ? prev : { ...prev, [s.key]: d },
+            ),
+          )
+          .catch(() => {
+            /* membership just omits this layer if it can't load */
+          });
+      }
+    }
+  }, [trajectories.length, sectorData]);
 
   // Fetch the airway VOR / reporting points once, on first enable.
   useEffect(() => {
@@ -1140,6 +1218,7 @@ export default function MapApp() {
               onRemove={() => removeResultAt(nav.routeIdx)}
               forceSection={nav.section}
               simT={playSimT(nav.routeIdx)}
+              airspace={airspaceByKey[downloads[nav.routeIdx].flightKey]}
             />
           )}
 
@@ -1227,6 +1306,7 @@ export default function MapApp() {
                 onToggleCollapse={() => toggleExpanded(d.flightKey)}
                 sectionMode={nav.section}
                 simT={playSimT(i)}
+                airspace={airspaceByKey[d.flightKey]}
               />
             ))}
 
@@ -1272,13 +1352,26 @@ export default function MapApp() {
                     tagFields.callsign ||
                     tagFields.fl ||
                     tagFields.ias ||
-                    tagFields.hdg
+                    tagFields.hdg ||
+                    tagFields.airspace
                   }
                   onFlightTagsToggle={(on) =>
                     setTagFields(
                       on
-                        ? { callsign: true, fl: true, ias: false, hdg: false }
-                        : { callsign: false, fl: false, ias: false, hdg: false },
+                        ? {
+                            callsign: true,
+                            fl: true,
+                            ias: false,
+                            hdg: false,
+                            airspace: true,
+                          }
+                        : {
+                            callsign: false,
+                            fl: false,
+                            ias: false,
+                            hdg: false,
+                            airspace: false,
+                          },
                     )
                   }
                 />
@@ -1326,6 +1419,7 @@ export default function MapApp() {
               activeIndex={followActive ? followIdx : detailIdx ?? safePlaybackIdx}
               playbackIdx={safePlaybackIdx}
               simT={sim.simT}
+              airspace={airspaceByKey}
             />
             <DownloadModal
               open={downloadOpen}
@@ -1447,6 +1541,7 @@ export default function MapApp() {
               hiddenAircraft={hiddenAircraft}
               typeFilter={acTypeQuery}
               tagFields={tagFields}
+              airspace={airspaceByKey}
               previewRoutes={
                 previewHidden
                   ? []
