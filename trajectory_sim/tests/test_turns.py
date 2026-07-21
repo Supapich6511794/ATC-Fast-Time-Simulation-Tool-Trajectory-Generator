@@ -114,15 +114,37 @@ def test_flyby_cuts_the_corner_and_never_crosses_the_fix() -> None:
 def test_flyby_is_tangent_to_both_legs() -> None:
     """It leaves the inbound leg already on the inbound track and rejoins the
     outbound one already on the outbound track — so there is no corner left."""
-    arc = flyby_arc(*_PREV, *_FIX, *_NEXT, radius_nm=2.0)
+    # Radius kept below the corner-cut cap so it exercises pure tangency
+    # (r·(sec45°−1) = 0.41 NM < the 0.5 NM cap, so the radius is used verbatim).
+    r = 1.0
+    arc = flyby_arc(*_PREV, *_FIX, *_NEXT, radius_nm=r)
     inbound, outbound = _track(_PREV, _FIX), _track(_FIX, _NEXT)
 
     assert _track(_PREV, arc[0]) == pytest.approx(inbound, abs=0.5)
     assert _track(arc[-1], _NEXT) == pytest.approx(outbound, abs=0.5)
     # Entry and exit sit the same distance either side of the fix (r·tan(Δ/2)).
-    tangent_nm = 2.0 * math.tan(math.radians(abs(signed_turn_deg(inbound, outbound)) / 2))
+    tangent_nm = r * math.tan(math.radians(abs(signed_turn_deg(inbound, outbound)) / 2))
     assert haversine_distance(*_FIX, *arc[0]) == pytest.approx(tangent_nm, abs=0.05)
     assert haversine_distance(*_FIX, *arc[-1]) == pytest.approx(tangent_nm, abs=0.05)
+
+
+def test_flyby_cut_is_capped_near_the_fix() -> None:
+    """A wide, fast turn is tightened so the arc still hugs the waypoint: a pure
+    fly-by at this radius would bow ~2.5 NM inside the fix, but the corner-cut
+    cap holds the closest approach to ~0.5 NM (the arc reaches the waypoint
+    instead of cutting far short of it)."""
+    from trajectory_sim.turns import _MAX_FLYBY_CUT_NM
+
+    wide = 6.0  # ~cruise-speed radius
+    pure_cut = wide * (1.0 / math.cos(math.radians(45.0)) - 1.0)
+    assert pure_cut > 2.0  # uncapped, this turn bows miles inside the fix
+
+    arc = flyby_arc(*_PREV, *_FIX, *_NEXT, radius_nm=wide)
+    closest = min(haversine_distance(*_FIX, lat, lon) for lat, lon in arc)
+    assert closest == pytest.approx(_MAX_FLYBY_CUT_NM, abs=0.05)
+    # Still a real fly-by: tangent to both legs, fix not crossed.
+    assert _track(_PREV, arc[0]) == pytest.approx(_track(_PREV, _FIX), abs=0.5)
+    assert closest > 0.1
 
 
 def test_flyby_turns_the_short_way() -> None:

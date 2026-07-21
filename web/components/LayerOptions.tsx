@@ -10,7 +10,7 @@
  * lifted to MapApp so LeafletMap can render from it.
  */
 
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 
 import type { PanelAirport } from "@/lib/atcLayers";
 import type { ProcedureDto } from "@/lib/api";
@@ -102,6 +102,13 @@ interface Props {
   onAirwaysOn: (on: boolean) => void;
   airway: AirwayExtra;
   onAirwayChange: (s: AirwayExtra) => void;
+  // Route waypoints layer
+  waypointsOn: boolean;
+  onWaypointsOn: (on: boolean) => void;
+  // FIR boundaries (lazy ~15 MB fetch on first enable)
+  firOn: boolean;
+  onFirOn: (on: boolean) => void;
+  firLoading: boolean;
   /** Highlight a looked-up procedure on the map (null clears it). */
   onProcHighlight: (data: ProcedureDto | null) => void;
   // Procedure layers
@@ -127,6 +134,11 @@ function LayerOptions({
   onAirwaysOn,
   airway,
   onAirwayChange,
+  waypointsOn,
+  onWaypointsOn,
+  firOn,
+  onFirOn,
+  firLoading,
   onProcHighlight,
   sid,
   star,
@@ -237,6 +249,22 @@ function LayerOptions({
                 }
               />
             </label>
+            <label className="lo-check">
+              <span>Waypoints</span>
+              <input
+                type="checkbox"
+                checked={waypointsOn}
+                onChange={(e) => onWaypointsOn(e.target.checked)}
+              />
+            </label>
+            <label className="lo-check">
+              <span>FIR{firLoading ? " (loading…)" : ""}</span>
+              <input
+                type="checkbox"
+                checked={firOn}
+                onChange={(e) => onFirOn(e.target.checked)}
+              />
+            </label>
             <Slider
               label="OPACITY"
               value={Math.round(airway.opacity * 100)}
@@ -247,7 +275,8 @@ function LayerOptions({
               onChange={(v) => onAirwayChange({ ...airway, opacity: v / 100 })}
             />
             <p className="lo-empty">
-              Reporting points (~35k) appear only when zoomed in.
+              Reporting points (~35k) appear only when zoomed in. FIR
+              boundaries load on first enable (~15 MB).
             </p>
           </>
         )}
@@ -371,6 +400,11 @@ function ProcTab({
   const set = (patch: Partial<ProcLayerState>) =>
     onChange({ ...state, ...patch });
 
+  // Only one of the two multiselects (AIRPORT / PROCEDURE) may be open at a
+  // time — their dropdown menus are absolutely positioned and would otherwise
+  // overlap each other and the controls below.
+  const [openMs, setOpenMs] = useState<"airport" | "procedure" | null>(null);
+
   // Wrapper keeps every procedure tab (SID/STAR/PBN/ILS) the same card height,
   // so PBN/ILS — which have no "look up a procedure" form — don't render as a
   // visibly shorter card than SID/STAR.
@@ -398,12 +432,16 @@ function ProcTab({
         options={airportOpts}
         selected={state.airports}
         onChange={(s) => set({ airports: s })}
+        open={openMs === "airport"}
+        onOpenChange={(o) => setOpenMs(o ? "airport" : null)}
       />
       <MultiSelect
         label="PROCEDURE"
         options={procOpts}
         selected={state.procedures}
         onChange={(s) => set({ procedures: s })}
+        open={openMs === "procedure"}
+        onOpenChange={(o) => setOpenMs(o ? "procedure" : null)}
       />
 
       <Slider
@@ -513,6 +551,17 @@ function ProcLookup({
       );
   };
 
+  // Reset the whole look-up: the three selects, the legs result and the map
+  // highlight the last lookup lit up.
+  const clear = () => {
+    setAirport("");
+    setProc("");
+    setTrans("");
+    setRes(null);
+    onHighlight(null);
+  };
+  const dirty = Boolean(airport || proc || trans || res);
+
   return (
     <div className="lo-lookup">
       <p className="lo-label">LOOK UP A {kind}</p>
@@ -564,14 +613,24 @@ function ProcLookup({
           </option>
         ))}
       </select>
-      <button
-        type="button"
-        className="lo-lk-btn"
-        disabled={!airport || !proc}
-        onClick={run}
-      >
-        Show legs
-      </button>
+      <div className="lo-lk-actions">
+        <button
+          type="button"
+          className="lo-lk-btn"
+          disabled={!airport || !proc}
+          onClick={run}
+        >
+          Show legs
+        </button>
+        <button
+          type="button"
+          className="lo-lk-btn lo-lk-clear"
+          disabled={!dirty}
+          onClick={clear}
+        >
+          Clear
+        </button>
+      </div>
 
       {res?.loading && <p className="lo-empty">Loading legs…</p>}
       {res?.error && <p className="lo-empty">{res.error}</p>}
@@ -607,13 +666,19 @@ function MultiSelect({
   options,
   selected,
   onChange,
+  open,
+  onOpenChange,
 }: {
   label: string;
   options: string[];
   selected: Set<string>;
   onChange: (s: Set<string>) => void;
+  /** Controlled open state — lifted to the parent so only ONE multiselect
+   *  (AIRPORT or PROCEDURE) is open at a time; otherwise the two absolutely-
+   *  positioned menus stack over each other and the fields below them. */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const text = selected.size === 0 ? "ALL" : `${selected.size} SELECTED`;
 
@@ -625,10 +690,13 @@ function MultiSelect({
       : options;
   }, [options, query]);
 
-  const toggle = () => {
-    if (open) setQuery(""); // reset the search when collapsing
-    setOpen((v) => !v);
-  };
+  // Reset the search whenever the menu closes (incl. when the sibling
+  // multiselect steals the single "open" slot).
+  useEffect(() => {
+    if (!open) setQuery("");
+  }, [open]);
+
+  const toggle = () => onOpenChange(!open);
 
   const flip = (o: string) => {
     const next = new Set(selected);
@@ -656,13 +724,20 @@ function MultiSelect({
               onChange={(e) => setQuery(e.target.value)}
               autoFocus
             />
-            <button
-              type="button"
-              className="lo-select-all"
-              onClick={() => onChange(new Set())}
-            >
-              All ({options.length})
-            </button>
+            {/* Select All ticks every option; Clear empties the set — an
+                empty set is the "no filter → show all" default, so Clear
+                returns the layer to showing every airport/procedure. */}
+            <div className="lo-ap-actions lo-ms-actions">
+              <button
+                type="button"
+                onClick={() => onChange(new Set(options))}
+              >
+                Select All
+              </button>
+              <button type="button" onClick={() => onChange(new Set())}>
+                Clear
+              </button>
+            </div>
             <div className="lo-opt-list">
               {options.length === 0 && <p className="lo-empty">No options.</p>}
               {options.length > 0 && filtered.length === 0 && (

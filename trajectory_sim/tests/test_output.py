@@ -222,12 +222,13 @@ def test_gdf_terminal_cols_blank_by_default() -> None:
 
 _DATA_COLS = [
     "timestamp", "utc", "callsign", "lat", "lon", "alt", "speed", "dir",
+    "phase", "sector", "event",
 ]
 
 
 def _read_csv_data(path: Path) -> pd.DataFrame:
     """Read the data section of the ATC-format CSV (skips the metadata
-    header block; the 8 column names line up 1-to-1 with the 8 fields
+    header block; the 11 column names line up 1-to-1 with the 11 fields
     of each data row)."""
     with path.open() as f:
         lines = f.readlines()
@@ -257,7 +258,10 @@ def test_write_csv_has_metadata_header(tmp_path: Path) -> None:
     assert "ARR RWY:" in text
     assert "SID:" in text
     assert "STAR:" in text
-    assert "Timestamp,UTC,Callsign,Lat,Lon,Altitude,Speed,Direction" in text
+    assert (
+        "Timestamp,UTC,Callsign,Lat,Lon,Altitude,Speed,Direction,"
+        "Phase,Sector,Event" in text
+    )
 
 
 def test_write_csv_terminal_header_values(tmp_path: Path) -> None:
@@ -295,6 +299,30 @@ def test_write_csv_data_rows_match_gdf(tmp_path: Path) -> None:
     # Timestamp is integer epoch seconds; UTC ends with the Z suffix.
     assert df["timestamp"].dtype.kind == "i"
     assert str(df["utc"].iloc[0]).endswith("Z")
+    # Phase rides along per row; sector/event columns are blank when the
+    # gdf was built without the enrichment (read defensively).
+    assert list(df["phase"]) == list(gdf["phase"])
+    assert df["sector"].isna().all()
+    assert df["event"].isna().all()
+
+
+def test_write_csv_sector_and_event_columns(tmp_path: Path) -> None:
+    """Sector/Event columns round-trip, incl. CSV-quoting of a comma-joined
+    Sector value (overlapping PDR areas)."""
+    gdf = _build_default_gdf()
+    gdf["sector"] = ["8S/Bangkok CTR/VTR1,VTD16"] * len(gdf)
+    events = [""] * len(gdf)
+    events[1] = "TOC"
+    events[-1] = "TOD"
+    gdf["event"] = events
+    out = tmp_path / "sector.csv"
+    write_csv(gdf, out, route_str="BKK Y8 PUT", rfl=330)
+
+    df = _read_csv_data(out)
+    assert len(df) == len(gdf)  # quoting keeps the comma inside one field
+    assert (df["sector"] == "8S/Bangkok CTR/VTR1,VTD16").all()
+    assert df["event"].iloc[1] == "TOC"
+    assert df["event"].iloc[len(df) - 1] == "TOD"
 
 
 def test_write_csv_fl_line_omitted_when_rfl_none(tmp_path: Path) -> None:

@@ -486,3 +486,55 @@ export async function suggestProcedure(
     return null;
   }
 }
+
+/** A PBN approach's IAF entry fixes and which of them the current route/STAR
+ *  flies through (see /api/approach-entries). `matching` ⊆ `entries`. */
+export interface ApproachEntries {
+  airport: string;
+  name: string;
+  entries: string[];
+  matching: string[];
+}
+
+/**
+ * List a PBN approach's IAF entry fixes and which lie on the arriving route +
+ * STAR (GET /api/approach-entries/{airport}/{name}). When `matching` has more
+ * than one fix the generator offers the pilot a choice of where to join the
+ * approach (e.g. VTSP R27-Y at STONE vs BARON). Returns empty lists when the
+ * backend is unreachable or nothing matches — a miss just hides the dropdown.
+ */
+export async function fetchApproachEntries(
+  airport: string,
+  name: string,
+  opts: { runway?: string; route?: string; star?: string } = {},
+): Promise<ApproachEntries> {
+  const code = airport.trim().toUpperCase();
+  const empty: ApproachEntries = {
+    airport: code,
+    name,
+    entries: [],
+    matching: [],
+  };
+  if (!code || !name) return empty;
+  const q = new URLSearchParams();
+  if (opts.runway) q.set("runway", opts.runway);
+  if (opts.route && opts.route.trim()) q.set("route", opts.route.trim());
+  if (opts.star) q.set("star", opts.star);
+  try {
+    const res = await fetch(
+      `${API_BASE}/api/approach-entries/${encodeURIComponent(
+        code,
+      )}/${encodeURIComponent(name)}?${q}`,
+    );
+    if (!res.ok) return empty;
+    const j = (await res.json()) as Partial<ApproachEntries>;
+    return {
+      airport: j.airport ?? code,
+      name: j.name ?? name,
+      entries: j.entries ?? [],
+      matching: j.matching ?? [],
+    };
+  } catch {
+    return empty;
+  }
+}

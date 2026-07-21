@@ -964,8 +964,17 @@ def _collapse_consecutive_idents(
     return out
 
 
+#: How far into ``addition``'s head the overshoot fallback looks for the shared
+#: join fix — an IAF/entry fix sits at the very start, so a small window keeps a
+#: coincidental match deep in the procedure from triggering the trim.
+_OVERLAP_HEAD_WINDOW = 4
+
+
 def _join_collapsing_overlap(
-    base: "list[RouteWaypoint]", addition: "list[RouteWaypoint]"
+    base: "list[RouteWaypoint]",
+    addition: "list[RouteWaypoint]",
+    *,
+    max_overshoot: int = 0,
 ) -> list[RouteWaypoint]:
     """Append ``addition`` to ``base``, collapsing a shared boundary that spans
     more than one fix.
@@ -988,13 +997,37 @@ def _join_collapsing_overlap(
     overlap (a route that ends short of the procedure) the whole thing is
     appended as published. The shared fix's coordinates come from ``base``
     (first-occurrence wins, the rule every join here uses).
+
+    ``max_overshoot`` handles the mirror case, where ``base`` runs *past* the
+    shared fix. A STAR can end a fix or two beyond the IAF the approach
+    re-enters at — e.g. VTSP RW27's STAR ends ``… BARON, CI27`` (CI27 a runway-
+    centreline fix) while the approach begins ``BARON, HK580, …``. Anchoring on
+    ``base[-1]`` (CI27, absent from the approach) would append the whole
+    approach and re-fly BARON: ``… BARON, CI27, BARON, HK580`` — a loop. When
+    ``base``'s last fix isn't found, look back up to ``max_overshoot`` fixes
+    into ``base``'s tail for one that reappears at the head of ``addition``;
+    join there, dropping both ``base``'s overshoot (CI27) and ``addition``'s
+    lead-in → ``… BARON, HK580``. Bounded so it only trims a genuine procedure
+    overshoot, never legitimate route fixes. Idents compare case-insensitively:
+    the two sides come from different source files with no shared casing
+    guarantee.
     """
     if not base or not addition:
         return list(base) + list(addition)
-    last = base[-1].ident
+    last = base[-1].ident.upper()
     for i, wp in enumerate(addition):
-        if wp.ident == last:
+        if wp.ident.upper() == last:
             return list(base) + list(addition[i + 1 :])
+    # Overshoot fallback: a fix a little before base's end re-enters at the
+    # head of the addition. Nearest-to-the-end match wins (drops the least).
+    head = addition[:_OVERLAP_HEAD_WINDOW]
+    for b in range(2, max_overshoot + 2):
+        if b > len(base):
+            break
+        bf = base[-b].ident.upper()
+        for i, wp in enumerate(head):
+            if wp.ident.upper() == bf:
+                return list(base[: len(base) - b + 1]) + list(addition[i + 1 :])
     return list(base) + list(addition)
 
 
@@ -1054,7 +1087,18 @@ def splice_procedures(
     if star is not None:
         sequence = _join_collapsing_overlap(sequence, star.waypoints())
     if approach is not None:
-        sequence = _join_collapsing_overlap(sequence, approach.waypoints())
+        # Join the approach where its IAF entry fix sits on the arrival, trimming
+        # the STAR back to that fix. The STAR can run SEVERAL fixes past the
+        # entry the approach re-enters at — VTSP RW27's SUSI1D flies
+        # STONE, CIDER, BARON, CI27 while an approach entered at STONE begins
+        # STONE, MALIN, …; without the trim the splice loops back
+        # (STONE, CIDER, BARON, CI27, STONE, MALIN). Bound the look-back to the
+        # STAR's own length so it can reach any STAR fix but never trims an
+        # enroute one.
+        star_len = len(star.waypoints()) if star is not None else 0
+        sequence = _join_collapsing_overlap(
+            sequence, approach.waypoints(), max_overshoot=max(2, star_len)
+        )
     return _collapse_consecutive_idents(sequence)
 
 

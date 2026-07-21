@@ -337,6 +337,29 @@ def build_flight_timeline(
         _g = abs(_near - _far) / 2.0
         _grad_at_fix[_c] = max(_g, g_climb if _c.phase == "climb" else g_desc)
 
+    # Where the natural climb catches back up to each climb floor. A floor
+    # that LIFTS the path at its fix (BADA still below the restriction there)
+    # must release LEVEL — the aircraft holds the restriction altitude until
+    # the natural climb rejoins it. Releasing on a falling gradient straight
+    # from the fix (the old rule) let the track sag ~50 ft back onto the BADA
+    # curve: a physically-impossible one-sample "descent" mid-climb.
+    _floor_catchup: dict[RouteConstraint, float] = {}
+    for _c in cons:
+        if _c.alt_floor_ft is None or _c.phase != "climb":
+            continue
+        _lo = _c.distance_nm
+        _hi = max(_c.distance_nm, climb_distance_nm)
+        if _bada_alt_at_dist(_hi) < _c.alt_floor_ft:
+            _floor_catchup[_c] = _hi  # floor ≥ cruise: hold to TOC, then decay
+        else:
+            for _ in range(40):  # bisect the crossing to sub-metre precision
+                _mid = (_lo + _hi) / 2.0
+                if _bada_alt_at_dist(_mid) < _c.alt_floor_ft:
+                    _lo = _mid
+                else:
+                    _hi = _mid
+            _floor_catchup[_c] = _hi
+
     def _alt_bounds(d: float) -> tuple[float, float]:
         floor = 0.0
         ceil = float("inf")
@@ -381,10 +404,15 @@ def build_flight_timeline(
                         v = 0.0  # a floor AT the departure fix can't pin the ground
                     elif d <= c.distance_nm:
                         v = c.alt_floor_ft * (d / c.distance_nm)
+                    elif d <= _floor_catchup[c]:
+                        # Hold LEVEL at the restriction until the natural climb
+                        # catches up — never sag back down onto the BADA curve.
+                        v = c.alt_floor_ft
                     else:
                         v = max(
                             0.0,
-                            c.alt_floor_ft - _grad_at_fix[c] * (d - c.distance_nm),
+                            c.alt_floor_ft
+                            - _grad_at_fix[c] * (d - _floor_catchup[c]),
                         )
                 else:  # descent: stay ≥ floor from this fix's TOD anchor to the
                     # fix, then descend on from it. WITHOUT the anchor the floor

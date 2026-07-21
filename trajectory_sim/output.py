@@ -292,13 +292,18 @@ def write_csv(
 
         ---
 
-        Timestamp,UTC,Callsign,Lat,Lon,Altitude,Speed,Direction
-        <epoch_s>,<iso_utc_Z>,<callsign>,<lat>,<lon>,<alt_ft>,<gs_kt>,<track_deg>
+        Timestamp,UTC,Callsign,Lat,Lon,Altitude,Speed,Direction,Phase,Sector,Event
+        <epoch_s>,<iso_utc_Z>,<callsign>,<lat>,<lon>,<alt_ft>,<gs_kt>,<track_deg>,<phase>,<sector>,<toc/tod>
         ...
 
-    The column header has 8 names that line up 1-to-1 with the 8 fields
+    The column header has 11 names that line up 1-to-1 with the 11 fields
     of each data row, so Excel/pandas open the CSV with every value
-    under the right header.
+    under the right header. Per row: ``Phase`` is climb/cruise/descent,
+    ``Sector`` the airspace volume containing the aircraft at that timestamp
+    (altitude-aware, e.g. "8S/Bangkok CTR" — a plane above a TMA's ceiling is
+    not in it), and ``Event`` marks the TOC / TOD samples (blank otherwise).
+    The ``Sector`` field is double-quoted when it contains a comma (overlapping
+    PDR areas are comma-joined).
 
     Args:
         gdf: GeoDataFrame as built by build_trajectory_gdf.
@@ -377,15 +382,36 @@ def write_csv(
         # when the file is opened under cp1252/cp874 (Thai Windows
         # default), making "———" render as 'â€"â€"â€"'.
         f.write("\n---\n\n")
-        f.write("Timestamp,UTC,Callsign,Lat,Lon,Altitude,Speed,Direction\n")
+        f.write(
+            "Timestamp,UTC,Callsign,Lat,Lon,Altitude,Speed,Direction,"
+            "Phase,Sector,Event\n"
+        )
 
-        for geom, ts, alt, gs, trk in zip(
-            gdf.geometry,
-            gdf["epoch_ts"],
-            gdf["altitude_ft"],
-            gdf["gs_kt"],
-            gdf["track_deg"],
-            strict=True,
+        # Per-point enrichment columns — absent on gdfs built before they
+        # existed, so read defensively (blank keeps the column count stable).
+        def _col(name: str) -> list[str]:
+            if name in gdf.columns:
+                return ["" if v is None or pd.isna(v) else str(v)
+                        for v in gdf[name]]
+            return [""] * len(gdf)
+
+        def _quote(v: str) -> str:
+            # Overlapping PDR areas are comma-joined -> CSV-quote the field.
+            return f'"{v}"' if "," in v else v
+
+        phases = _col("phase")
+        sectors = _col("sector")
+        events = _col("event")
+
+        for i, (geom, ts, alt, gs, trk) in enumerate(
+            zip(
+                gdf.geometry,
+                gdf["epoch_ts"],
+                gdf["altitude_ft"],
+                gdf["gs_kt"],
+                gdf["track_deg"],
+                strict=True,
+            )
         ):
             ts_dt = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
             if ts_dt.tzinfo is None:
@@ -398,5 +424,6 @@ def write_csv(
             f.write(
                 f"{epoch},{utc_iso},{callsign},"
                 f"{geom.y:.6f},{geom.x:.6f},"
-                f"{alt_val},{gs_val},{trk_val}\n"
+                f"{alt_val},{gs_val},{trk_val},"
+                f"{phases[i]},{_quote(sectors[i])},{events[i]}\n"
             )

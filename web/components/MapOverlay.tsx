@@ -5,7 +5,8 @@
  *   - mobile hamburger (toggles the sidebar drawer on small screens)
  *   - theme toggle (dark / light UI)
  *   - basemap selector (streets / satellite / dark)
- *   - Airspace panel with a FIR layer toggle (styled after the reference UI)
+ *   - Layers button (opens the Layer Options panel directly) + standalone
+ *     Airspace menu (airways / waypoints / FIR live in Layer Options → Airway)
  */
 
 import { memo, useState } from "react";
@@ -19,18 +20,12 @@ interface Props {
   onTheme: (t: Theme) => void;
   basemap: Basemap;
   onBasemap: (b: Basemap) => void;
-  airwayOn: boolean;
-  onAirway: (on: boolean) => void;
-  waypointsOn: boolean;
-  onWaypoints: (on: boolean) => void;
-  firOn: boolean;
-  onFir: (on: boolean) => void;
-  firLoading: boolean;
   /** Airspace sector visibility (BACC / subsector / CTR / TMA / PDR) for the
    *  standalone Airspace dropdown. */
   sectorsOn: Record<SectorKey, boolean>;
   onToggleSector: (key: SectorKey) => void;
-  /** Open the tabbed Layer Options panel (Airports / SID / STAR / …). */
+  /** Open the tabbed Layer Options panel (Airports / Airway / SID / …) —
+   *  the Layers button goes straight there (no intermediate dropdown). */
   onOpenLayers: () => void;
   onToggleSidebar: () => void;
   /** Custom map zoom drivers — the built-in Leaflet zoom control is
@@ -46,13 +41,6 @@ function MapOverlay({
   onTheme,
   basemap,
   onBasemap,
-  airwayOn,
-  onAirway,
-  waypointsOn,
-  onWaypoints,
-  firOn,
-  onFir,
-  firLoading,
   sectorsOn,
   onToggleSector,
   onOpenLayers,
@@ -60,10 +48,9 @@ function MapOverlay({
   onZoomIn,
   onZoomOut,
 }: Props) {
-  // Only one toolbar dropdown is open at a time — opening one closes the other,
-  // so the Layers and Airspace popovers can never overlap.
-  const [openMenu, setOpenMenu] = useState<"layers" | "airspace" | null>(null);
-  const airspaceOpen = openMenu === "layers";
+  // The Airspace popover is the only toolbar dropdown left (the Layers button
+  // opens the Layer Options panel directly); other controls still close it.
+  const [openMenu, setOpenMenu] = useState<"airspace" | null>(null);
 
   return (
     <>
@@ -78,57 +65,18 @@ function MapOverlay({
 
       <div className="ov-top">
         <div className="ov-group">
-          <div className="ov-layers-wrap">
-            <button
-              className={`ov-chip${airspaceOpen ? " active" : ""}`}
-              onClick={() =>
-                setOpenMenu((m) => (m === "layers" ? null : "layers"))
-              }
-              title="Map layers"
-            >
-              🗂 Layers
-            </button>
-
-            {airspaceOpen && (
-              <div className="ov-airspace">
-                <label className="ov-air-item">
-                  <input
-                    type="checkbox"
-                    checked={airwayOn}
-                    onChange={(e) => onAirway(e.target.checked)}
-                  />
-                  <span>Airway network</span>
-                </label>
-                <label className="ov-air-item">
-                  <input
-                    type="checkbox"
-                    checked={waypointsOn}
-                    onChange={(e) => onWaypoints(e.target.checked)}
-                  />
-                  <span>Waypoints</span>
-                </label>
-                <label className="ov-air-item">
-                  <input
-                    type="checkbox"
-                    checked={firOn}
-                    onChange={(e) => onFir(e.target.checked)}
-                  />
-                  <span>FIR</span>
-                  {firLoading && <em className="ov-loading">loading…</em>}
-                </label>
-                <button
-                  type="button"
-                  className="ov-air-more"
-                  onClick={() => {
-                    onOpenLayers();
-                    setOpenMenu(null);
-                  }}
-                >
-                  ⚙ More Layer Options
-                </button>
-              </div>
-            )}
-          </div>
+          {/* Straight to the tabbed Layer Options panel — every map layer
+              (Airports / Gates / Airway / SID / STAR / …) lives there now. */}
+          <button
+            className="ov-chip"
+            onClick={() => {
+              onOpenLayers();
+              setOpenMenu(null);
+            }}
+            title="Layer options"
+          >
+            🗂 Layers
+          </button>
 
           {/* Standalone Airspace dropdown (sector polygons), beside Layers. */}
           <AirspaceMenu
