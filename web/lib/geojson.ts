@@ -432,8 +432,10 @@ export async function fetchFir(): Promise<FirCollection> {
  * Airspace sector overlays (ported from the flight-animation viewer) — the
  * Bangkok ACC sectors + subsectors, control zones (CTR), terminal areas (TMA)
  * and prohibited/danger/restricted areas (PDR). All are MultiPolygon
- * FeatureCollections under public/data/sectors/, each with a `name` (PDR uses
- * `ident`). `color` styles the outline/fill; `label` names the toggle.
+ * FeatureCollections under public/data/sectors_corrected/ (vertical limits
+ * fixed against AIP Thailand — see that folder's CORRECTIONS.md), each with a
+ * `name` (PDR uses `ident`). `color` styles the outline/fill; `label` names
+ * the toggle.
  */
 export const SECTORS = [
   { key: "bacc", label: "BACC Sectors", file: "bacc_geo", color: "#22d3ee" },
@@ -453,7 +455,11 @@ const _SECTOR_FILE: Record<SectorKey, string> = Object.fromEntries(
 /** Fetch one airspace-sector overlay. Loaded lazily when its layer is toggled
  *  on; the file is small and rarely changes, so the HTTP cache may keep it. */
 export async function fetchSector(key: SectorKey): Promise<SectorCollection> {
-  const url = `/data/sectors/${_SECTOR_FILE[key]}.geojson`;
+  // sectors_corrected: vertical limits fixed against AIP Thailand ENR 2.1 /
+  // 5.1 (AIRAC 2026-07-09) — see the folder's CORRECTIONS.md. Membership is
+  // altitude-aware, so these corrected upper/lower bands are what decides which
+  // volume actually contains the aircraft.
+  const url = `/data/sectors_corrected/${_SECTOR_FILE[key]}.geojson`;
   const res = await fetch(url, { cache: "no-cache" });
   if (!res.ok) {
     throw new Error(`Failed to load ${url}: ${res.status} ${res.statusText}`);

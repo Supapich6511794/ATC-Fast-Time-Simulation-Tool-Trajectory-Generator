@@ -83,6 +83,24 @@ def test_at_or_above_floors_climb() -> None:
     assert capped >= 20000.0 - 1.0
 
 
+def test_climb_floor_release_never_dips() -> None:
+    # Regression: a climb floor that LIFTS the path at its fix (BADA still
+    # below the restriction there) used to release on a falling gradient, so
+    # the very next sample sagged ~50 ft back onto the BADA curve — one
+    # physically-impossible "descent" sample in the middle of the climb. The
+    # floor must release LEVEL: hold the restriction altitude until the
+    # natural climb catches back up.
+    tl = _build([RouteConstraint(30.0, "climb", alt_floor_ft=15000.0)])
+    alts = [s.altitude_ft for s in tl.samples]
+    peak = alts.index(max(alts))
+    for i in range(1, peak):
+        assert alts[i] >= alts[i - 1] - 1.0, (
+            f"climb sample {i} dips: {alts[i - 1]} -> {alts[i]}"
+        )
+    # And no sample before the peak is labelled "descent".
+    assert all(s.phase != "descent" for s in tl.samples[:peak])
+
+
 def test_climb_floor_releases_for_descent() -> None:
     # Regression: a SID climb floor ("at or above" early) must NOT hold the
     # minimum through cruise + descent. Held flat past its fix it stopped the

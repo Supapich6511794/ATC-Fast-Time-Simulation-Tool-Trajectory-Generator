@@ -3838,6 +3838,14 @@ body {
   font-size: 12px;
   cursor: pointer;
 }
+/* Select All / Clear row inside the multiselect dropdown — inset to match the
+   search box above it, with accent-tinted text like the reference UI. */
+.lo-ms-actions {
+  margin: 0 6px 6px;
+}
+.lo-ms-actions button {
+  color: var(--accent);
+}
 .lo-opt {
   display: flex;
   align-items: center;
@@ -3882,9 +3890,14 @@ body {
 .lo-lk-select:disabled {
   opacity: 0.5;
 }
-.lo-lk-btn {
-  width: 100%;
+/* Look-up action row: primary "Show legs" + secondary "Clear" side by side. */
+.lo-lk-actions {
+  display: flex;
+  gap: 8px;
   margin-top: 8px;
+}
+.lo-lk-btn {
+  flex: 1;
   padding: 8px;
   border: none;
   border-radius: 8px;
@@ -3897,6 +3910,16 @@ body {
 .lo-lk-btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+/* Clear = secondary: transparent with an accent outline, so the primary
+   "Show legs" stays the emphasised action. */
+.lo-lk-clear {
+  background: transparent;
+  border: 1px solid #33415588;
+  color: var(--text);
+}
+.lo-lk-clear:not(:disabled):hover {
+  border-color: var(--accent);
 }
 .lo-lk-sub {
   margin: 10px 0 4px;
@@ -6061,6 +6084,28 @@ select.fp-input {
 
 .alt-area {
   fill: rgba(56, 189, 248, 0.18);
+}
+
+/* Airspace colour blocks — the area banded by the sectors the aircraft flies
+   through, each tinted by a blend of those sectors' map colours (fill set
+   inline per block). Faint dividers + labels mark the zone boundaries. */
+.alt-area-seg {
+  stroke: none;
+}
+
+.alt-seg-div {
+  stroke: rgba(148, 163, 184, 0.35);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+
+.alt-seg-lbl {
+  fill: var(--muted);
+  font-size: 8px;
+  font-weight: 600;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  opacity: 0.85;
+  pointer-events: none;
 }
 
 .alt-line {

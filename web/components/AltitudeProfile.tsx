@@ -17,7 +17,11 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 
 import type { TrajectoryResult } from "@/lib/trajectory/types";
-import { formatAirspace, type AirspaceMembership } from "@/lib/airspace";
+import {
+  formatAirspace,
+  type AirspaceMembership,
+  type AirspaceSegment,
+} from "@/lib/airspace";
 
 interface Props {
   trajectory: TrajectoryResult;
@@ -28,9 +32,35 @@ interface Props {
    *  the plane so it advances with the map playback; parked at the start
    *  otherwise. */
   simT?: number | null;
-  /** Live airspace membership for this route (from MapApp), shown as a small
+  /** Live altitude-aware airspace membership for this route (from MapApp) —
+   *  the volume that currently contains the aircraft — shown as a small
    *  caption pinned to the moving plane. */
   airspace?: AirspaceMembership;
+  /** Whole-route airspace breakdown (from MapApp): each contiguous stretch the
+   *  aircraft spends in the same set of sectors. Paints the profile area in
+   *  colour blocks tinted by those sectors' map colours. */
+  airspaceSegments?: AirspaceSegment[];
+}
+
+/** Soft translucent fill for a profile block, from the colour of the ONE
+ *  airspace that owns the aircraft on that stretch (the hierarchy in
+ *  lib/airspace.ts resolves overlaps, so this is normally a single colour).
+ *  Averages if ever handed more than one; [] → the neutral default. */
+function blendFill(colors: string[]): string {
+  if (colors.length === 0) return "rgba(56,189,248,0.16)";
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  for (const c of colors) {
+    const h = c.replace("#", "");
+    r += parseInt(h.slice(0, 2), 16);
+    g += parseInt(h.slice(2, 4), 16);
+    b += parseInt(h.slice(4, 6), 16);
+  }
+  const n = colors.length;
+  return `rgba(${Math.round(r / n)}, ${Math.round(g / n)}, ${Math.round(
+    b / n,
+  )}, 0.24)`;
 }
 
 const PAD_L = 36;
@@ -68,6 +98,7 @@ export default function AltitudeProfile({
   height = 140,
   simT,
   airspace,
+  airspaceSegments,
 }: Props) {
   const samples = useMemo<AltSample[]>(() => {
     const pts = trajectory.points;
@@ -117,6 +148,48 @@ export default function AltitudeProfile({
     return { linePath: line, areaPath: area };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [samples, tMax, yMax, h]);
+
+  // Airspace colour blocks — one filled sub-area per stretch the aircraft
+  // spends in the same set of sectors, tinted by those sectors' map colours
+  // blended together. Each block clips the altitude curve to its [t0,t1] span
+  // and closes down to the baseline, so the whole area reads as the curve but
+  // banded by controlling airspace. Labelled where a block is wide enough.
+  const segBlocks = useMemo(() => {
+    if (!airspaceSegments?.length || samples.length < 2) return [];
+    return airspaceSegments
+      .map((seg) => {
+        const ta = Math.max(0, Math.min(tMax, seg.t0));
+        const tb = Math.max(0, Math.min(tMax, seg.t1));
+        if (tb - ta < 0.5) return null;
+        const inner = samples.filter((s) => s.t > ta && s.t < tb);
+        const pts = [
+          { t: ta, alt: altAt(samples, ta).alt },
+          ...inner,
+          { t: tb, alt: altAt(samples, tb).alt },
+        ];
+        const top = pts
+          .map(
+            (p, i) =>
+              `${i === 0 ? "M" : "L"} ${x(p.t).toFixed(2)} ${y(p.alt).toFixed(2)}`,
+          )
+          .join(" ");
+        const d =
+          top +
+          ` L ${x(tb).toFixed(2)} ${y(0).toFixed(2)}` +
+          ` L ${x(ta).toFixed(2)} ${y(0).toFixed(2)} Z`;
+        const wPx = x(tb) - x(ta);
+        return {
+          d,
+          fill: blendFill(seg.colors),
+          label: seg.label,
+          x0: x(ta),
+          xMid: (x(ta) + x(tb)) / 2,
+          wPx,
+        };
+      })
+      .filter((b): b is NonNullable<typeof b> => b != null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [airspaceSegments, samples, tMax, yMax, h]);
 
   // SID/STAR crossing constraints surface as climb/descent LEVEL-OFFS in the
   // curve — runs where the aircraft holds altitude until the fix releases it.
@@ -316,9 +389,50 @@ export default function AltitudeProfile({
             </g>
           ))}
 
-          {/* Climb/cruise/descent area fill */}
-          <path d={areaPath} className="alt-area" />
+          {/* Area fill — banded into airspace colour blocks when the whole-route
+              sector breakdown is available (each stretch tinted by a blend of
+              the sectors it's in), else a single neutral fill. */}
+          {segBlocks.length > 0 ? (
+            segBlocks.map((b, k) => (
+              <path
+                key={`seg-${k}`}
+                d={b.d}
+                fill={b.fill}
+                className="alt-area-seg"
+              />
+            ))
+          ) : (
+            <path d={areaPath} className="alt-area" />
+          )}
           <path d={linePath} className="alt-line" />
+
+          {/* Boundary ticks + label for each airspace block wide enough to name
+              (the "8S/Bangkok CTR/VTR1" zone the aircraft crosses). */}
+          {segBlocks.map((b, k) =>
+            k > 0 ? (
+              <line
+                key={`seg-div-${k}`}
+                x1={b.x0}
+                x2={b.x0}
+                y1={y(0)}
+                y2={PAD_T}
+                className="alt-seg-div"
+              />
+            ) : null,
+          )}
+          {segBlocks.map((b, k) =>
+            b.label && b.wPx > 46 ? (
+              <text
+                key={`seg-lbl-${k}`}
+                x={b.xMid}
+                y={h - PAD_B - 4}
+                textAnchor="middle"
+                className="alt-seg-lbl"
+              >
+                {b.wPx > 96 ? b.label : b.label.split("/")[0]}
+              </text>
+            ) : null,
+          )}
 
           {/* SID/STAR crossing constraints — the climb/descent level-offs,
               highlighted so the "held at FLxx" steps read as coded

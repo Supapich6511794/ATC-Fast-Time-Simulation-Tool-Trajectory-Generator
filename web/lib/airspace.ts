@@ -12,7 +12,7 @@
 
 import type { Geometry, Position } from "geojson";
 
-import type { SectorCollection, SectorKey } from "./geojson";
+import { SECTORS, type SectorCollection, type SectorKey } from "./geojson";
 
 export interface AirspaceMembership {
   bacc?: string; // BACC sector, e.g. "4S"
@@ -212,6 +212,77 @@ export function airspaceAt(
   return m;
 }
 
+// --- whole-route segments (for the altitude profile block colouring) -------
+
+/** Per-layer sector colour (the same palette that styles the map overlays). */
+const SECTOR_COLOR = Object.fromEntries(
+  SECTORS.map((s) => [s.key, s.color]),
+) as Record<SectorKey, string>;
+
+/** The map colour of the ONE airspace that owns the aircraft here — the layer
+ *  the hierarchy resolves to (see {@link controllingLayer}). Returned as an
+ *  array so the profile's fill helper keeps one shape; [] when in no airspace,
+ *  which draws the neutral default. */
+export function membershipColors(m: AirspaceMembership | undefined): string[] {
+  const key = controllingLayer(m);
+  return key === null ? [] : [SECTOR_COLOR[key]];
+}
+
+/** One contiguous stretch of a route that stays inside the same set of
+ *  airspace volumes. `t0`/`t1` are seconds from the route's first point (the
+ *  same clock the altitude chart uses), so the profile can paint the run as a
+ *  colour block. Boundaries are stitched so adjacent segments abut exactly. */
+export interface AirspaceSegment {
+  t0: number;
+  t1: number;
+  /** Altitude-aware membership — the volumes that actually contain the
+   *  aircraft on this stretch. Drives both the label and the colours. */
+  membership: AirspaceMembership;
+  /** Compact display label, e.g. "8S/Bangkok CTR/VTR1" ("" outside all zones).
+   *  Altitude-aware: a TMA the aircraft is above (past its ceiling) is not
+   *  listed here. */
+  label: string;
+  /** Per-layer colours to blend for this block ([] outside all zones) — from
+   *  the same altitude-aware membership. */
+  colors: string[];
+}
+
+interface SegPoint {
+  lon: number;
+  lat: number;
+  altitude_ft: number | null;
+  epoch_ts: string;
+}
+
+/** Walk a whole trajectory and collapse it into contiguous airspace segments.
+ *  Membership is altitude-aware (a climb out of a low CTR drops that zone from
+ *  both the label and the tint), so a new block starts wherever the set of
+ *  containing volumes changes. Cheap enough to run once per route (the same
+ *  bbox-reject + ray-cast as the live label, just over every point). */
+export function buildAirspaceSegments(
+  index: AirspaceIndex,
+  points: ReadonlyArray<SegPoint>,
+): AirspaceSegment[] {
+  if (points.length === 0 || !index.bacc) return [];
+  const base = new Date(points[0].epoch_ts).getTime();
+  let cur: AirspaceSegment | null = null;
+  const segs: AirspaceSegment[] = [];
+  for (const p of points) {
+    const t = (new Date(p.epoch_ts).getTime() - base) / 1000;
+    const m = airspaceAt(index, p.lon, p.lat, p.altitude_ft ?? null);
+    const label = formatAirspace(m, "compact");
+    if (cur && cur.label === label) {
+      cur.t1 = t;
+    } else {
+      if (cur) cur.t1 = t; // stitch: previous block runs up to this transition
+      cur = { t0: t, t1: t, membership: m, label, colors: membershipColors(m) };
+      segs.push(cur);
+    }
+  }
+  if (segs.length) segs[0].t0 = 0; // first block anchors at the departure edge
+  return segs;
+}
+
 export function isEmptyAirspace(m: AirspaceMembership | undefined): boolean {
   return (
     !m ||
@@ -247,39 +318,70 @@ function titleZone(name: string): string {
     .join(" ");
 }
 
-/** Sector code for display — the raw code, with the lower/upper suffix
- *  underscore turned into a space ("3S_lower" → "3S lower"). */
+/** Sector code for display. 3S and 6S are modelled as two altitude slabs
+ *  (``3S_lower`` FL0–270, ``3S_upper`` FL270–460 — the part below 2S vs beside
+ *  it), but a target is called just "3S" / "6S" regardless of slab (per BACC
+ *  ops): strip the ``_lower``/``_upper`` suffix. The altitude test already put
+ *  the aircraft in the right slab; the suffix is a data-modelling detail, not
+ *  something a controller says. */
 function sectorLabel(code: string): string {
-  return code.replace(/_/g, " ");
+  return code.replace(/_(lower|upper)$/i, "");
 }
 
-/** Human string. Both modes now list EVERY volume the aircraft is inside so
- *  overlaps (e.g. a CTR that sits under a TMA) are never hidden.
- *  `compact` (plane label / graph): "3N/7N/Bangkok TMA" — sector/subsector
- *  grouped, each further zone appended, PDR shown by ident. `full`
- *  (Results rows): the same, but PDR spelled out and slightly more verbose. */
+/** Airspace hierarchy — an aircraft is in exactly ONE airspace at a time, so a
+ *  point that falls inside several overlapping volumes resolves to one. Order
+ *  (highest first), per the BACC ops structure:
+ *
+ *    1. **PDR** — prohibited/danger/restricted. Not an ATS unit, but being
+ *       inside one is the fact that matters, so it overrides.
+ *    2. **CTR** — Control Zone, worked by Aerodrome Control (Tower).
+ *    3. **TMA** — Terminal Control Area, worked by Approach Control.
+ *       (A CTA would sit here too — none in the Thai dataset.)
+ *    4. **BACC sector** — Area Control (ACC). This is the reporting unit; it
+ *       carries the vertical limits (2S FL270–460, 3S/6S below).
+ *    5. **subsector** — the horizontal controller-split, used only when a
+ *       sector is divided. It sits INSIDE its sector, so with the sector
+ *       above it a target normally reports the sector; the subsector shows
+ *       only where no sector is defined.
+ *
+ *  Annex 11 airspace/ATS-unit structure, resolved AFTER the lateral and
+ *  vertical tests — an aircraft above a CTR's ceiling has already dropped out
+ *  of it and falls through to the TMA/ACC below.
+ *  Must stay in step with _HIERARCHY in trajectory_sim/airspace.py. */
+const HIERARCHY = ["pdr", "ctr", "tma", "bacc", "subsector"] as const;
+
+/** Which layer owns the aircraft here, or null when it is in none. */
+export function controllingLayer(
+  m: AirspaceMembership | undefined,
+): SectorKey | null {
+  if (isEmptyAirspace(m)) return null;
+  const mm = m as AirspaceMembership;
+  for (const key of HIERARCHY) {
+    if (key === "pdr" ? mm.pdr?.length : mm[key]) return key;
+  }
+  return null;
+}
+
+/** Human string for the ONE airspace that owns the aircraft (see
+ *  {@link HIERARCHY}). `compact` (plane label / graph) shows a PDR by its
+ *  ident, `full` (Results rows) spells it out. "" when in no airspace. */
 export function formatAirspace(
   m: AirspaceMembership | undefined,
   mode: "compact" | "full",
 ): string {
-  if (isEmptyAirspace(m)) return "";
+  const key = controllingLayer(m);
+  if (key === null) return "";
   const mm = m as AirspaceMembership;
-  const sect = [mm.bacc, mm.subsector]
-    .filter((v): v is string => Boolean(v))
-    .map(sectorLabel)
-    .join("/");
-  if (mode === "compact") {
-    const parts: string[] = [];
-    if (sect) parts.push(sect);
-    if (mm.ctr) parts.push(titleZone(mm.ctr));
-    if (mm.tma) parts.push(titleZone(mm.tma));
-    if (mm.pdr?.length) parts.push(mm.pdr.map((p) => p.split(" ")[0]).join(","));
-    return parts.join("/");
+  switch (key) {
+    case "pdr":
+      return mode === "compact"
+        ? (mm.pdr as string[]).map((p) => p.split(" ")[0]).join(",")
+        : (mm.pdr as string[]).map(titleZone).join(" · ");
+    case "ctr":
+      return titleZone(mm.ctr as string);
+    case "tma":
+      return titleZone(mm.tma as string);
+    default:
+      return sectorLabel(mm[key] as string);
   }
-  const parts: string[] = [];
-  if (sect) parts.push(sect);
-  if (mm.ctr) parts.push(titleZone(mm.ctr));
-  if (mm.tma) parts.push(titleZone(mm.tma));
-  if (mm.pdr?.length) parts.push(...mm.pdr.map(titleZone));
-  return parts.join(" · ");
 }

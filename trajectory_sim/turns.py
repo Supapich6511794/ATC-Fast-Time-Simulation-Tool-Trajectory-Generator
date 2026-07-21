@@ -82,6 +82,15 @@ MAX_FLYBY_DEG = 175.0
 #: skipped — the turn stays smooth, it is just banked harder.
 _MAX_LEG_FRACTION = 0.45
 
+#: How far *inside* the fix a fly-by arc is allowed to bow — the corner cut,
+#: ``d = R·(sec(Δ/2) − 1)`` measured along the turn bisector. A pure PANS-OPS
+#: fly-by grows this with the radius, so a wide cruise-speed turn passes miles
+#: short of the fix; capping it keeps the curve hugging the waypoint (the FMS
+#: banks harder than the nominal 25° for the close fix). Only the wide/fast
+#: turns are tightened — a slow SID turn already cuts less than this and is
+#: left untouched.
+_MAX_FLYBY_CUT_NM = 0.5
+
 
 def signed_turn_deg(from_track_deg: float, to_track_deg: float) -> float:
     """Course change in (-180, 180]: negative = left, positive = right."""
@@ -102,7 +111,7 @@ def turn_radius_nm(
 
     The coordinated-turn relation ``R = V² / (g · tan φ)`` (V in m/s), so the
     radius grows with the SQUARE of the speed: the same 25° bank that turns a
-    200 kt departure in 1.3 NM needs 6.6 NM at cruise.
+    200 kt departure in 1.3 NM needs 6.6 NM at cruise.F
 
     PANS-OPS caps the turn two ways and takes whichever calls for the less bank
     — the wider radius: the bank angle above, or a rate of turn ``R = V / ω``.
@@ -213,6 +222,15 @@ def flyby_arc(
     if tangent_nm > max_tangent_nm:
         tangent_nm = max_tangent_nm
         radius_nm = tangent_nm / math.tan(half)
+
+    # Keep the arc near the fix: cap the corner cut d = R·(sec(Δ/2) − 1) so a
+    # wide, fast turn doesn't bow miles short of the waypoint. Back-solve the
+    # radius from the cap and re-derive the tangent; only bites when the
+    # nominal turn cuts more than the cap (slow SID turns are left as they are).
+    sec_half = 1.0 / math.cos(half)
+    if sec_half > 1.0 and radius_nm * (sec_half - 1.0) > _MAX_FLYBY_CUT_NM:
+        radius_nm = _MAX_FLYBY_CUT_NM / (sec_half - 1.0)
+        tangent_nm = radius_nm * math.tan(half)
     if radius_nm <= 0:
         return []
 

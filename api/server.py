@@ -59,6 +59,7 @@ from trajectory_sim.navdata import (
     runway_end,
     splice_procedures,
 )
+from trajectory_sim.airspace import sector_columns
 from trajectory_sim.output import (
     build_trajectory_gdf,
     write_csv,
@@ -465,6 +466,15 @@ def _vor_idents() -> frozenset[str]:
 #: farther out (e.g. VTUD routed via KKN, 55 NM away) is just a fix on the way,
 #: not a terminal overshoot, so it is left alone.
 _FIELD_VOR_NM = 10.0
+
+#: How far off the route's arrival bearing a procedure entry may sit and still
+#: count as "the side the aircraft is coming from" (degrees, either way). An
+#: entry beyond this is on the far side of the aerodrome, so joining it would
+#: fly the aircraft over the field and back — the doubling-back
+#: :func:`_connect_route_to_terminal` exists to remove. 90° = the arrival
+#: hemisphere, which keeps every same-side IAF in play and drops the opposite
+#: ones (VTSF RW01 reached on 060°: TAWIT 025° stays, CHARY 165° goes).
+_ENTRY_ARRIVAL_SIDE_DEG = 90.0
 
 
 def _ends_at_field_vor(
@@ -1514,9 +1524,17 @@ def _connect_route_to_terminal(
     * **a route fix that IS a procedure entry** — e.g. SAKUB, which airway W34
       passes through on the way to the RAN VOR: end the route there (the last
       one, if several); otherwise
-    * **no route fix is an entry** — pick the entry nearest the route's terminal
-      fix, then end the route at the route fix nearest THAT entry, so the last
-      enroute fix is the one that best leads in (e.g. Y94's DOXAS → TAWIT).
+    * **no route fix is an entry** — among the entries lying on the ARRIVAL side
+      of the field, pick the one nearest the field, then end the route at the
+      route fix nearest THAT entry, so the last enroute fix is the one that best
+      leads in (e.g. Y94's DOXAS → TAWIT).
+
+    The arrival-side filter matters: an entry on the far side of the aerodrome
+    sends the aircraft past the field and back — the very doubling-back this
+    trim exists to remove. VTSF RW01 reached on 060° used to pick CHARY (165°
+    out, south of the field) purely because it sat nearest the VOR, flying the
+    aircraft over the field and round; TAWIT (025°, the same side the route
+    arrives from) is the join the AIP intends. Both runways now resolve to it.
 
     Exception: if the terminal VOR is itself a fly-over waypoint of the
     procedure, it must be crossed — leave the route as is.
@@ -1545,8 +1563,24 @@ def _connect_route_to_terminal(
         k = max(on_route)
         trn = next(e[0] for e in entries if e[1] == body[k][0].upper())
     else:
+        # Keep only the entries on the side the route arrives from, so the join
+        # never sends the aircraft past the aerodrome and back; among those the
+        # one nearest the field is the natural lead-in. Fall back to every entry
+        # when none is on that side (a procedure entered only from the far side).
+        arrival_deg = compute_bearing(vor[1], vor[2], body[-1][1], body[-1][2])
+        near_side = [
+            e
+            for e in entries
+            if abs(
+                signed_turn_deg(
+                    arrival_deg, compute_bearing(vor[1], vor[2], e[2], e[3])
+                )
+            )
+            <= _ENTRY_ARRIVAL_SIDE_DEG
+        ]
         trn, _eid, ela, elo = min(
-            entries, key=lambda e: _sq_dist((e[2], e[3]), (vor[1], vor[2]))
+            near_side or entries,
+            key=lambda e: _sq_dist((e[2], e[3]), (vor[1], vor[2])),
         )
         k = min(
             range(len(body)),
@@ -1851,6 +1885,92 @@ def get_procedure(
             {"ident": w.ident, "lat": w.lat, "lon": w.lon}
             for w in proc.waypoints()
         ],
+    }
+
+
+def _resolve_star_best_effort(
+    nav: NavData, ades: str, name: str, runway: str | None
+) -> "Procedure | None":
+    """The STAR's fixes without caring which enroute transition — any resolution
+    lists the same body fixes. Used only to know which fixes the arrival flies
+    (for the approach-entry match), so an ambiguous STAR just takes the first
+    candidate rather than erroring."""
+    try:
+        return nav.lookup_procedure(
+            ades, name, proc_type=ProcedureType.STAR, runway=runway
+        )
+    except AmbiguousProcedureError as e:
+        for cand in sorted(e.candidates):
+            try:
+                return nav.lookup_procedure(
+                    ades,
+                    name,
+                    proc_type=ProcedureType.STAR,
+                    runway=runway,
+                    transition=cand,
+                )
+            except (AmbiguousProcedureError, ProcedureNotFoundError):
+                continue
+    except ProcedureNotFoundError:
+        return None
+    return None
+
+
+@app.get("/api/approach-entries/{airport}/{name}")
+def approach_entries(
+    airport: str,
+    name: str,
+    response: Response,
+    runway: str | None = None,
+    route: str | None = None,
+    star: str | None = None,
+) -> dict[str, object]:
+    """Entry fixes (IAF transitions) of a PBN approach, and which of them the
+    given route + STAR actually flies through.
+
+    A PBN approach can be joined at any of its IAF transitions — e.g. VTSP
+    ``R27-Y`` at BARON, PACUS or STONE. When an arriving STAR passes more than
+    one of those entry fixes (SUSI1D flies ``… STONE, CIDER, BARON, CI27``, so
+    both STONE and BARON are options), the generator lets the pilot pick where
+    to join instead of auto-scoring. This tells it which entries lie on the
+    route, in the approach's own order, so the dropdown offers only real
+    choices.
+
+    Args:
+        runway: Arrival runway (narrows STAR resolution).
+        route: Item-15 enroute string — its fixes count as flown.
+        star: Chosen STAR name — its body fixes count as flown too.
+
+    Returns ``{airport, name, entries, matching}``: ``entries`` = every IAF
+    entry fix; ``matching`` = those on the route/STAR (⊆ entries).
+    """
+    response.headers["Cache-Control"] = _STATIC_CACHE
+    nav = _navdata()
+    ades = airport.upper()
+    entries: list[str] = []
+    for _t, ident, _la, _lo in _procedure_entries(
+        nav, ades, name, ProcedureType.APPROACH, runway
+    ):
+        if ident not in entries:
+            entries.append(ident)
+
+    # Fixes flown before the approach = the enroute route ∪ the resolved STAR.
+    flown: set[str] = set()
+    if route and route.strip():
+        for i in parse_route(_expand_airways(route)):
+            flown.add(i.upper())
+    if star and star.strip():
+        sp = _resolve_star_best_effort(nav, ades, star.strip(), runway)
+        if sp is not None:
+            for w in sp.waypoints():
+                flown.add(w.ident.upper())
+
+    matching = [i for i in entries if i in flown]
+    return {
+        "airport": ades,
+        "name": name,
+        "entries": entries,
+        "matching": matching,
     }
 
 
@@ -2209,6 +2329,25 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
             "coordinates": [[lon, lat] for _, lat, lon in route_pts],
         },
     }
+    # Per-point export enrichment — so every download format records, for each
+    # timestamp, the altitude-aware airspace sector the aircraft is in
+    # (`sector`) and the TOC/TOD events. GPKG/GeoJSON pick the columns up
+    # automatically; write_csv adds them to the table.
+    gdf["sector"] = sector_columns(
+        [float(g.x) for g in gdf.geometry],
+        [float(g.y) for g in gdf.geometry],
+        [
+            None if a is None or pd.isna(a) else float(a)
+            for a in gdf["altitude_ft"]
+        ],
+    )
+    _events = [""] * len(gdf)
+    if toc is not None:
+        _events[toc_i] = "TOC"
+    if tod is not None:
+        _events[tod_i] = "TOC/TOD" if tod_i == toc_i else "TOD"
+    gdf["event"] = _events
+
     # Defer all disk I/O: stash the GeoDataFrame + render inputs and let the
     # download endpoints write each format on demand (see `_materialise`).
     # This is what makes "Generate all" fast — no GDAL writes during

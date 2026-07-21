@@ -56,6 +56,29 @@ def test_no_iaf_on_route_joins_the_nearest_entry() -> None:
     assert trn == "TAWIT"
 
 
+def test_entry_on_the_far_side_of_the_field_is_not_chosen() -> None:
+    """Same route and field, the OTHER runway. R01's entries include CHARY,
+    which sits nearest the NKS VOR but 165° out — on the far side of the
+    aerodrome from a route arriving on 060°. Picking it (the old rule: simply
+    the entry nearest the VOR) flew the aircraft over the field, south to
+    CHARY, then back north to land — the doubling-back this trim exists to
+    remove. The join must stay on the arrival side: TAWIT, from DOXAS."""
+    idents, trn = _connect("VTSF", "R01", "KASNI M757 LOSDA Y94 NKS")
+    assert trn == "TAWIT"
+    assert trn != "CHARY"  # far side of the field — would double back
+    assert idents[-1] == "DOXAS"
+    assert "NKS" not in idents
+
+
+def test_both_runways_join_on_the_arrival_side() -> None:
+    """The same arrival direction resolves to the same side of the field for
+    either runway — the runway decides the approach flown, not which side the
+    aircraft is allowed to arrive from."""
+    for rwy in ("R19", "R01"):
+        idents, trn = _connect("VTSF", rwy, "KASNI M757 LOSDA Y94 NKS")
+        assert (idents[-1], trn) == ("DOXAS", "TAWIT"), rwy
+
+
 def test_full_generate_flies_in_without_doubling_back() -> None:
     """End to end: the spliced route runs continuously into the approach (no
     sharp reversal) and lands on the runway."""

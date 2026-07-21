@@ -114,8 +114,9 @@ interface FilterPanelProps {
   /** Shared playback clock (seconds) — drives each row's scheduled/en-route/
    *  arrived status against the flight's own departure + duration. */
   simT: number;
-  /** Live airspace membership per flightKey (from MapApp) — shown under each
-   *  en-route row as the specific zone the plane currently occupies. */
+  /** Live altitude-aware airspace membership per flightKey (from MapApp) —
+   *  shown under each en-route row as the volume that currently contains the
+   *  aircraft (a plane above a TMA's ceiling is not "in" it). */
   airspace?: Record<string, AirspaceMembership>;
 }
 

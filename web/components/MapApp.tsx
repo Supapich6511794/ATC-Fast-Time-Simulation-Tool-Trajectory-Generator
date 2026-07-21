@@ -98,7 +98,9 @@ import {
 import {
   airspaceAt,
   buildAirspaceIndex,
+  buildAirspaceSegments,
   type AirspaceMembership,
+  type AirspaceSegment,
 } from "@/lib/airspace";
 
 const LeafletMap = dynamic(() => import("@/components/LeafletMap"), {
@@ -697,6 +699,10 @@ export default function MapApp() {
   // ~184 polygons per plane is cheap, but there's no reason to redo it every
   // frame; whole-second resolution reads live enough.
   const simSec = Math.round(sim.simT);
+  // Altitude-aware membership per plane — the volume that actually CONTAINS the
+  // aircraft at its current altitude (a plane above a TMA's ceiling is not in
+  // it). The one source of truth for the map tag, the Results rows and the
+  // profile label/colours alike.
   const airspaceByKey = useMemo(() => {
     const out: Record<string, AirspaceMembership> = {};
     if (!airspaceIndex.bacc) return out; // polygons not loaded yet
@@ -721,6 +727,19 @@ export default function MapApp() {
     safePlaybackIdx,
     simSec,
   ]);
+
+  // Whole-route airspace breakdown — every stretch each route spends in the
+  // same set of sectors — so the altitude profile can paint colour blocks for
+  // the zones it crosses. Independent of the sim clock (a static property of
+  // the route), so it's computed once per route, not per frame.
+  const airspaceSegmentsByKey = useMemo(() => {
+    const out: Record<string, AirspaceSegment[]> = {};
+    if (!airspaceIndex.bacc) return out; // polygons not loaded yet
+    for (const t of trajectories) {
+      out[t.meta.flightKey] = buildAirspaceSegments(airspaceIndex, t.points);
+    }
+    return out;
+  }, [trajectories, airspaceIndex]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1219,6 +1238,9 @@ export default function MapApp() {
               forceSection={nav.section}
               simT={playSimT(nav.routeIdx)}
               airspace={airspaceByKey[downloads[nav.routeIdx].flightKey]}
+              airspaceSegments={
+                airspaceSegmentsByKey[downloads[nav.routeIdx].flightKey]
+              }
             />
           )}
 
@@ -1307,6 +1329,7 @@ export default function MapApp() {
                 sectionMode={nav.section}
                 simT={playSimT(i)}
                 airspace={airspaceByKey[d.flightKey]}
+                airspaceSegments={airspaceSegmentsByKey[d.flightKey]}
               />
             ))}
 
@@ -1432,13 +1455,6 @@ export default function MapApp() {
               onTheme={setTheme}
               basemap={basemap}
               onBasemap={setBasemap}
-              airwayOn={showAirways}
-              onAirway={setShowAirways}
-              waypointsOn={showWaypoints}
-              onWaypoints={setShowWaypoints}
-              firOn={firOn}
-              onFir={setFirOn}
-              firLoading={firLoading}
               sectorsOn={sectorsOn}
               onToggleSector={toggleSector}
               onOpenLayers={() => setLayersOpen(true)}
@@ -1462,6 +1478,11 @@ export default function MapApp() {
               onAirwaysOn={setShowAirways}
               airway={airwayExtra}
               onAirwayChange={setAirwayExtra}
+              waypointsOn={showWaypoints}
+              onWaypointsOn={setShowWaypoints}
+              firOn={firOn}
+              onFirOn={setFirOn}
+              firLoading={firLoading}
               onProcHighlight={setHighlightProc}
               sid={{
                 state: sid,

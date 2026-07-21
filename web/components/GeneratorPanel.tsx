@@ -32,6 +32,7 @@ import {
   staticRunways,
 } from "@/lib/geojson";
 import {
+  fetchApproachEntries,
   fetchProcedure,
   generateBatch,
   generateTrajectory,
@@ -118,6 +119,9 @@ interface PlanDraft {
   /** PBN instrument approach (IAP) at ADES for the arrival runway, e.g.
    *  "R09-Z". "" = none (STAR descends straight to the field). */
   approach: string;
+  /** IAF entry fix the route joins the approach at when more than one is on
+   *  the route ("" = engine auto-scores it). */
+  approachTransition: string;
 }
 
 let _planSeq = 0;
@@ -142,6 +146,7 @@ function blankPlan(): PlanDraft {
     depRwy: "",
     arrRwy: "",
     approach: "",
+    approachTransition: "",
   };
 }
 
@@ -295,6 +300,15 @@ function GeneratorPanel({
   // PBN instrument approach at ADES for the arrival runway ("" = none). Its
   // option list is derived from the arrival runway below.
   const [approach, setApproach] = useState("");
+  // Where to JOIN the approach when the route/STAR passes more than one of its
+  // IAF entry fixes (e.g. VTSP R27-Y reached via a STAR through both STONE and
+  // BARON). "" = auto (the engine scores it). `approachEntryMatches` is the
+  // realtime list of on-route entry fixes; the join dropdown shows only when
+  // it has more than one.
+  const [approachTransition, setApproachTransition] = useState("");
+  const [approachEntryMatches, setApproachEntryMatches] = useState<string[]>(
+    [],
+  );
 
   // --- Multi-plan tabs -----------------------------------------------------
   // The active tab's values live in the scalar state above. `plans` holds a
@@ -357,6 +371,7 @@ function GeneratorPanel({
     depRwy,
     arrRwy,
     approach,
+    approachTransition,
   });
 
   /** Pick the route tab for a loaded plan: AIP when its route is a published
@@ -398,6 +413,7 @@ function GeneratorPanel({
     setDepRwy(d.depRwy ?? "");
     setArrRwy(d.arrRwy ?? "");
     setApproach(d.approach ?? "");
+    setApproachTransition(d.approachTransition ?? "");
     // Auto-select AIP vs Manual based on whether the route is a filed route.
     setRouteTab(routeTabForDraft(d));
   };
@@ -973,6 +989,38 @@ function GeneratorPanel({
   // The route the Item-15 box currently resolves to (typed or built).
   const effectiveRoute =
     routeMode === "build" ? builtRoute : routeStr.trim();
+
+  // Realtime: which of the chosen approach's IAF entry fixes lie on the route
+  // + STAR. When more than one does, the user picks where to join (below);
+  // otherwise the engine auto-scores it. Debounced so typing the route doesn't
+  // spam the backend. The picked join fix is reset if it leaves the match set.
+  useEffect(() => {
+    if (!approach || !des) {
+      setApproachEntryMatches([]);
+      setApproachTransition("");
+      return;
+    }
+    let cancelled = false;
+    const id = setTimeout(() => {
+      fetchApproachEntries(des, approach, {
+        runway: arrRwy || undefined,
+        route: effectiveRoute || undefined,
+        star: star || undefined,
+      })
+        .then((r) => {
+          if (cancelled) return;
+          setApproachEntryMatches(r.matching);
+          setApproachTransition((cur) =>
+            cur && !r.matching.includes(cur) ? "" : cur,
+          );
+        })
+        .catch(() => !cancelled && setApproachEntryMatches([]));
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(id);
+    };
+  }, [approach, des, arrRwy, star, effectiveRoute]);
   // Can't queue more routes than there are distinct possible ones.
   // Per-route SID/STAR options: the procedures whose name connects to the
   // route's first / last fix (Thai naming convention, e.g. OLVUK→OLVU*).
@@ -1509,6 +1557,9 @@ function GeneratorPanel({
               ...(d.depRwy ? { sid_runway: d.depRwy } : {}),
               ...(d.arrRwy ? { star_runway: d.arrRwy } : {}),
               ...(d.approach ? { approach: d.approach } : {}),
+              ...(d.approach && d.approachTransition
+                ? { approach_transition: d.approachTransition }
+                : {}),
             },
             label: isCsv ? `Airway CSV · ${dp}→${ds}` : c.route || "(route)",
           });
@@ -1671,6 +1722,9 @@ function GeneratorPanel({
             ...(depRwy ? { sid_runway: depRwy } : {}),
             ...(arrRwy ? { star_runway: arrRwy } : {}),
             ...(approach ? { approach } : {}),
+            ...(approach && approachTransition
+              ? { approach_transition: approachTransition }
+              : {}),
             ...(multi ? { flight_index: i } : {}),
           }),
         ),
@@ -2307,7 +2361,10 @@ function GeneratorPanel({
               <span>Approach (at {des || "ADES"})</span>
               <select
                 value={approach}
-                onChange={(e) => setApproach(e.target.value)}
+                onChange={(e) => {
+                  setApproach(e.target.value);
+                  setApproachTransition(""); // new approach → re-choose join
+                }}
                 disabled={!arrRwy || approachShown.length === 0}
                 title={
                   !arrRwy
@@ -2327,6 +2384,31 @@ function GeneratorPanel({
               </select>
             </label>
           </div>
+
+          {/* Join-point picker — appears only when the route/STAR passes more
+              than one of the approach's IAF entry fixes, so the pilot chooses
+              where to enter (e.g. VTSP R27-Y at STONE vs BARON). One match or
+              none → the engine auto-scores it and this stays hidden. */}
+          {approach && approachEntryMatches.length > 1 && (
+            <div className="field-row">
+              <div className="field" aria-hidden />
+              <label className="field">
+                <span>Join approach at</span>
+                <select
+                  value={approachTransition}
+                  onChange={(e) => setApproachTransition(e.target.value)}
+                  title="Which entry fix the route joins the approach at"
+                >
+                  <option value="">Auto (best fit)</option>
+                  {approachEntryMatches.map((f) => (
+                    <option key={f} value={f}>
+                      {f}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          )}
           {des &&
             arrRwy &&
             Object.keys(approachByRwy).length > 0 &&
