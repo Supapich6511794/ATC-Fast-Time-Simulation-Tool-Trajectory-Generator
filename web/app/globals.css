@@ -7607,6 +7607,34 @@ select.fp-input {
   font-size: 12px;
   color: var(--muted);
 }
+.cdr-adv-empty p {
+  margin: 0;
+}
+/* "Every candidate would then conflict with THA100" — the aircraft standing in
+   the way of an otherwise-valid fix. Amber: it's a lead, not an error. */
+.cdr-adv-blocked {
+  margin-top: 6px !important;
+  padding: 6px 8px;
+  border-left: 2px solid #f59e0b;
+  border-radius: 0 6px 6px 0;
+  background: #f59e0b14;
+  color: #fcd9a0;
+  line-height: 1.5;
+}
+.cdr-adv-blocked b {
+  color: #fbbf24;
+}
+/* Badge on the advisory heading when the results only came from the wider
+   fallback envelope — the maneuvers are bigger than the usual proposals. */
+.cdr-adv-wide {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid #f59e0b66;
+  border-radius: 4px;
+  color: #fbbf24;
+  font-size: 9px;
+  letter-spacing: 0.3px;
+}
 .cdr-card {
   background: #0f172a55;
   border: 1px solid #33415555;

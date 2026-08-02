@@ -637,26 +637,129 @@ function recoveredLeg(
     geo.push({ lat: curLat, lon: curLon, alt: pivotAlt });
   }
 
-  // 3) Direct back to the original route (its position `rejoinSec` on).
+  // 3) Turn back and home onto the original route (its position `rejoinSec` on).
+  //
+  // Bank-limited PURSUIT, not a straight line: re-aim at the rejoin point every
+  // step and turn toward it at the same rate as the outbound turn. Flying
+  // straight at the rejoin bearing (what this used to do) snaps the heading
+  // instantly at a single vertex — and when the deviation carried the aircraft
+  // past or abeam the rejoin point, that vertex was a ~180° hairpin no aircraft
+  // could fly. Homing keeps every heading change inside the turn radius, so a
+  // big rejoin comes out as an arc.
   const rejoinLocal = Math.min(duration, tMan + deviationSec + Math.max(step, rejoinSec));
   const rej = aircraftAt(samples, rejoinLocal);
+  // How far along the route the hand-back happens — pushed forward while the
+  // aircraft chases the route, so step 4 picks up from wherever it aligned.
+  let handoverLocal = rejoinLocal;
   if (rej) {
-    const distToRej = distNm(curLat, curLon, rej.lat, rej.lon);
-    const brg = bearingDeg(curLat, curLon, rej.lat, rej.lon);
-    const n = Math.max(1, Math.round(((distToRej / gs) * 3600) / step));
+    const omegaRej = turnGeometry(gs, 180, bankAngleDeg).turnRateDegSec;
+    // Integrate the rejoin on a FINER step than the rest of the leg: at 4 s the
+    // heading only resolves to ~4.5° a step, too coarse to settle onto the route
+    // line, and the leftover cross-track showed up as a kink at the hand-back.
+    const pstep = 1;
+    const stepNm = (gs * pstep) / 3600;
     const rejAlt = rej.altitudeFt ?? pivotAlt;
-    for (let i = 1; i <= n; i++) {
-      const p = advance(curLat, curLon, brg, distToRej / n);
+    const d0 = Math.max(1e-6, distNm(curLat, curLon, rej.lat, rej.lon));
+    // Pure-pursuit LOOKAHEAD: chase a carrot held this far ahead on the route,
+    // never the rejoin point itself. The lookahead must exceed the turn radius —
+    // chasing a nearer point makes the aircraft cut inside its own turn circle
+    // and orbit the route instead of settling on it.
+    const lookaheadNm = Math.max(2, turnGeometry(gs, 180, bankAngleDeg).radiusNm * 1.5);
+    // Cap the loop: a target that falls INSIDE the turn circle can be orbited
+    // forever, so bound it at a generous multiple of the direct flight time
+    // plus one full 360°, then give up and let step 4 resume the route.
+    const maxSteps =
+      Math.ceil(((d0 / gs) * 3600) / pstep) * 3 +
+      Math.ceil(360 / Math.max(0.05, omegaRej * pstep)) +
+      10;
+    let carrotLocal = Math.min(rejoinLocal, duration);
+    let guard = 0;
+    while (guard++ < maxSteps) {
+      // Slide the carrot down the route until it is a full lookahead ahead, but
+      // never past the end of the route.
+      let tgt = aircraftAt(samples, carrotLocal);
+      while (
+        tgt &&
+        carrotLocal + pstep <= duration &&
+        distNm(curLat, curLon, tgt.lat, tgt.lon) < lookaheadNm
+      ) {
+        carrotLocal += pstep;
+        tgt = aircraftAt(samples, carrotLocal);
+      }
+      if (!tgt) break;
+      // No route left to intercept — the maneuver ran into the end of the
+      // flight. Home onto the LAST point so the aircraft still finishes at its
+      // destination; bailing out here instead is what left a resolved flight
+      // running off the far side of the map, never reaching the runway.
+      if (carrotLocal >= duration - pstep) {
+        if (distNm(curLat, curLon, tgt.lat, tgt.lon) < stepNm) break;
+        const wantEnd = headingDeltaDeg(
+          curHdg,
+          bearingDeg(curLat, curLon, tgt.lat, tgt.lon),
+        );
+        const turnEnd = Math.max(-omegaRej * pstep, Math.min(omegaRej * pstep, wantEnd));
+        const p = advance(curLat, curLon, curHdg + turnEnd / 2, stepNm);
+        curLat = p.lat;
+        curLon = p.lon;
+        curHdg = (((curHdg + turnEnd) % 360) + 360) % 360;
+        geo.push({ lat: curLat, lon: curLon, alt: tgt.altitudeFt ?? pivotAlt });
+        continue;
+      }
+      const brgToCarrot = bearingDeg(curLat, curLon, tgt.lat, tgt.lon);
+      // Settled: flying the route's track AND lined up on it (the bearing to a
+      // carrot far ahead only matches the route track from ON the route). Both
+      // checks matter — position alone left a kink at the hand-back, because the
+      // aircraft reached the right spot on the wrong heading and step 4 snapped
+      // it onto the filed track.
+      const carrotNm = distNm(curLat, curLon, tgt.lat, tgt.lon);
+      const crossNm =
+        carrotNm *
+        Math.abs(Math.sin((headingDeltaDeg(brgToCarrot, tgt.track) * Math.PI) / 180));
+      if (crossNm < 0.05 && Math.abs(headingDeltaDeg(curHdg, tgt.track)) < 2) break;
+      const want = headingDeltaDeg(curHdg, brgToCarrot);
+      const turn = Math.max(-omegaRej * pstep, Math.min(omegaRej * pstep, want));
+      const midHdg = curHdg + turn / 2; // mid-step for arc accuracy
+      const p = advance(curLat, curLon, midHdg, stepNm);
       curLat = p.lat;
       curLon = p.lon;
-      geo.push({ lat: curLat, lon: curLon, alt: pivotAlt + (rejAlt - pivotAlt) * (i / n) });
+      curHdg = (((curHdg + turn) % 360) + 360) % 360;
+      // Ramp the altitude on closure, not on step count — the homing path is
+      // longer than the direct distance when it has to turn around.
+      const frac = Math.max(
+        0,
+        Math.min(1, 1 - distNm(curLat, curLon, rej.lat, rej.lon) / d0),
+      );
+      geo.push({
+        lat: curLat,
+        lon: curLon,
+        alt: pivotAlt + (rejAlt - pivotAlt) * frac,
+      });
     }
+    // Hand back at the route time NEAREST the aircraft, not at the carrot — the
+    // carrot is a lookahead ahead, and resuming there would teleport it forward.
+    let best = Infinity;
+    const from = Math.max(rejoinLocal, carrotLocal - ((lookaheadNm * 3) / gs) * 3600);
+    for (let t = from; t <= carrotLocal; t += pstep) {
+      const s = aircraftAt(samples, t);
+      if (!s) continue;
+      const d = distNm(curLat, curLon, s.lat, s.lon);
+      if (d < best) {
+        best = d;
+        handoverLocal = t;
+      }
+    }
+    // Skip one route step past the nearest point. Resuming at the NEAREST one
+    // leaves a stub segment a few hundred metres long, and the last sliver of
+    // cross-track error turns that stub sideways — a 40° swing on the track
+    // column over 150 m. Handing back a full step later makes the joining
+    // segment long enough that the same residual offset is a couple of degrees.
+    handoverLocal = Math.min(duration, handoverLocal + step);
   }
 
-  // 4) Resume the original route beyond the rejoin.
+  // 4) Resume the original route beyond the point it was rejoined at.
   for (const p of tail) {
     const lt = (new Date(p.epoch_ts).getTime() - epoch0) / 1000;
-    if (lt > rejoinLocal) geo.push({ lat: p.lat, lon: p.lon, alt: p.altitude_ft });
+    if (lt > handoverLocal) geo.push({ lat: p.lat, lon: p.lon, alt: p.altitude_ft });
   }
 
   // Re-time by cumulative distance at the pivot speed; track from the geometry.

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { resolveConfig } from "./config";
-import { generatePlanResolutions } from "./planAdvisory";
+import { generatePlanResolutions, planResolutions } from "./planAdvisory";
 import { scanFlightPlanConflicts, type PlanFlight } from "./planScan";
 import { applyManeuver } from "./kinematics";
 import { toSamples, totalSeconds } from "@/lib/useSimPlayback";
@@ -10,14 +10,17 @@ import type { TrajectoryPoint, TrajectoryResult } from "@/lib/trajectory/types";
 const cfg = resolveConfig();
 const T0 = Date.UTC(2026, 0, 1, 0, 0, 0);
 
-/** A straight, level cruise leg from lon0 heading east (90) or west (270). */
+/** A straight, level cruise leg from lon0 heading east (90) or west (270).
+ *  600 points at 4 s = a 40-minute flight: long enough that the arrival-protected
+ *  tail (no lateral vectors in the last 10 min) doesn't swallow the whole leg,
+ *  which a 15-minute toy route would. */
 function leg(
   id: string,
   lat: number,
   lon0: number,
   trackDeg: number,
   altFt = 35000,
-  n = 220,
+  n = 600,
   gs = 450,
 ): TrajectoryResult {
   const dt = 4;
@@ -254,5 +257,125 @@ describe("generatePlanResolutions — in-trail overtake", () => {
         : f,
     );
     expect(scanFlightPlanConflicts(newFlights, cfg)).toHaveLength(0);
+  });
+});
+
+/* --- Diagnostics: who blocked a candidate, and the wide fallback envelope --- */
+
+/** headOn(), plus extra co-routed traffic at the given levels. Each shadow flies
+ *  the same track as one of the pair, so climbing/descending INTO its level is
+ *  what gets the candidate rejected. */
+function headOnWithShadows(
+  shadows: { id: string; altFt: number; westbound?: boolean }[],
+) {
+  const lat = 13;
+  const nmPerDegLon = Math.cos((lat * Math.PI) / 180) * 60;
+  const base = headOn();
+  const extra = shadows.map((s) =>
+    s.westbound
+      ? leg(s.id, lat, 100 + 60 / nmPerDegLon, 270, s.altFt)
+      : leg(s.id, lat, 100, 90, s.altFt),
+  );
+  const flights: PlanFlight[] = [...base.flights];
+  const trajById = new Map(base.trajById);
+  for (const t of extra) {
+    flights.push({
+      id: t.meta.flightKey,
+      callsign: t.meta.callsign,
+      samples: toSamples(t.points),
+      offsetSec: 0,
+      durationSec: totalSeconds(t.points),
+    });
+    trajById.set(t.meta.flightKey, { traj: t, offset: 0 });
+  }
+  return { flights, trajById, conflict: base.flights };
+}
+
+describe("planResolutions — blocked-by diagnostics", () => {
+  it("names the third aircraft that rejected a candidate", () => {
+    // SHADOW sits 2000 ft above THA1 on its own track: legal now, but THA1's
+    // "Climb FL370" would fly straight into it, so that candidate is dropped.
+    const { flights, trajById } = headOnWithShadows([
+      { id: "SHADOW", altFt: 37000 },
+    ]);
+    const [conflict] = scanFlightPlanConflicts(flights, cfg);
+    const res = planResolutions({
+      conflict,
+      flights,
+      trajById,
+      simT: 0,
+      cfg,
+      restricted: [],
+    });
+    expect(res.blockers.map((b) => b.callsign)).toContain("SHADOW");
+    const shadow = res.blockers.find((b) => b.callsign === "SHADOW")!;
+    expect(shadow.count).toBeGreaterThan(0);
+    expect(shadow.tightestNm).toBeLessThan(5); // it really was a near-miss
+  });
+
+  it("keeps the plain generator's output identical (diagnostics are additive)", () => {
+    const { flights, trajById } = headOn();
+    const [conflict] = scanFlightPlanConflicts(flights, cfg);
+    const args = { conflict, flights, trajById, simT: 0, cfg, restricted: [] };
+    const rich = planResolutions(args);
+    const plain = generatePlanResolutions(args);
+    expect(plain.map((r) => r.instruction)).toEqual(
+      rich.resolutions.map((r) => r.instruction),
+    );
+    // The easy head-on clears inside the normal envelope — no fallback needed.
+    expect(rich.widened).toBe(false);
+    expect(plain.every((r) => !r.widened)).toBe(true);
+  });
+});
+
+describe("planResolutions — wide fallback envelope", () => {
+  // Boxed in vertically: co-routed traffic sits at every semicircular-legal
+  // level within ±2000 of the pair (eastbound THA1 may use odd → FL370/FL330,
+  // westbound AIQ2 even → FL360/FL340), and a climb/descent past them is
+  // blocked in transit too. That leaves the lateral fix, whose required turn
+  // grows with the horizontal minimum — so the minimum sets which envelope can
+  // solve it.
+  const boxed = () =>
+    headOnWithShadows([
+      { id: "BLK370", altFt: 37000 },
+      { id: "BLK330", altFt: 33000 },
+      { id: "BLK360", altFt: 36000, westbound: true },
+      { id: "BLK340", altFt: 34000, westbound: true },
+    ]);
+  const solve = (enrouteNm: number) => {
+    const c = resolveConfig({ horizontal: { enrouteNm, terminalNm: 3 } });
+    const { flights, trajById } = boxed();
+    const conflict = scanFlightPlanConflicts(flights, c).find(
+      (x) => [x.a, x.b].includes("THA1") && [x.a, x.b].includes("AIQ2"),
+    )!;
+    return planResolutions({
+      conflict,
+      flights,
+      trajById,
+      simT: 0,
+      cfg: c,
+      restricted: [],
+    });
+  };
+
+  it("stays in the normal envelope while a ≤40° turn still clears", () => {
+    const res = solve(15);
+    expect(res.widened).toBe(false);
+    expect(res.resolutions.length).toBeGreaterThan(0);
+    expect(res.resolutions.every((r) => !r.widened)).toBe(true);
+    expect(Math.abs(res.resolutions[0].trackDeviationDeg)).toBeLessThanOrEqual(40);
+  });
+
+  it("falls back to the wide envelope when it does not, and flags the result", () => {
+    // 25 NM needs a bigger turn than the normal envelope's 40° ceiling.
+    const res = solve(25);
+    expect(res.resolutions.length).toBeGreaterThan(0);
+    expect(res.widened).toBe(true);
+    expect(res.resolutions.every((r) => r.widened)).toBe(true);
+    expect(Math.abs(res.resolutions[0].trackDeviationDeg)).toBeGreaterThan(40);
+  });
+
+  it("still reports who blocked the gentle candidates", () => {
+    expect(solve(25).blockers.length).toBeGreaterThan(0);
   });
 });

@@ -147,8 +147,11 @@ describe("applyManeuver", () => {
     const dev = aircraftAt(samples, 80)!;
     expect(dev.lat).toBeLessThan(12.98);
 
-    // Well after the rejoin it is back on the original route (lat ≈ 13).
-    const late = aircraftAt(samples, 300)!;
+    // Well after the rejoin it is back on the original route (lat ≈ 13). The
+    // recapture is a flown, bank-limited turn onto the route rather than an
+    // instant snap onto the rejoin bearing, so it converges over a few minutes
+    // (t=300 is still mid-intercept; by t=450 it is within a mile of the line).
+    const late = aircraftAt(samples, 450)!;
     expect(Math.abs(late.lat - 13)).toBeLessThan(0.02);
 
     // And it ends near the original destination rather than diverging off.
@@ -158,6 +161,63 @@ describe("applyManeuver", () => {
     expect(Math.abs(end.lon - origEnd.lon)).toBeLessThan(0.2);
     // Contrast: without recovery it would still be heading 130 forever.
     void orig;
+  });
+
+  it("the REJOIN is bank-limited too — no hairpin vertex anywhere in the path", () => {
+    // A near-reversal (heading 90 → 300) with a short deviation puts the rejoin
+    // point behind and abeam the aircraft, which is exactly the geometry that
+    // used to snap the track ~180° at a single vertex and draw a spike on the
+    // map. Every heading change in the output must stay inside the bank-limited
+    // turn rate — the turn OUT and the turn BACK alike.
+    const gs = 450;
+    const bankAngleDeg = 25;
+    const traj = eastbound(200);
+    const out = applyManeuver(
+      traj,
+      man({ type: "heading", resolution: { headingDeg: 300 } }),
+      40,
+      { deviationSec: 120, rejoinSec: 120, bankAngleDeg },
+    );
+    const maxRateDegSec = turnGeometry(gs, 90, bankAngleDeg).turnRateDegSec;
+
+    let worstRate = 0;
+    const pts = out.points;
+    for (let i = 1; i < pts.length; i++) {
+      const dt =
+        (new Date(pts[i].epoch_ts).getTime() -
+          new Date(pts[i - 1].epoch_ts).getTime()) /
+        1000;
+      if (dt <= 0) continue;
+      const d = Math.abs(
+        ((pts[i].track_deg - pts[i - 1].track_deg + 540) % 360) - 180,
+      );
+      worstRate = Math.max(worstRate, d / dt);
+    }
+    // 1.6× headroom: `track_deg` is the bearing of each 4 s chord, so a chord
+    // straddling the mid-step heading reads slightly hotter than the true rate.
+    expect(worstRate).toBeLessThan(maxRateDegSec * 1.6);
+    // Sanity: it really did have to turn a long way round.
+    expect(worstRate).toBeGreaterThan(0.5);
+  });
+
+  it("a maneuver late in the flight still ENDS at the destination", () => {
+    // tMan 400 + 60 s deviation + 180 s rejoin overruns the 476 s route, so the
+    // rejoin target clamps to the final point. The recapture has to home onto
+    // that point anyway — giving up because there is no route left to intercept
+    // left the aircraft running off on its deviation heading, never arriving.
+    const traj = eastbound(120);
+    const out = applyManeuver(
+      traj,
+      man({ type: "heading", resolution: { headingDeg: 200 } }),
+      400,
+      { deviationSec: 60, rejoinSec: 180 },
+    );
+    const end = out.points[out.points.length - 1];
+    const origEnd = traj.points[traj.points.length - 1];
+    const dLatNm = Math.abs(end.lat - origEnd.lat) * 60;
+    const dLonNm =
+      Math.abs(end.lon - origEnd.lon) * 60 * Math.cos((13 * Math.PI) / 180);
+    expect(Math.hypot(dLatNm, dLonNm)).toBeLessThan(1);
   });
 
   it("flight level: keeps track, ramps altitude toward the new level", () => {

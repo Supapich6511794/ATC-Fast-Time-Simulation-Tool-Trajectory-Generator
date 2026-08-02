@@ -39,7 +39,7 @@ import {
   type RestrictedArea,
 } from "@/lib/cdr/constraints";
 import type { CdrConfig, ManeuverType } from "@/lib/cdr/config";
-import type { PlanResolution } from "@/lib/cdr/planAdvisory";
+import type { Blocker, PlanResolution } from "@/lib/cdr/planAdvisory";
 import type { Maneuver, ManeuverResolution } from "@/lib/cdr/types";
 import { holdLegSec, holdLoopSec, type Holding } from "@/lib/holdings";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
@@ -56,6 +56,9 @@ interface Props {
   simT: number; // current absolute clock (maneuver is applied from "now")
   /** Auto-generated ranked resolutions (with reason + score). */
   planSuggestions: PlanResolution[];
+  /** Traffic that rejected every candidate, when none survived — names the
+   *  aircraft to resolve first instead of leaving a dead end. */
+  planBlockers?: Blocker[];
   nameOf: (id: string) => string;
   config: CdrConfig;
   /** Every flight (for the constraint engine's re-check vs ALL traffic). */
@@ -157,6 +160,7 @@ export default function PreviewModal({
   offsetB,
   simT,
   planSuggestions,
+  planBlockers,
   nameOf,
   config,
   allFlights,
@@ -712,9 +716,18 @@ export default function PreviewModal({
                 })}
               </div>
             ) : (
-              <p className="cdr-adv-empty">
-                No automatic resolution found — adjust manually below.
-              </p>
+              <div className="cdr-adv-empty">
+                <p>No automatic resolution found — adjust manually below.</p>
+                {planBlockers?.[0] && (
+                  <p className="cdr-adv-blocked">
+                    Every candidate would then conflict with{" "}
+                    <b>{planBlockers[0].callsign}</b>
+                    {Number.isFinite(planBlockers[0].tightestNm) &&
+                      ` (${fmtNm(planBlockers[0].tightestNm)})`}
+                    . Resolve {planBlockers[0].callsign} first, or override below.
+                  </p>
+                )}
+              </div>
             )}
 
             <details className="cdr-manual">

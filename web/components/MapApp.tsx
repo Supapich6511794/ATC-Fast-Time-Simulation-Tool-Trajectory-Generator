@@ -131,6 +131,8 @@ import {
 import { restrictedAreasFrom } from "@/lib/cdr/constraints";
 import {
   generatePlanResolutions,
+  planResolutions,
+  type PlanAdvisoryResult,
   type PlanResolution,
 } from "@/lib/cdr/planAdvisory";
 import ToastStack from "@/components/cdr/ToastStack";
@@ -976,6 +978,7 @@ export default function MapApp() {
     return cdr.conflicts.filter((c) => !fixedIds.has(c.id));
   }, [cdr.conflicts, appliedFixes]);
 
+
   // Live clock in a ref so the Preview/Apply click handlers can read "now"
   // without being re-created every animation frame.
   const simTRef = useRef(sim.simT);
@@ -1022,6 +1025,17 @@ export default function MapApp() {
     return scanFlightPlanConflicts(planFlights, cdr.config);
   }, [cdrMonitoring, planFlights, cdr.config]);
 
+  // The auto-resolve work queue: every REAL loss of separation in the filed
+  // plan that hasn't been fixed, soonest CPA first. Whole-timeline, so a fix
+  // gets applied while there is still enough lead time for it to work (see the
+  // auto-resolve loop below for why the realtime detector is too late).
+  const unresolvedPlanConflicts = useMemo(() => {
+    const fixedIds = new Set(appliedFixes.map((f) => f.conflictId));
+    return planConflicts
+      .filter((c) => c.definite && !fixedIds.has(c.id))
+      .sort((a, b) => a.tCpaAbsSec - b.tCpaAbsSec);
+  }, [planConflicts, appliedFixes]);
+
   // Published Bangkok-FIR holdings (AIRAC 2607) — loaded once, enables the CD&R
   // HOLD resolution (fly a racetrack loop at a holding fix on the route to
   // delay + open spacing; the realistic fix for an arrival-merge conflict).
@@ -1058,11 +1072,15 @@ export default function MapApp() {
   // agree and both get the correct answer for long-timescale fixes (e.g. an
   // in-trail overtake, where a speed change clears but a turn only delays it).
   // Computed on demand (a conflict is selected), not per frame; clock snapshot.
-  const planSuggestions = useMemo<PlanResolution[]>(() => {
-    if (!selectedConflictId) return [];
+  // Keeps the diagnostics alongside the resolutions: when the list is empty the
+  // panel needs `blockers` to say WHICH aircraft rejected every candidate, and
+  // `widened` marks results that only exist because the fallback envelope ran.
+  const planAdvisory = useMemo<PlanAdvisoryResult>(() => {
+    const none = { resolutions: [], blockers: [], widened: false };
+    if (!selectedConflictId) return none;
     const c = planConflicts.find((x) => x.id === selectedConflictId);
-    if (!c) return [];
-    return generatePlanResolutions({
+    if (!c) return none;
+    return planResolutions({
       conflict: c,
       flights: planFlights,
       trajById,
@@ -1081,6 +1099,7 @@ export default function MapApp() {
     restrictedAreas,
     holdings,
   ]);
+  const planSuggestions: PlanResolution[] = planAdvisory.resolutions;
 
   // Resolutions shown in the INLINE notification cards. These use the SAME
   // plan-validated engine as the Preview modal (full-trajectory what-ifs,
@@ -1314,28 +1333,49 @@ export default function MapApp() {
   // latest state through refs and only ever does one heavy step per interval,
   // leaving a guaranteed gap for the browser to paint and stay responsive.
   //
-  // The conflict SOURCE is the REALTIME detector (`cdr.conflicts`, minus ones
-  // already fixed): auto-resolve then fixes each conflict as it enters the
-  // look-ahead — proactive, controller-like, "real time" — rather than reaching
-  // out to fix conflicts an hour away. `autoTriedRef` makes each pair (a stable
-  // `a|b` id) attempted exactly once, so the finite set of pairs drains even as
-  // the sliding look-ahead surfaces them over time. `planConflicts` supplies the
-  // full-timeline geometry (`tCpaAbsSec`) the resolver needs for the match.
+  // The conflict SOURCE is the PLAN scan (`unresolvedPlanConflicts`), NOT the
+  // realtime detector. Sourcing from the realtime look-ahead sounds more
+  // controller-like, but it cannot work here: the detector only surfaces a pair
+  // within `mtcdSec` (10 min) of CPA, while the cheapest resolutions need far
+  // more lead time than that to bite. Reducing 40 kt opens 5 NM of along-track
+  // spacing only after 5/40 h ≈ 7.5 min of flying, and that is the ideal case —
+  // real crossing geometry converts less. So a conflict whose only fix is a
+  // speed change was already unfixable by the time auto-resolve first saw it,
+  // and rode to LOS with the dashboard cheerfully showing the fix it could have
+  // applied 40 minutes earlier. The plan scan has the whole filed timeline from
+  // the start, which is the entire point of a fast-time tool: deconflict
+  // strategically, while there is still room to.
+  //
+  // Earliest CPA first, because an upstream fix re-times everything downstream.
+  //
+  // The attempt key is `id|leadBucket` (10-min buckets), NOT the id alone: a
+  // pair the resolver can't clear now often becomes clearable later — traffic
+  // around it has since been moved, or the aircraft has closed enough that a
+  // holding fix on its route finally falls before the CPA (the hold candidate
+  // needs that). So each conflict gets a fresh attempt every 10 minutes of
+  // closure, up to 4 tries, instead of one for its whole life. Retrying every
+  // tick instead would re-run the ~200 ms plan resolver back-to-back and pin the
+  // CPU, which is what this whole timer loop exists to avoid.
   const AUTO_STEP_MS = 400;
+  const AUTO_RETRY_BUCKET_SEC = 600;
+  /** Skip a conflict this close to CPA — nothing can be applied in time. */
+  const AUTO_MIN_LEAD_SEC = 30;
   const autoTriedRef = useRef<Set<string>>(new Set());
+  const autoTryKey = (c: { id: string }, leadSec: number) =>
+    `${c.id}|${Math.min(3, Math.floor(Math.max(0, leadSec) / AUTO_RETRY_BUCKET_SEC))}`;
   // Live snapshots read by the timer callback (so the loop needn't re-subscribe
   // on every render — which is what caused the back-to-back heavy work).
   const autoStateRef = useRef({
-    unresolvedConflicts,
-    planConflicts,
+    unresolvedPlanConflicts,
+    stcaSec: cdr.config.lookahead.stcaSec,
     topResolutionFor,
     commitManeuver,
     toasts,
     nameOf,
   });
   autoStateRef.current = {
-    unresolvedConflicts,
-    planConflicts,
+    unresolvedPlanConflicts,
+    stcaSec: cdr.config.lookahead.stcaSec,
     topResolutionFor,
     commitManeuver,
     toasts,
@@ -1353,30 +1393,34 @@ export default function MapApp() {
       const t0 = performance.now();
       try {
         const s = autoStateRef.current;
-        const target = s.unresolvedConflicts.find(
-          (c) => !autoTriedRef.current.has(c.id),
+        const now = simTRef.current;
+        const leadOf = (c: PlanConflict) => c.tCpaAbsSec - now;
+        // Soonest CPA first (the queue is pre-sorted), skipping anything already
+        // attempted at this lead and anything too close to act on.
+        const pc = s.unresolvedPlanConflicts.find(
+          (c) =>
+            leadOf(c) > AUTO_MIN_LEAD_SEC &&
+            !autoTriedRef.current.has(autoTryKey(c, leadOf(c))),
         );
-        if (target) {
-          const pc = s.planConflicts.find((x) => x.id === target.id);
-          if (pc) {
-            autoTriedRef.current.add(target.id); // attempt once
-            const m = s.topResolutionFor(pc);
-            const dt = Math.round(performance.now() - t0);
-            // eslint-disable-next-line no-console
-            console.debug(
-              `[auto-resolve] ${pc.id} → ${m ? m.type + " " + (m.instruction ?? "") : "no fix"} (${dt}ms)`,
-            );
-            if (m) {
-              s.commitManeuver(m, { id: pc.id, a: pc.a, b: pc.b });
-              // Pop a green confirmation of what auto-resolve just did.
-              s.toasts.upsert({
-                conflictId: pc.id,
-                severity: target.severity,
-                kind: "auto",
-                title: `Auto-resolved · ${s.nameOf(m.target)}`,
-                body: m.instruction || "resolution applied",
-              });
-            }
+        if (pc) {
+          const lead = leadOf(pc);
+          autoTriedRef.current.add(autoTryKey(pc, lead)); // once per lead bucket
+          const m = s.topResolutionFor(pc);
+          const dt = Math.round(performance.now() - t0);
+          // eslint-disable-next-line no-console
+          console.debug(
+            `[auto-resolve] ${pc.id} T−${Math.round(lead / 60)}min → ${m ? m.type + " " + (m.instruction ?? "") : "no fix"} (${dt}ms)`,
+          );
+          if (m) {
+            s.commitManeuver(m, { id: pc.id, a: pc.a, b: pc.b });
+            // Pop a green confirmation of what auto-resolve just did.
+            s.toasts.upsert({
+              conflictId: pc.id,
+              severity: lead <= s.stcaSec ? "STCA" : "MTCD",
+              kind: "auto",
+              title: `Auto-resolved · ${s.nameOf(m.target)}`,
+              body: m.instruction || "resolution applied",
+            });
           }
         }
       } catch (err) {
@@ -1384,7 +1428,7 @@ export default function MapApp() {
         // eslint-disable-next-line no-console
         console.error("[auto-resolve] step failed:", err);
       }
-      // Keep polling: the sliding look-ahead surfaces new conflicts over time.
+      // Keep polling: re-scans surface new conflicts as fixes re-time traffic.
       if (!cancelled) timer = window.setTimeout(step, AUTO_STEP_MS);
     };
     timer = window.setTimeout(step, AUTO_STEP_MS);
@@ -2553,19 +2597,17 @@ export default function MapApp() {
                 appliedFixes={appliedFixes}
                 renderAdvisory={(id) =>
                   id === selectedConflictId ? (
-                    inlineSuggestions.length > 0 ? (
-                      <SuggestionCards
-                        suggestions={inlineSuggestions}
-                        nameOf={nameOf}
-                        previewIdx={previewIdx}
-                        onPreview={handlePreview}
-                        onApply={handleApply}
-                      />
-                    ) : (
-                      <p className="cdr-adv-empty">
-                        No clear resolution within the maneuver envelope.
-                      </p>
-                    )
+                    // SuggestionCards owns the empty state too — that's where
+                    // the "blocked by X" readout lives.
+                    <SuggestionCards
+                      suggestions={inlineSuggestions}
+                      nameOf={nameOf}
+                      previewIdx={previewIdx}
+                      onPreview={handlePreview}
+                      onApply={handleApply}
+                      blockers={planAdvisory.blockers}
+                      widened={planAdvisory.widened}
+                    />
                   ) : null
                 }
               />
@@ -2616,6 +2658,7 @@ export default function MapApp() {
                     offsetB={routeOffsets[ib] ?? 0}
                     simT={sim.simT}
                     planSuggestions={planSuggestions}
+                    planBlockers={planAdvisory.blockers}
                     nameOf={nameOf}
                     config={cdr.config}
                     allFlights={planFlights}

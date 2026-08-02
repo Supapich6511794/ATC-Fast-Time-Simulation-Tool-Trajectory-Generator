@@ -78,6 +78,9 @@ export interface PlanResolution {
   score: number;
   reason: string;
   constraintVerdict: "accept" | "caution" | "reject";
+  /** Set when the candidate only turned up in the WIDE fallback envelope, i.e.
+   *  it is a bigger-than-usual maneuver. Undefined on a normal resolution. */
+  widened?: boolean;
   /** The EXACT maneuver timing this candidate was validated with (local time to
    *  start the turn + how long to deviate + rejoin). The UI must apply the
    *  maneuver with this timing — recomputing it from the current track would
@@ -103,12 +106,33 @@ export interface PlanAdvisoryArgs {
   topN?: number;
 }
 
-const FL_DELTAS = [1000, -1000, 2000, -2000];
-// Gentlest first: the per-(target,type) dedup keeps the FIRST clearing delta,
-// so we prefer the smallest reduction that works. Larger cuts (−40/−50) cover
-// overtakes where the rear jet is much faster (e.g. a −30 leaves it catching up).
-const SPEED_DELTAS = [-10, -20, -30, -40, -50, 10, 20, 30, 40];
-const HEADING_STEPS = [10, 15, 20, 25, 30, 35, 40];
+/** The set of maneuvers the search will try. */
+interface Envelope {
+  flDeltas: number[];
+  speedDeltas: number[];
+  headingSteps: number[];
+}
+
+// Gentlest first in each list: the per-(target,type) dedup keeps the FIRST
+// clearing value, so we prefer the smallest change that works. Larger speed cuts
+// (−40/−50) cover overtakes where the rear jet is much faster (a −30 leaves it
+// catching up).
+const NORMAL_ENVELOPE: Envelope = {
+  flDeltas: [1000, -1000, 2000, -2000],
+  speedDeltas: [-10, -20, -30, -40, -50, 10, 20, 30, 40],
+  headingSteps: [10, 15, 20, 25, 30, 35, 40],
+};
+
+// Fallback envelope, tried ONLY when the normal one comes back empty. A conflict
+// is often unsolvable at ±2000 ft / 40° not because the pair can't be separated
+// but because every gentle candidate then clips a THIRD aircraft; a bigger
+// maneuver can straddle both. Bigger changes are also more disruptive, so they
+// stay out of the way until the gentle search has failed.
+const WIDE_ENVELOPE: Envelope = {
+  flDeltas: [...NORMAL_ENVELOPE.flDeltas, 3000, -3000, 4000, -4000],
+  speedDeltas: [...NORMAL_ENVELOPE.speedDeltas, -60, -70, 50, 60],
+  headingSteps: [...NORMAL_ENVELOPE.headingSteps, 45, 50, 60, 70, 80],
+};
 
 function flightFrom(id: string, traj: TrajectoryResult, offset: number): PlanFlight {
   return {
@@ -143,11 +167,69 @@ function fixesAhead(
 
 const norm360 = (d: number) => ((d % 360) + 360) % 360;
 
-/** Generate ranked, validated resolutions for a conflict. */
 /** Max track difference (deg) for a conflict to count as an in-trail OVERTAKE. */
 const OVERTAKE_MAX_TRACK_DIFF_DEG = 25;
 
+/** Tail of the flight (s) in which a LATERAL maneuver is not offered.
+ *
+ *  A heading or direct-to has to be flown AND rejoined; vectoring the aircraft
+ *  off track inside the arrival leaves no route left to intercept, so the rejoin
+ *  degenerates into a straight run at the field and the resolved path cuts
+ *  across the runway instead of flying the approach. Ten minutes covers the
+ *  STAR terminus and the approach. Speed and level fixes are unaffected — they
+ *  keep the aircraft on its route, which is what ATC uses on final anyway. */
+const APPROACH_PROTECT_SEC = 600;
+
+/** Traffic that stopped candidates from being offered: how many it blocked and
+ *  how close the blocked maneuver would have come to it. */
+export interface Blocker {
+  callsign: string;
+  /** Candidates this aircraft rejected. */
+  count: number;
+  /** Closest the tightest blocked candidate would have passed it (NM). */
+  tightestNm: number;
+}
+
+export interface PlanAdvisoryResult {
+  resolutions: PlanResolution[];
+  /** Who blocked the rejected candidates, worst offender first. Populated even
+   *  when `resolutions` is non-empty (some candidates always get blocked), but
+   *  it's only worth SHOWING when the list came back empty. */
+  blockers: Blocker[];
+  /** True when nothing cleared inside the normal envelope and the results came
+   *  from the wider fallback search — the maneuvers are bigger than usual. */
+  widened: boolean;
+}
+
+/** Generate ranked, validated resolutions for a conflict, plus the diagnostics
+ *  behind them. Runs the gentle envelope first and only falls back to the wide
+ *  one when that finds nothing, so the extra search cost is paid only on the
+ *  hard conflicts. */
+export function planResolutions(args: PlanAdvisoryArgs): PlanAdvisoryResult {
+  const blocked = new Map<string, Blocker>();
+  let resolutions = searchEnvelope(args, NORMAL_ENVELOPE, blocked);
+  let widened = false;
+  if (resolutions.length === 0) {
+    blocked.clear(); // the wide pass re-reports whoever is really in the way
+    resolutions = searchEnvelope(args, WIDE_ENVELOPE, blocked);
+    widened = resolutions.length > 0;
+    for (const r of resolutions) r.widened = true;
+  }
+  const blockers = [...blocked.values()].sort((a, b) => b.count - a.count);
+  return { resolutions, blockers, widened };
+}
+
+/** Ranked, validated resolutions for a conflict (the diagnostics are dropped —
+ *  see `planResolutions` when you need them). */
 export function generatePlanResolutions(args: PlanAdvisoryArgs): PlanResolution[] {
+  return planResolutions(args).resolutions;
+}
+
+function searchEnvelope(
+  args: PlanAdvisoryArgs,
+  env: Envelope,
+  blocked: Map<string, Blocker>,
+): PlanResolution[] {
   const { conflict, flights, trajById, simT, cfg, restricted, holdings, topN = 5 } = args;
   const need = horizontalMinimumNm(cfg) + cfg.buffer.horizontalNm;
   const out: PlanResolution[] = [];
@@ -215,6 +297,14 @@ export function generatePlanResolutions(args: PlanAdvisoryArgs): PlanResolution[
       timing: ManeuverTiming,
       trackDeg: number,
     ): PlanResolution | null => {
+      // Lateral fixes are off the table once the flight is into its arrival.
+      if (
+        (type === "heading" || type === "route") &&
+        timing.tMan + timing.deviationSec + timing.rejoinSec >
+          origDur - APPROACH_PROTECT_SEC
+      ) {
+        return null;
+      }
       const modified = applyManeuver(traj, { type, resolution }, timing.tMan, {
         deviationSec: timing.deviationSec,
         rejoinSec: timing.rejoinSec,
@@ -236,7 +326,22 @@ export function generatePlanResolutions(args: PlanAdvisoryArgs): PlanResolution[
           }
         }
       }
-      if (!clear) return null;
+      // Rejected — but WHY matters: "no fix" almost always means some third
+      // aircraft is in the way, and the controller can only act on that if we
+      // say who. Tally the offender before dropping the candidate.
+      if (!clear) {
+        if (offenderCallsign) {
+          const b = blocked.get(offenderCallsign) ?? {
+            callsign: offenderCallsign,
+            count: 0,
+            tightestNm: Infinity,
+          };
+          b.count += 1;
+          b.tightestNm = Math.min(b.tightestNm, tightestNm);
+          blocked.set(offenderCallsign, b);
+        }
+        return null;
+      }
 
       // Separation to the conflict partner (for the before→after readout).
       const sep = pairSeparation(afterFlight, intrFlight);
@@ -300,7 +405,7 @@ export function generatePlanResolutions(args: PlanAdvisoryArgs): PlanResolution[
 
     // --- Heading: smallest clearing turn each side, started kinematically ---
     for (const sign of [1, -1]) {
-      for (const deg of HEADING_STEPS) {
+      for (const deg of env.headingSteps) {
         const timing = latTimingFor(deg);
         const stateAtMan = aircraftAt(samples, timing.tMan) ?? stateNow;
         const trackBase = stateAtMan.track;
@@ -324,8 +429,8 @@ export function generatePlanResolutions(args: PlanAdvisoryArgs): PlanResolution[
       }
     }
 
-    // --- Flight level: ±1000 / ±2000, semicircular + reachable ---
-    for (const delta of FL_DELTAS) {
+    // --- Flight level: the envelope's deltas, semicircular + reachable ---
+    for (const delta of env.flDeltas) {
       const targetAlt = Math.round((curAlt + delta) / 1000) * 1000;
       if (targetAlt < 10000 || targetAlt > 43000) continue;
       if (!respectsSemicircular(targetAlt, curTrkNow)) continue;
@@ -341,7 +446,7 @@ export function generatePlanResolutions(args: PlanAdvisoryArgs): PlanResolution[
     }
 
     // --- Speed: keep the best-clearing reduce and increase ---
-    for (const delta of SPEED_DELTAS) {
+    for (const delta of env.speedDeltas) {
       const newGs = curGs + delta;
       if (newGs < 150 || newGs > 560) continue;
       const r = evaluate("speed", { gsKt: newGs }, delta, 0, 0, nowTiming, curTrkNow);

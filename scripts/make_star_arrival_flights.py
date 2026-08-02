@@ -1,11 +1,13 @@
-"""Generate a dummy flight file: 10 RNAV flights that ALL land at VTBS, timed to
+"""Generate a dummy flight file: N RNAV flights that ALL land at VTBS, timed to
 converge — an arrival-rush / STAR-merge test case (the "Open STAR" scenario).
 
 Unlike ``conflict_test_10_flights`` (deliberately RESOLVABLE enroute crossings +
 overtakes), THIS file is the arrival-merge case on purpose:
 
-  * All 10 flights are real AIP RNAV routes into ONE hub (VTBS) from different
-    origins, each with a full SID + STAR + PBN approach.
+  * Every flight is a real AIP RNAV route into ONE hub (VTBS), each with a full
+    SID + STAR + PBN approach. Only 14 airports have a usable RNAV route into
+    VTBS, so a fleet larger than that repeats the pool — several services from
+    the same city, as in a real arrival bank.
   * The AIP STARs naturally FUNNEL the traffic through shared merge fixes
     (e.g. the northern arrivals join at BLAFF → NORTA via NORT1C; the southern
     ones at LEBIM via LEBI1C) and every flight lands the SAME runway.
@@ -19,11 +21,13 @@ speed (both aircraft must reach the same runway) — that is the point of the te
 (compare with the resolvable conflict_test file).
 
 Run:  PYTHONPATH=api python scripts/make_star_arrival_flights.py [--hub VTBS] [--n 10]
+      [--stagger 30] [--out star_arrival_30_flights]
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import importlib
 import json
 import sys
@@ -54,9 +58,17 @@ OUT_DIR = mcf.OUT_DIR
 
 
 def _pick_arrivals(hub: str, n: int):
-    """N real AIP RNAV routes arriving `hub` from DISTINCT origins, each with a
-    full SID + STAR + approach. Interleaved across STAR groups so BOTH merge
-    streams (e.g. NORTA and LEBIM) get traffic."""
+    """N real AIP RNAV routes arriving `hub`, each with a full SID + STAR +
+    approach. Interleaved across STAR groups so BOTH merge streams (e.g. NORTA
+    and LEBIM) get traffic.
+
+    One route per origin is collected first (the distinct-origin pool). Only 14
+    airports have a usable RNAV route into VTBS, so a bigger fleet REPEATS the
+    pool — which is what a real arrival bank looks like anyway (several services
+    a day from the same city). The round-robin ordering keeps two flights on the
+    same route a full pool-length apart in the arrival sequence, so they land
+    minutes apart rather than sitting in-trail inside the minimum for the whole
+    route (which would be a pathological, unresolvable scan)."""
     routes = json.loads(ROUTES_PATH.read_text(encoding="utf-8"))["routes"]
     by_star: dict[str, list] = {}
     seen_adep: set[str] = set()
@@ -86,15 +98,17 @@ def _pick_arrivals(hub: str, n: int):
             + [(hub, la2, lo2)],
         })
     # Round-robin across STAR groups so each merge stream is exercised.
-    groups = [g for g in by_star.values()]
-    picked: list[dict] = []
-    while len(picked) < n and any(groups):
+    groups = [list(g) for g in by_star.values()]
+    pool: list[dict] = []
+    while any(groups):
         for g in groups:
             if g:
-                picked.append(g.pop(0))
-                if len(picked) >= n:
-                    break
-    return picked
+                pool.append(g.pop(0))
+    if not pool:
+        return []
+    # Repeat the pool (deep-copied — each flight carries its own callsign, EOBT
+    # and samples) until the fleet is the requested size.
+    return [copy.deepcopy(pool[i % len(pool)]) for i in range(n)]
 
 
 def main() -> None:
@@ -102,7 +116,9 @@ def main() -> None:
     ap.add_argument("--hub", default="VTBS", help="arrival hub ICAO (default VTBS)")
     ap.add_argument("--n", type=int, default=10, help="number of flights (default 10)")
     ap.add_argument("--stagger", type=float, default=30.0, help="seconds between successive arrivals (default 30 — a tight rush)")
+    ap.add_argument("--out", default=None, help="output basename (default star_arrival_<n>_flights)")
     args = ap.parse_args()
+    stem = args.out or f"star_arrival_{args.n}_flights"
 
     picks = _pick_arrivals(args.hub, args.n)
     if len(picks) < 2:
@@ -157,7 +173,7 @@ def main() -> None:
                 dep_rwy=p["dep_rwy"], arr_rwy=p["arr_rwy"],
             )
         )
-    csv_path = OUT_DIR / "star_arrival_10_flights.csv"
+    csv_path = OUT_DIR / f"{stem}.csv"
     csv_path.write_text("\n\n\n".join(blocks) + "\n", encoding="utf-8")
 
     # ---- GeoJSON (route line + sampled points) ----
@@ -189,7 +205,7 @@ def main() -> None:
                 },
                 "geometry": {"type": "Point", "coordinates": [round(s["lon"], 6), round(s["lat"], 6), round(s["alt_ft"] * 0.3048, 1)]},
             })
-    geojson_path = OUT_DIR / "star_arrival_10_flights.geojson"
+    geojson_path = OUT_DIR / f"{stem}.geojson"
     geojson_path.write_text(json.dumps({"type": "FeatureCollection", "features": features}), encoding="utf-8")
 
     # ---- summary + self-check: how tight is the arrival rush? ----

@@ -13,6 +13,7 @@
  */
 
 import { fmtNm } from "@/lib/cdr/format";
+import type { Blocker } from "@/lib/cdr/planAdvisory";
 import type { Maneuver } from "@/lib/cdr/types";
 
 interface Props {
@@ -22,6 +23,13 @@ interface Props {
   previewIdx: number | null;
   onPreview: (idx: number | null) => void;
   onApply: (idx: number) => void;
+  /** Traffic that rejected the candidates. With no suggestions this turns the
+   *  dead-end "no resolution" into something actionable: which aircraft is in
+   *  the way, so the controller knows what to move first. */
+  blockers?: Blocker[];
+  /** The suggestions came from the wider fallback envelope — the maneuvers are
+   *  bigger than the engine would normally propose. */
+  widened?: boolean;
 }
 
 const TYPE_LABEL: Record<Maneuver["type"], string> = {
@@ -56,17 +64,35 @@ export default function SuggestionCards({
   previewIdx,
   onPreview,
   onApply,
+  blockers,
+  widened,
 }: Props) {
   if (suggestions.length === 0) {
+    // Almost every "no resolution" is really "a third aircraft is in the way":
+    // the maneuver separates the pair fine, then clips someone else and gets
+    // dropped. Name that aircraft — resolving IT usually unblocks this pair.
+    const worst = blockers?.[0];
     return (
-      <p className="cdr-adv-empty">
-        No clear resolution found within the maneuver envelope.
-      </p>
+      <div className="cdr-adv-empty">
+        <p>No clear resolution, even with a wider maneuver envelope.</p>
+        {worst && (
+          <p className="cdr-adv-blocked">
+            Every candidate would then conflict with{" "}
+            <b>{worst.callsign}</b>
+            {Number.isFinite(worst.tightestNm) && ` (${fmtNm(worst.tightestNm)})`}
+            {blockers && blockers.length > 1 && ` +${blockers.length - 1} more`}.
+            Resolve {worst.callsign} first.
+          </p>
+        )}
+      </div>
     );
   }
   return (
     <div className="cdr-adv">
-      <p className="cdr-adv-head">Resolution advisories</p>
+      <p className="cdr-adv-head">
+        Resolution advisories
+        {widened && <span className="cdr-adv-wide">wider envelope</span>}
+      </p>
       {suggestions.map((m, i) => {
         const previewing = previewIdx === i;
         return (
