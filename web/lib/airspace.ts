@@ -48,7 +48,7 @@ function pointInPolygon(lon: number, lat: number, poly: Position[][]): boolean {
   return true;
 }
 
-function pointInMultiPolygon(
+export function pointInMultiPolygon(
   lon: number,
   lat: number,
   mp: Position[][][],
@@ -75,12 +75,14 @@ export function parseAltFt(v: unknown, isFL = false): number {
   return n ? Number(n[1]) : NaN;
 }
 
-interface Band {
+export interface Band {
   lo: number;
   hi: number;
 }
 
-function layerBand(props: Record<string, unknown>, key: SectorKey): Band {
+/** Vertical band (feet) coded on a sector feature, per its layer's schema.
+ *  Exposed so the map can colour sectors by altitude. */
+export function layerBand(props: Record<string, unknown>, key: SectorKey): Band {
   switch (key) {
     case "bacc":
       return {
@@ -269,7 +271,12 @@ export function buildAirspaceSegments(
   const segs: AirspaceSegment[] = [];
   for (const p of points) {
     const t = (new Date(p.epoch_ts).getTime() - base) / 1000;
-    const m = airspaceAt(index, p.lon, p.lat, p.altitude_ft ?? null);
+    const full = airspaceAt(index, p.lon, p.lat, p.altitude_ft ?? null);
+    // PDR (prohibited/danger/restricted) is EXCLUDED from the profile blocks:
+    // those areas are assumed CLOSED (a flight wouldn't be routed through an
+    // active one), so they must not tint or label the altitude chart as a
+    // "sector". Only the controlling ATS volume (CTR/TMA/BACC/subsector) counts.
+    const m = full.pdr ? { ...full, pdr: undefined } : full;
     const label = formatAirspace(m, "compact");
     if (cur && cur.label === label) {
       cur.t1 = t;

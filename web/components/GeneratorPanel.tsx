@@ -36,6 +36,7 @@ import {
   fetchProcedure,
   generateBatch,
   generateTrajectory,
+  ingestTrajectory,
   listProcedures,
   type GenerateInput,
 } from "@/lib/api";
@@ -67,7 +68,7 @@ import {
   fetchAipRoutes,
   type AipRoute,
 } from "@/lib/aipRoutes";
-import type { TrajectoryResult } from "@/lib/trajectory/types";
+import type { TrajectoryPoint, TrajectoryResult } from "@/lib/trajectory/types";
 
 /** How the route portion is supplied (all three kept, none removed). */
 type RouteMode = "fpl" | "build" | "csv";
@@ -79,6 +80,144 @@ interface DownloadInfo {
   gpkg: string;
   csv: string;
   geojson: string;
+}
+
+/** Great-circle distance (NM) between two WGS-84 points. */
+function nmBetween(aLat: number, aLon: number, bLat: number, bLon: number): number {
+  const R = 3440.065;
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const dLat = rad(bLat - aLat);
+  const dLon = rad(bLon - aLon);
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(rad(aLat)) * Math.cos(rad(bLat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
+}
+
+/**
+ * Turn a file-imported 4D trajectory into a ready TrajectoryResult WITHOUT
+ * regenerating — so a previously-downloaded (post-CD&R-fix) path loads exactly
+ * as saved. Derives stats + TOC/TOD from the samples and registers the path with
+ * the backend (`/api/ingest`) so its download files serve the same points.
+ */
+async function buildImportedResult(
+  rec: FlightRecord,
+): Promise<{ result: TrajectoryResult; download: DownloadInfo } | null> {
+  const traj = rec.trajectory;
+  if (!traj || traj.points.length < 2) return null;
+  const pts = traj.points;
+  const callsign = rec.callsign ?? "IMPORT";
+
+  let distanceNm = 0;
+  for (let i = 1; i < pts.length; i++) {
+    distanceNm += nmBetween(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon);
+  }
+  const t0 = Date.parse(pts[0].epoch_ts);
+  const t1 = Date.parse(pts[pts.length - 1].epoch_ts);
+  const timeMinutes =
+    Number.isFinite(t0) && Number.isFinite(t1) ? (t1 - t0) / 60000 : 0;
+  // Actual cruise altitude = the maximum STABLE altitude actually FLOWN (never
+  // the requested FL): the highest sample that isn't a lone overshoot spike
+  // (>100 ft above BOTH neighbours). The ±100 ft band below then spans the whole
+  // level segment and ignores small cruise oscillations.
+  let cruiseAltFt: number | null = null;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i].altitude_ft;
+    if (a == null || !Number.isFinite(a)) continue;
+    const prev = pts[i - 1]?.altitude_ft ?? a;
+    const next = pts[i + 1]?.altitude_ft ?? a;
+    const spike = a - prev > 100 && a - next > 100;
+    if (!spike && (cruiseAltFt == null || a > cruiseAltFt)) cruiseAltFt = a;
+  }
+  const rflFt = rec.rfl
+    ? rec.rfl * 100
+    : cruiseAltFt
+      ? Math.round(cruiseAltFt / 1000) * 1000
+      : 0;
+
+  // TOC / TOD from the ALTITUDE profile only (never phase). Per spec, with a
+  // ±100 ft tolerance around the flown cruise:
+  //   TOC = FIRST sample at/above cruiseAlt − 100 ft
+  //   TOD = LAST  sample at/above cruiseAlt − 100 ft
+  // When a real cruise exists these bracket it, so TOC index < TOD index (never
+  // reversed). When the leg never levels off (climb→descent) they collapse to
+  // one point and only TOC is shown. Robust for a leg that tops out below its
+  // requested FL and is never labelled "cruise" by phase.
+  const CRUISE_TOL_FT = 100;
+  const cruiseFloor = (cruiseAltFt ?? 0) - CRUISE_TOL_FT;
+  const atCruise = (p: TrajectoryPoint) => (p.altitude_ft ?? -Infinity) >= cruiseFloor;
+  const profilePoint = (i: number) => ({
+    lat: pts[i].lat,
+    lon: pts[i].lon,
+    altitudeFt: pts[i].altitude_ft ?? cruiseAltFt ?? 0,
+    epochTs: pts[i].epoch_ts,
+  });
+  const tocIdx = cruiseAltFt != null ? pts.findIndex(atCruise) : -1;
+  let todIdx = -1;
+  if (cruiseAltFt != null) {
+    for (let i = pts.length - 1; i >= 0; i--) {
+      if (atCruise(pts[i])) {
+        todIdx = i;
+        break;
+      }
+    }
+  }
+
+  const ing = await ingestTrajectory({
+    callsign,
+    aircraftType: rec.actype,
+    adep: rec.adep,
+    ades: rec.ades,
+    depRwy: rec.depRwy,
+    arrRwy: rec.arrRwy,
+    sid: rec.sid,
+    star: rec.star,
+    approach: rec.approach,
+    routeStr: rec.route ?? rec.routes?.[0],
+    rfl: rec.rfl,
+    points: pts,
+    // Carry the recovered fixes so a re-download keeps the waypoint column.
+    fixes: traj.route.map((w) => ({ ident: w.ident, lat: w.lat, lon: w.lon })),
+  });
+  const flightKey =
+    ing?.flightKey ??
+    `${callsign}_${pts[0].epoch_ts.replace(/[^0-9A-Za-z]/g, "").slice(0, 13)}`;
+
+  const result: TrajectoryResult = {
+    route: traj.route,
+    points: pts,
+    stats: {
+      waypointCount: traj.route.length,
+      pointCount: pts.length,
+      distanceNm: Math.round(distanceNm * 10) / 10,
+      timeMinutes: Math.round(timeMinutes * 10) / 10,
+      cruiseAltFt,
+      rflFt,
+    },
+    profile: {
+      toc: tocIdx >= 0 ? profilePoint(tocIdx) : null,
+      // Only a distinct, LATER sample counts as TOD — never before/equal TOC.
+      tod: todIdx > tocIdx ? profilePoint(todIdx) : null,
+    },
+    validation: null,
+    meta: {
+      flightKey,
+      callsign,
+      aircraftType: rec.actype ?? "",
+      adep: rec.adep ?? "",
+      ades: rec.ades ?? "",
+      eobtIso: pts[0].epoch_ts,
+    },
+  };
+  const download: DownloadInfo = {
+    callsign,
+    flightKey,
+    route: rec.route ?? rec.routes?.[0] ?? "(imported)",
+    gpkg: ing?.downloads.gpkg ?? "",
+    csv: ing?.downloads.csv ?? "",
+    geojson: ing?.downloads.geojson ?? "",
+  };
+  return { result, download };
 }
 
 /** One queued route + its terminal procedures = one generated flight.
@@ -1418,6 +1557,38 @@ function GeneratorPanel({
       setPlans(drafts);
       loadDraft(drafts[0]);
       setActiveId(drafts[0].id);
+
+      // If EVERY imported flight carries a full 4D path (this tool's trajectory
+      // export, e.g. a post-CD&R-fix download), load it AS-IS — show the saved
+      // trajectory without regenerating, so an applied fix survives the round
+      // trip. The plan tabs are still populated for reference/editing.
+      const allHaveTraj =
+        all.length > 0 &&
+        all.every((r) => r.trajectory && r.trajectory.points.length >= 2);
+      if (allHaveTraj) {
+        setBusy(true);
+        try {
+          const built = (await Promise.all(all.map(buildImportedResult))).filter(
+            (x): x is { result: TrajectoryResult; download: DownloadInfo } =>
+              x != null,
+          );
+          setFlightQuery("");
+          setRouteQuery("");
+          setResults(built.map((b) => b.result));
+          setDlList(built.map((b) => b.download));
+          setWarnings([]);
+          setError(null);
+          setFileNote(
+            `Loaded ${built.length} flight${built.length === 1 ? "" : "s"} as-is ` +
+              `from file (no regeneration) — the saved trajectory is shown. ` +
+              `Edit a tab and Generate to recompute.`,
+          );
+        } finally {
+          setBusy(false);
+        }
+        return;
+      }
+
       setFileNote(
         all.length > 1
           ? `Imported ${all.length} flights into tabs — edit any, then "Generate all"`

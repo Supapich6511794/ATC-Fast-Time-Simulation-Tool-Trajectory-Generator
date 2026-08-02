@@ -61,6 +61,7 @@ from trajectory_sim.navdata import (
 )
 from trajectory_sim.airspace import sector_columns
 from trajectory_sim.output import (
+    assign_waypoint_column,
     build_trajectory_gdf,
     write_csv,
     write_geopackage,
@@ -596,6 +597,9 @@ def cat62_reference() -> dict[str, object]:
 _SID_SOURCE = _DATA / "sid" / "sid_waypoint_thai.geojson"
 _STAR_SOURCE = _DATA / "star" / "star_waypoint.geojson"
 _APPROACH_SOURCE = _DATA / "pbn" / "pbn_waypoint.geojson"
+# ILS / conventional approaches — a fallback so aerodromes with no PBN approach
+# (e.g. VTUN → ILS "I24") are still landable. Merged into the approach layer.
+_ILS_SOURCE = _DATA / "ils" / "ils_wp.geojson"
 
 
 @lru_cache(maxsize=1)
@@ -605,6 +609,7 @@ def _navdata() -> NavData:
         sid_source=_SID_SOURCE if _SID_SOURCE.is_file() else None,
         star_source=_STAR_SOURCE if _STAR_SOURCE.is_file() else None,
         approach_source=_APPROACH_SOURCE if _APPROACH_SOURCE.is_file() else None,
+        ils_source=_ILS_SOURCE if _ILS_SOURCE.is_file() else None,
     )
 
 
@@ -1283,13 +1288,16 @@ _MIN_CLOSING_LEG_NM = 0.05
 
 
 def _approach_runway(name: str | None) -> str | None:
-    """Landing runway of a PBN approach, from its name: ``R09-Z`` -> ``RW09``.
+    """Landing runway of an approach, from its name. Handles PBN (``R09-Z`` ->
+    ``RW09``) and ILS/conventional (``I24`` -> ``RW24``, ``I23LY`` -> ``RW23L``):
+    a single-letter procedure prefix (R/I/D/L/N/V/S/Q…) then the runway number,
+    optional side and variant suffix.
 
-    A PBN approach is named for the runway it lands on, and that — not the
-    STAR's runway — is the runway the aircraft touches down on. They can differ:
-    a STAR resolved to RW01 followed by the R02L approach lands on 02L.
+    An approach is named for the runway it lands on, and that — not the STAR's
+    runway — is the runway the aircraft touches down on. They can differ: a STAR
+    resolved to RW01 followed by the R02L approach lands on 02L.
     """
-    m = re.match(r"^R(\d{2}[LCR]?)(?:-.*)?$", (name or "").strip().upper())
+    m = re.match(r"^[A-Z](\d{2}[LCR]?)(?:[-A-Z].*)?$", (name or "").strip().upper())
     return f"RW{m.group(1)}" if m else None
 
 
@@ -2148,6 +2156,10 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
                 approach=terminal.get("approach"),
                 dep_rwy=terminal.get("dep_rwy"),
                 arr_rwy=terminal.get("arr_rwy"),
+                # The filed route fixes (SID + enroute + STAR + approach, with
+                # idents) → the `waypoint` marker column. Taken from route_pts,
+                # not the smoothed path_pts (whose idents are sparse).
+                route_fixes=[(ident, la, lo) for ident, la, lo in route_pts],
             )
             # Snapshot the schedule actually flown *before* restore, so the
             # reported speed_schedule reflects this flight's overrides (not
@@ -2518,6 +2530,197 @@ def download(flight_key: str, ext: str) -> FileResponse:
     return FileResponse(
         path, media_type=_MEDIA[ext], filename=f"{flight_key}.{ext}"
     )
+
+
+class RecachePoint(BaseModel):
+    """One trajectory sample for a re-cache (the client's modified path)."""
+
+    lat: float
+    lon: float
+    epoch_ts: str  # ISO 8601 (…Z or +00:00)
+    altitude_ft: float | None = None
+    gs_kt: float | None = None
+    tas_kt: float | None = None
+    track_deg: float | None = None
+    phase: str = "cruise"
+
+
+class RecacheRequest(BaseModel):
+    """POST body for ``/api/recache`` — replace a flight's exported points with a
+    client-modified path (e.g. after a CD&R resolution is applied), so every
+    download format serves the POST-fix trajectory instead of the original."""
+
+    flight_key: str
+    points: list[RecachePoint]
+
+
+def _points_to_gdf(
+    flight_key: str,
+    const: dict[str, object],
+    points: list,
+    fixes: "list[tuple[str, float, float]] | None" = None,
+) -> object:
+    """Build the export GeoDataFrame (with sector + TOC/TOD event + waypoint
+    columns) from a list of trajectory samples and a dict of constant per-flight
+    columns. Shared by ``/api/recache`` (const + fixes reused from the cached gdf)
+    and ``/api/ingest`` (const supplied by the caller for a file loaded as-is)."""
+    import geopandas as gpd  # already loaded via trajectory_sim.output
+    from shapely.geometry import Point
+
+    records = []
+    for p in points:
+        alt = p.altitude_ft
+        geom = (
+            Point(p.lon, p.lat, (alt or 0.0) * 0.3048)
+            if alt is not None
+            else Point(p.lon, p.lat)
+        )
+        records.append(
+            {
+                "flight_key": flight_key,
+                "callsign": const.get("callsign", ""),
+                "aircraft_type": const.get("aircraft_type", ""),
+                "adep": const.get("adep", ""),
+                "ades": const.get("ades", ""),
+                "dep_rwy": const.get("dep_rwy", ""),
+                "arr_rwy": const.get("arr_rwy", ""),
+                "sid": const.get("sid", ""),
+                "star": const.get("star", ""),
+                "approach": const.get("approach", ""),
+                "epoch_ts": datetime.fromisoformat(p.epoch_ts.replace("Z", "+00:00")),
+                "altitude_ft": alt,
+                "tas_kt": p.tas_kt,
+                "gs_kt": p.gs_kt,
+                "track_deg": p.track_deg,
+                "phase": p.phase,
+                "geometry": geom,
+            }
+        )
+    gdf = gpd.GeoDataFrame(records, crs="EPSG:4326", geometry="geometry")
+
+    # Re-derive the same per-point enrichment the generate path adds, so the
+    # download still records the airspace sector + TOC/TOD events.
+    gdf["sector"] = sector_columns(
+        [float(g.x) for g in gdf.geometry],
+        [float(g.y) for g in gdf.geometry],
+        [None if a is None or pd.isna(a) else float(a) for a in gdf["altitude_ft"]],
+    )
+    events = [""] * len(gdf)
+    prev = None
+    for i, cur in enumerate(list(gdf["phase"])):
+        if prev == "climb" and cur == "cruise":
+            events[i] = "TOC"
+        if prev == "cruise" and cur == "descent":
+            events[i] = "TOC/TOD" if events[i] == "TOC" else "TOD"
+        prev = cur
+    gdf["event"] = events
+    return assign_waypoint_column(gdf, fixes or [])
+
+
+@app.post("/api/recache")
+def recache(req: RecacheRequest) -> dict[str, object]:
+    """Rebuild a flight's download export from a client-supplied (modified) point
+    list. Reuses the ORIGINAL cache entry's route string, RFL, route feature and
+    constant columns (callsign / SID / STAR / approach / runways) — only the
+    per-point path is swapped — so headers and the filed route line are
+    preserved while the flown samples reflect the applied fix.
+    """
+    if "/" in req.flight_key or "\\" in req.flight_key or ".." in req.flight_key:
+        raise HTTPException(400, "Invalid flight key.")
+    bundle = _EXPORT_CACHE.get(req.flight_key)
+    if bundle is None:
+        raise HTTPException(404, "Unknown flight key — generate it first.")
+    if len(req.points) < 2:
+        raise HTTPException(400, "Need at least 2 points.")
+
+    orig = bundle["gdf"]
+    row0 = orig.iloc[0]
+    const = {
+        c: (row0[c] if c in orig.columns else "")
+        for c in ("callsign", "aircraft_type", "adep", "ades",
+                  "dep_rwy", "arr_rwy", "sid", "star", "approach")
+    }
+    # Reuse the original export's fix markers so the post-fix download keeps its
+    # `waypoint` column (re-anchored to the nearest modified sample).
+    fixes: list[tuple[str, float, float]] = []
+    if "waypoint" in orig.columns:
+        for wp, g in zip(orig["waypoint"], orig.geometry):
+            if isinstance(wp, str) and wp:
+                fixes.append((wp, float(g.y), float(g.x)))
+    gdf = _points_to_gdf(req.flight_key, const, req.points, fixes)
+    _cache_export(
+        req.flight_key, gdf, bundle["route_str"], bundle["rfl"], bundle["route_feature"]
+    )
+    return {"ok": True, "flight_key": req.flight_key, "points": len(req.points)}
+
+
+class IngestFix(BaseModel):
+    """One named route fix recovered from an imported file's `waypoint` column."""
+
+    ident: str
+    lat: float
+    lon: float
+
+
+class IngestRequest(BaseModel):
+    """POST body for ``/api/ingest`` — register a trajectory loaded AS-IS from an
+    uploaded file (e.g. a previously-downloaded, post-fix export) as a cached
+    export, so its download files serve exactly the imported path without any
+    regeneration. Unlike ``/api/recache`` it does NOT require a prior cache
+    entry — all per-flight metadata is supplied here."""
+
+    callsign: str
+    aircraft_type: str = ""
+    adep: str = ""
+    ades: str = ""
+    dep_rwy: str = ""
+    arr_rwy: str = ""
+    sid: str = ""
+    star: str = ""
+    approach: str = ""
+    route_str: str = ""
+    rfl: float = 0.0
+    flight_key: str | None = None
+    points: list[RecachePoint]
+    # Named fixes (from the imported file's `waypoint` column) so a re-download
+    # keeps the waypoint marker column.
+    fixes: list[IngestFix] = Field(default_factory=list)
+
+
+@app.post("/api/ingest")
+def ingest(req: IngestRequest) -> dict[str, object]:
+    """Cache an imported trajectory as a downloadable export (no regeneration)."""
+    if len(req.points) < 2:
+        raise HTTPException(400, "Need at least 2 points.")
+    # Derive a stable flight_key (same scheme as generate: callsign_<EOBT>) when
+    # the caller doesn't supply one.
+    fk = req.flight_key
+    if not fk:
+        t0 = datetime.fromisoformat(req.points[0].epoch_ts.replace("Z", "+00:00"))
+        fk = f"{req.callsign}_{t0.strftime('%Y%m%dT%H%MZ')}"
+    fk = "".join(ch for ch in fk if ch.isalnum() or ch in "_-")
+    if not fk:
+        raise HTTPException(400, "Could not derive a flight key.")
+
+    const = {
+        "callsign": req.callsign, "aircraft_type": req.aircraft_type,
+        "adep": req.adep, "ades": req.ades, "dep_rwy": req.dep_rwy,
+        "arr_rwy": req.arr_rwy, "sid": req.sid, "star": req.star,
+        "approach": req.approach,
+    }
+    fixes = [(f.ident, f.lat, f.lon) for f in req.fixes if f.ident]
+    gdf = _points_to_gdf(fk, const, req.points, fixes)
+    _cache_export(fk, gdf, req.route_str, req.rfl, None)
+    return {
+        "ok": True,
+        "flight_key": fk,
+        "points": len(req.points),
+        "downloads": {
+            "gpkg": f"/api/download/{fk}.gpkg",
+            "csv": f"/api/download/{fk}.csv",
+            "geojson": f"/api/download/{fk}.geojson",
+        },
+    }
 
 
 class _ZipFileSpec(BaseModel):

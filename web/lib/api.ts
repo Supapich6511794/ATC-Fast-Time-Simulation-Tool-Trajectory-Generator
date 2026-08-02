@@ -538,3 +538,130 @@ export async function fetchApproachEntries(
     return empty;
   }
 }
+
+/**
+ * Re-cache a flight's download export from a CLIENT-modified trajectory (e.g.
+ * after a CD&R resolution is applied), so the download files served by
+ * /api/download/{flight_key}.{ext} (and the zip/combined bundles) reflect the
+ * POST-fix path instead of the original. Best-effort: a failure (offline API,
+ * flight never generated server-side) just leaves the previous export in place.
+ */
+/**
+ * Register a trajectory loaded AS-IS from an uploaded file (a previously
+ * downloaded, possibly post-CD&R-fix export) as a server-cached export, so its
+ * download files serve exactly the imported path — no regeneration. Returns the
+ * server flight_key + absolute download URLs, or null on failure (offline API).
+ */
+export async function ingestTrajectory(input: {
+  callsign: string;
+  aircraftType?: string;
+  adep?: string;
+  ades?: string;
+  depRwy?: string;
+  arrRwy?: string;
+  sid?: string;
+  star?: string;
+  approach?: string;
+  routeStr?: string;
+  rfl?: number;
+  points: {
+    lat: number;
+    lon: number;
+    epoch_ts: string;
+    altitude_ft: number | null;
+    gs_kt: number;
+    tas_kt?: number | null;
+    track_deg: number;
+    phase: string;
+  }[];
+  /** Named route fixes recovered from the file's `waypoint` column. */
+  fixes?: { ident: string; lat: number; lon: number }[];
+}): Promise<{
+  flightKey: string;
+  downloads: { gpkg: string; csv: string; geojson: string };
+} | null> {
+  try {
+    const res = await fetch(`${API_BASE}/api/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        callsign: input.callsign,
+        aircraft_type: input.aircraftType ?? "",
+        adep: input.adep ?? "",
+        ades: input.ades ?? "",
+        dep_rwy: input.depRwy ?? "",
+        arr_rwy: input.arrRwy ?? "",
+        sid: input.sid ?? "",
+        star: input.star ?? "",
+        approach: input.approach ?? "",
+        route_str: input.routeStr ?? "",
+        rfl: input.rfl ?? 0,
+        points: input.points.map((p) => ({
+          lat: p.lat,
+          lon: p.lon,
+          epoch_ts: p.epoch_ts,
+          altitude_ft: p.altitude_ft,
+          gs_kt: p.gs_kt,
+          tas_kt: p.tas_kt ?? null,
+          track_deg: p.track_deg,
+          phase: p.phase,
+        })),
+        fixes: (input.fixes ?? []).map((f) => ({
+          ident: f.ident,
+          lat: f.lat,
+          lon: f.lon,
+        })),
+      }),
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    const abs = (u: string) => `${API_BASE}${u}`;
+    return {
+      flightKey: String(j.flight_key),
+      downloads: {
+        gpkg: abs(j.downloads.gpkg),
+        csv: abs(j.downloads.csv),
+        geojson: abs(j.downloads.geojson),
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function recacheTrajectory(
+  flightKey: string,
+  points: {
+    lat: number;
+    lon: number;
+    epoch_ts: string;
+    altitude_ft: number | null;
+    gs_kt: number;
+    tas_kt?: number | null;
+    track_deg: number;
+    phase: string;
+  }[],
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/api/recache`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        flight_key: flightKey,
+        points: points.map((p) => ({
+          lat: p.lat,
+          lon: p.lon,
+          epoch_ts: p.epoch_ts,
+          altitude_ft: p.altitude_ft,
+          gs_kt: p.gs_kt,
+          tas_kt: p.tas_kt ?? null,
+          track_deg: p.track_deg,
+          phase: p.phase,
+        })),
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}

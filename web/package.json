@@ -13,7 +13,9 @@
     "build": "node ../scripts/next.mjs build",
     "start": "node ../scripts/next.mjs start",
     "clean": "node -e \"const fs=require('fs');for(const d of ['.next','.next-build'])fs.rmSync(d,{recursive:true,force:true});console.log('cleaned')\"",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "leaflet": "1.9.4",
@@ -29,6 +31,7 @@
     "@types/react": "18.3.3",
     "@types/react-dom": "18.3.0",
     "concurrently": "9.1.0",
-    "typescript": "5.5.3"
+    "typescript": "5.5.3",
+    "vitest": "^2.1.9"
   }
 }

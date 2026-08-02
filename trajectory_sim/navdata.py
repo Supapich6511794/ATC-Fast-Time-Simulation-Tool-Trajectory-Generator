@@ -48,6 +48,7 @@ class NavData:
         sid_source: str | Path | None = None,
         star_source: str | Path | None = None,
         approach_source: str | Path | None = None,
+        ils_source: str | Path | None = None,
         procedure_schema: "SidStarSchema | None" = None,
     ) -> None:
         """Load the waypoints layer and/or SID/STAR/approach procedure sources.
@@ -91,6 +92,10 @@ class NavData:
         self._sid_source = Path(sid_source) if sid_source else None
         self._star_source = Path(star_source) if star_source else None
         self._approach_source = Path(approach_source) if approach_source else None
+        # ILS / conventional approaches — merged INTO the approach layer as a
+        # fallback so aerodromes with no published PBN approach (e.g. VTUN) are
+        # still landable. Same DFD waypoint schema as the PBN source.
+        self._ils_source = Path(ils_source) if ils_source else None
         self._proc_loaded = False
         # (airport, ProcedureType, procedure_name) -> list[_RawLeg], ordered
         # by seqno. Built on first procedure lookup.
@@ -249,7 +254,37 @@ class NavData:
         }[proc_type]
         try:
             if explicit is not None:
-                return gpd.read_file(explicit)
+                gdf = gpd.read_file(explicit)
+                # Fold the ILS/conventional approaches in as a FALLBACK: keep
+                # every PBN approach as-is and add only ILS procedures that PBN
+                # doesn't already publish (the ILS file also carries RNAV-named
+                # approaches, so a blind concat would duplicate/clash them). PBN
+                # wins; ILS fills the gaps (e.g. VTUN, which has no PBN approach).
+                if (
+                    proc_type is ProcedureType.APPROACH
+                    and self._ils_source is not None
+                    and self._ils_source.is_file()
+                ):
+                    try:
+                        ils = gpd.read_file(self._ils_source)
+                        ac = self._proc_schema.airport
+                        pc = self._proc_schema.procedure
+                        if ils is not None and len(ils) and ac in gdf.columns:
+                            have = set(
+                                zip(gdf[ac].astype(str), gdf[pc].astype(str))
+                            )
+                            mask = [
+                                (str(a), str(p)) not in have
+                                for a, p in zip(ils[ac], ils[pc])
+                            ]
+                            ils = ils[mask]
+                            if len(ils):
+                                gdf = gpd.GeoDataFrame(
+                                    pd.concat([gdf, ils], ignore_index=True)
+                                )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.info("ILS approach source not available: %s", exc)
+                return gdf
             if self._gpkg_path is not None:
                 return gpd.read_file(self._gpkg_path, layer=layer)
         except Exception as exc:  # noqa: BLE001 — fiona raises various types
