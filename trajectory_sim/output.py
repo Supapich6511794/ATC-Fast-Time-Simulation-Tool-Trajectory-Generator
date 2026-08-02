@@ -7,6 +7,7 @@ writes to disk.
 
 from __future__ import annotations
 
+import math
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +21,35 @@ from trajectory_sim.performance import (
     VerticalProfile,
     runway_threshold_elevation_ft,
 )
+
+
+def assign_waypoint_column(
+    gdf: "gpd.GeoDataFrame", fixes: "list[tuple[str, float, float]]"
+) -> "gpd.GeoDataFrame":
+    """Add/replace a ``waypoint`` column: each named route fix labels the sample
+    NEAREST to it (a fix-passing marker, like ``event``'s TOC/TOD); every other
+    row is blank. Shared by the generate path and the re-cache/ingest builders so
+    the exported CSV/GeoPackage/GeoJSON records which filed fix each pass is at."""
+    n = len(gdf)
+    col = [""] * n
+    if fixes and n:
+        xs = [float(g.x) for g in gdf.geometry]
+        ys = [float(g.y) for g in gdf.geometry]
+        for ident, flat, flon in fixes:
+            if not ident:
+                continue
+            cosl = math.cos(math.radians(flat))
+            best_i, best_d = -1, 1e30
+            for i in range(n):
+                dlat = ys[i] - flat
+                dlon = (xs[i] - flon) * cosl
+                d = dlat * dlat + dlon * dlon
+                if d < best_d:
+                    best_d, best_i = d, i
+            if best_i >= 0:
+                col[best_i] = str(ident)
+    gdf["waypoint"] = col
+    return gdf
 
 
 def build_trajectory_gdf(
@@ -43,6 +73,7 @@ def build_trajectory_gdf(
     dep_rwy: str | None = None,
     arr_rwy: str | None = None,
     fix_indices: "list[int] | None" = None,
+    route_fixes: "list[tuple[str, float, float]] | None" = None,
 ) -> gpd.GeoDataFrame:
     """Build a trajectory GeoDataFrame from a sequence of waypoints.
 
@@ -101,6 +132,13 @@ def build_trajectory_gdf(
         "approach": (approach or "").strip(),
     }
 
+    # Named route fixes → (ident, lat, lon), for the `waypoint` marker column.
+    # These are the FILED fixes (with idents), matched to the nearest sample by
+    # position — independent of the sampled/smoothed path length.
+    fixes: list[tuple[str, float, float]] = [
+        (ident, lat, lon) for (ident, lat, lon) in (route_fixes or []) if ident
+    ]
+
     # Phase 3 — variable speed timeline. Only kicks in when an RFL is
     # supplied (otherwise we have no altitude profile, hence no phase
     # boundaries and no per-phase ground speed).
@@ -141,7 +179,9 @@ def build_trajectory_gdf(
             }
             for s in timeline.samples
         ]
-        return gpd.GeoDataFrame(records, crs="EPSG:4326", geometry="geometry")
+        return assign_waypoint_column(
+            gpd.GeoDataFrame(records, crs="EPSG:4326", geometry="geometry"), fixes
+        )
 
     # Legacy constant-ground-speed path — kept for callers that opt out
     # of the variable timeline by passing ``variable_speed=False`` or
@@ -214,7 +254,9 @@ def build_trajectory_gdf(
             "geometry": geom,
         })
 
-    return gpd.GeoDataFrame(records, crs="EPSG:4326", geometry="geometry")
+    return assign_waypoint_column(
+        gpd.GeoDataFrame(records, crs="EPSG:4326", geometry="geometry"), fixes
+    )
 
 
 def write_geopackage(
@@ -382,9 +424,11 @@ def write_csv(
         # when the file is opened under cp1252/cp874 (Thai Windows
         # default), making "———" render as 'â€"â€"â€"'.
         f.write("\n---\n\n")
+        # `Waypoint` is appended LAST so the leading columns keep their fixed
+        # positions (the re-importer reads Lat/Lon/… by index).
         f.write(
             "Timestamp,UTC,Callsign,Lat,Lon,Altitude,Speed,Direction,"
-            "Phase,Sector,Event\n"
+            "Phase,Sector,Event,Waypoint\n"
         )
 
         # Per-point enrichment columns — absent on gdfs built before they
@@ -402,6 +446,7 @@ def write_csv(
         phases = _col("phase")
         sectors = _col("sector")
         events = _col("event")
+        waypoints = _col("waypoint")
 
         for i, (geom, ts, alt, gs, trk) in enumerate(
             zip(
@@ -425,5 +470,5 @@ def write_csv(
                 f"{epoch},{utc_iso},{callsign},"
                 f"{geom.y:.6f},{geom.x:.6f},"
                 f"{alt_val},{gs_val},{trk_val},"
-                f"{phases[i]},{_quote(sectors[i])},{events[i]}\n"
+                f"{phases[i]},{_quote(sectors[i])},{events[i]},{waypoints[i]}\n"
             )

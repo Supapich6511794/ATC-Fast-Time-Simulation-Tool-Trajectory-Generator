@@ -293,11 +293,14 @@ export default function AltitudeProfile({
   const planePos = altAt(samples, planeT);
   const planeLeft = (x(planeT) / vbW) * 100;
   const planeTop = (y(planePos.alt) / h) * 100;
-  // Material "flight" icon points north; +90° faces it along travel (east),
-  // and a ± nudge lifts the nose in climb / drops it in descent.
+  // Material "flight" icon points north; +90° faces it along travel (east).
+  // A real aircraft's nose stays near-level even in climb/descent (pitch
+  // attitude only ~8-10° climbing, ~3° descending) — nothing like the steep
+  // slope the time-compressed chart line shows. So keep the plane essentially
+  // horizontal, with only a slight nose-up/down hint of the phase.
   const planeRot =
     90 +
-    (planePos.phase === "climb" ? -28 : planePos.phase === "descent" ? 28 : 0);
+    (planePos.phase === "climb" ? -6 : planePos.phase === "descent" ? 4 : 0);
   // Airspace caption text — only while this route is being animated.
   const airsText = simT != null ? formatAirspace(airspace, "compact") : "";
 

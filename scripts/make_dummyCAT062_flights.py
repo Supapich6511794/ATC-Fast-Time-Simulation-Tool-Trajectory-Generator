@@ -135,6 +135,38 @@ def _pick_approach(ades: str, arr_rwy: str) -> str:
     opts = APPROACHES.get(ades, {}).get(arr_rwy, [])
     return opts[0] if opts else ""
 
+
+def _ang_diff(a: float, b: float) -> float:
+    """Smallest absolute angle (deg, 0-180) between two headings."""
+    d = abs(a - b) % 360.0
+    return d if d <= 180.0 else 360.0 - d
+
+
+def _pick_arrival_fallback(ades: str, inbound_brg: float) -> tuple[str, str]:
+    """Pick a landing runway + PBN approach for a flight that has no STAR (or
+    whose STAR runway carries no coded approach).
+
+    Without an arrival runway the sample descends straight onto the aerodrome
+    point and slices across the field on final. Here we choose, among the
+    aerodrome's published-approach runways, the one whose heading best lines up
+    with the inbound track (``inbound_brg`` = bearing of the last route leg into
+    the field), then take that runway's first approach — matching the web
+    picker's order. Returns ("", "") when the aerodrome has no coded PBN
+    approach at all (e.g. VTPT, VTUN)."""
+    byr = APPROACHES.get(ades) or {}
+    best: tuple[float, str, str] | None = None
+    for rwy, names in byr.items():
+        if not names:
+            continue
+        m = re.match(r"^RW(\d{2})", rwy)
+        if not m:
+            continue
+        hdg = (int(m.group(1)) % 36) * 10.0
+        cand = (_ang_diff(hdg, inbound_brg), rwy, names[0])
+        if best is None or cand < best:
+            best = cand
+    return (best[1], best[2]) if best else ("", "")
+
 # Feed the same elevation tables the engine uses so the dummy's cosmetic
 # samples (and any later round-trip through the engine) share one source of
 # truth: runway-threshold elevations, with the AIP field elevation as the
@@ -418,9 +450,23 @@ def main() -> None:
         dep_rwy = _expand_runway(adep, _rwy(SID_RWY, adep, sid)) if sid else ""
         arr_rwy = _expand_runway(ades, _rwy(STAR_RWY, ades, star)) if star else ""
         # PBN instrument approach that lands on the chosen arrival runway (so
-        # the imported flight pre-fills the Approach picker). Needs a resolved
-        # arrival runway — no runway, no coded approach to attach.
+        # the imported flight pre-fills the Approach picker).
         approach = _pick_approach(ades, arr_rwy)
+        # When the STAR path yields no coded approach — no STAR at all, or a STAR
+        # whose runway has no PBN procedure — the flight would otherwise land
+        # without an arrival runway and cut straight across the field on final.
+        # Fall back to the published approach whose runway best lines up with the
+        # inbound track, and adopt its runway as the arrival runway so the sample
+        # (and any engine round-trip) descends onto a real threshold instead.
+        if not approach:
+            if last0 and last0 in WAYPOINTS:
+                fla, flo = WAYPOINTS[last0]
+                inbound = bearing(fla, flo, la2, lo2)
+            else:
+                inbound = bearing(la1, lo1, la2, lo2)
+            fb_rwy, fb_app = _pick_arrival_fallback(ades, inbound)
+            if fb_app:
+                arr_rwy, approach = fb_rwy, fb_app
         # Snap the picked level to a CAB-compliant cruising level for the
         # ADEP->ADES track (odd FL eastbound 000-179, even FL westbound
         # 180-359; CAB Rules of the Air §2.4.2), capped to the level this

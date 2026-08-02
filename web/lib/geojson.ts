@@ -24,6 +24,7 @@ const STAR_LINES_URL = "/data/star/star_line.geojson";
 const SID_WPTS_URL = "/data/sid/sid_waypoint_thai.geojson";
 const STAR_WPTS_URL = "/data/star/star_waypoint.geojson";
 const PBN_WPTS_URL = "/data/pbn/pbn_waypoint.geojson";
+const ILS_WPTS_URL = "/data/ils/ils_wp.geojson";
 
 // `no-cache` (revalidate), not `force-cache` (serve stale forever): the bundled
 // geojson is edited in place when a procedure is corrected, so a hard-cached
@@ -51,41 +52,70 @@ export function fetchPbnWaypoints(): Promise<ProcedureWaypointCollection> {
   return fetchJson<ProcedureWaypointCollection>(PBN_WPTS_URL);
 }
 
+/** Fetch ILS / conventional approach waypoints — the fallback approach source
+ *  for aerodromes with no published PBN approach (e.g. VTUN → ILS "I24"). */
+export function fetchIlsWaypoints(): Promise<ProcedureWaypointCollection> {
+  return fetchJson<ProcedureWaypointCollection>(ILS_WPTS_URL);
+}
+
 // Memoised airport -> { runway -> [approach names] }, derived from the PBN
 // approach GeoJSON. PBN procedures are named `R{rwy}` or `R{rwy}-{variant}`
 // (e.g. R18, R09-Y, R09-Z), so the runway is parsed from the name; approaches
 // are grouped under the "RW{rwy}" the Arrival-RWY picker uses. Built once.
 let _approachIndex: Promise<Map<string, Record<string, string[]>>> | null = null;
 
-/** Parse the landing runway (as an "RW…" ident) out of a PBN approach name.
- *  `R09-Y`/`R09-Z` -> `RW09`, `R18` -> `RW18`, `R02L` -> `RW02L`. */
+/** Parse the landing runway (as an "RW…" ident) from an approach name. Handles
+ *  PBN (`R09-Y`/`R18`/`R02L`) and ILS/conventional (`I24`/`I23LY`/`D05`/`L23`):
+ *  a single-letter procedure prefix (R/I/D/L/N/V/S/Q…) then the runway number,
+ *  optional side (L/C/R) and variant suffix. `null` for non-runway names
+ *  (e.g. `VORA`, `NDBA`). */
 function runwayOfApproach(name: string): string | null {
-  const m = /^R(\d{2}[LCR]?)(?:-.*)?$/.exec(name.trim().toUpperCase());
+  const m = /^[A-Z](\d{2}[LCR]?)(?:[-A-Z].*)?$/.exec(name.trim().toUpperCase());
   return m ? `RW${m[1]}` : null;
+}
+
+function indexApproachNames(
+  fc: ProcedureWaypointCollection,
+): Map<string, Record<string, string[]>> {
+  const m = new Map<string, Map<string, Set<string>>>();
+  for (const f of fc.features) {
+    const a = f.properties.airport_identifier;
+    const n = f.properties.procedure_identifier;
+    if (!a || !n) continue;
+    const rwy = runwayOfApproach(n);
+    if (!rwy) continue;
+    let byRwy = m.get(a);
+    if (!byRwy) m.set(a, (byRwy = new Map()));
+    let names = byRwy.get(rwy);
+    if (!names) byRwy.set(rwy, (names = new Set()));
+    names.add(n);
+  }
+  const out = new Map<string, Record<string, string[]>>();
+  for (const [a, byRwy] of m) {
+    const rec: Record<string, string[]> = {};
+    for (const [rwy, names] of byRwy) rec[rwy] = [...names].sort();
+    out.set(a, rec);
+  }
+  return out;
 }
 
 function buildApproachIndex(): Promise<Map<string, Record<string, string[]>>> {
   if (!_approachIndex) {
-    _approachIndex = fetchPbnWaypoints()
-      .then((fc) => {
-        // airport -> runway -> Set(approach names)
-        const m = new Map<string, Map<string, Set<string>>>();
-        for (const f of fc.features) {
-          const a = f.properties.airport_identifier;
-          const n = f.properties.procedure_identifier;
-          if (!a || !n) continue;
-          const rwy = runwayOfApproach(n);
-          if (!rwy) continue;
-          let byRwy = m.get(a);
-          if (!byRwy) m.set(a, (byRwy = new Map()));
-          let names = byRwy.get(rwy);
-          if (!names) byRwy.set(rwy, (names = new Set()));
-          names.add(n);
-        }
+    _approachIndex = Promise.all([fetchPbnWaypoints(), fetchIlsWaypoints()])
+      .then(([pbn, ils]) => {
+        const pbnIdx = indexApproachNames(pbn);
+        const ilsIdx = indexApproachNames(ils);
+        // PREFER PBN; fall back to ILS/conventional ONLY for a runway that has
+        // no published PBN approach (so VTUN, all-ILS, is fully usable while a
+        // PBN aerodrome keeps its RNAV approaches).
         const out = new Map<string, Record<string, string[]>>();
-        for (const [a, byRwy] of m) {
-          const rec: Record<string, string[]> = {};
-          for (const [rwy, names] of byRwy) rec[rwy] = [...names].sort();
+        const airports = new Set([...pbnIdx.keys(), ...ilsIdx.keys()]);
+        for (const a of airports) {
+          const rec: Record<string, string[]> = { ...(pbnIdx.get(a) ?? {}) };
+          const ilsRec = ilsIdx.get(a) ?? {};
+          for (const [rwy, names] of Object.entries(ilsRec)) {
+            if (!rec[rwy] || rec[rwy].length === 0) rec[rwy] = names;
+          }
           out.set(a, rec);
         }
         return out;
@@ -437,6 +467,8 @@ export async function fetchFir(): Promise<FirCollection> {
  * `name` (PDR uses `ident`). `color` styles the outline/fill; `label` names
  * the toggle.
  */
+// Per-zone legend colours — the single source of truth for the Airspace menu
+// swatches, the map's "by zone" sector fill and the altitude-profile blocks.
 export const SECTORS = [
   { key: "bacc", label: "BACC Sectors", file: "bacc_geo", color: "#22d3ee" },
   { key: "subsector", label: "BACC Subsectors", file: "bacc_subsector", color: "#818cf8" },

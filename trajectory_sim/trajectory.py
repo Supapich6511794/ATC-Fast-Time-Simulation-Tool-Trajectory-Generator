@@ -124,6 +124,32 @@ def _leg_distances_nm(
     ]
 
 
+#: A leg shorter than this (NM) is treated as degenerate: a duplicated fix
+#: (e.g. the runway threshold repeated as the ADES anchor, or a turn-arc vertex
+#: sitting on top of its fix). pyproj's forward azimuth between two coincident
+#: points is 0°, so a sample landing on such a leg would otherwise report a due-
+#: north heading — the touchdown point darting to 000° instead of the runway
+#: track. Roughly 2 mm, far below any real leg.
+_MIN_LEG_NM = 1e-6
+
+
+def _leg_track_deg(
+    waypoints: list[tuple[float, float]],
+    leg_distances_nm: list[float],
+    seg_index: int,
+) -> float:
+    """Forward azimuth (deg) of leg ``seg_index`` — or of the most recent leg
+    before it that actually covers ground, when that leg is degenerate — so a
+    zero-length leg never collapses a sample's heading to 0°."""
+    for i in range(min(seg_index, len(leg_distances_nm) - 1), -1, -1):
+        if leg_distances_nm[i] > _MIN_LEG_NM:
+            lat_a, lon_a = waypoints[i]
+            lat_b, lon_b = waypoints[i + 1]
+            az, _, _ = _GEOD.inv(lon_a, lat_a, lon_b, lat_b)
+            return az % 360.0
+    return 0.0
+
+
 def _locate_along_route(
     waypoints: list[tuple[float, float]],
     leg_distances_nm: list[float],
@@ -133,39 +159,46 @@ def _locate_along_route(
 
     Walks the leg list to find which great-circle segment the distance
     falls in, then asks pyproj to step that segment forward by the
-    residual distance.
+    residual distance. The heading is taken from the last leg that actually
+    covers ground (see :func:`_leg_track_deg`), so a trailing duplicated fix
+    doesn't snap the point's track to due north.
     """
     if distance_nm <= 0:
         lat0, lon0 = waypoints[0]
-        lat1, lon1 = waypoints[1]
-        fwd_az, _, _ = _GEOD.inv(lon0, lat0, lon1, lat1)
-        return lat0, lon0, fwd_az % 360.0
+        return lat0, lon0, _leg_track_deg(waypoints, leg_distances_nm, 0)
 
     total = sum(leg_distances_nm)
     if distance_nm >= total:
-        # Past the last waypoint — return the endpoint with the inbound
-        # track of the final leg.
-        lat_a, lon_a = waypoints[-2]
+        # Past the last waypoint — return the endpoint with the inbound track
+        # of the final ground-covering leg.
         lat_b, lon_b = waypoints[-1]
-        fwd_az, _, _ = _GEOD.inv(lon_a, lat_a, lon_b, lat_b)
-        return lat_b, lon_b, fwd_az % 360.0
+        return lat_b, lon_b, _leg_track_deg(
+            waypoints, leg_distances_nm, len(leg_distances_nm) - 1
+        )
 
     consumed = 0.0
     for i, leg_nm in enumerate(leg_distances_nm):
         if distance_nm <= consumed + leg_nm:
-            residual_nm = distance_nm - consumed
+            track = _leg_track_deg(waypoints, leg_distances_nm, i)
             lat_a, lon_a = waypoints[i]
+            if leg_nm <= _MIN_LEG_NM:
+                # Degenerate leg: the point is the fix itself; its heading is
+                # carried over from the last real leg (track, above).
+                return lat_a, lon_a, track
+            residual_nm = distance_nm - consumed
             lat_b, lon_b = waypoints[i + 1]
             fwd_az, _, _ = _GEOD.inv(lon_a, lat_a, lon_b, lat_b)
             lon, lat, _ = _GEOD.fwd(
                 lon_a, lat_a, fwd_az, residual_nm * _M_PER_NM
             )
-            return lat, lon, fwd_az % 360.0
+            return lat, lon, track
         consumed += leg_nm
 
     # Safety net — should be unreachable given the early return above.
     lat_b, lon_b = waypoints[-1]
-    return lat_b, lon_b, 0.0
+    return lat_b, lon_b, _leg_track_deg(
+        waypoints, leg_distances_nm, len(leg_distances_nm) - 1
+    )
 
 
 def build_flight_timeline(

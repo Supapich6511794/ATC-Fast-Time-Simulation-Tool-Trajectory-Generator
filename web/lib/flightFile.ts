@@ -23,6 +23,17 @@
  *            can't be rebuilt from sampled points; re-type it if needed).
  */
 
+import type { RouteWaypoint, TrajectoryPoint } from "@/lib/trajectory/types";
+
+/** A full 4D trajectory recovered from an uploaded export, so it can be shown
+ *  AS-IS (no regeneration). Present only when the file carried per-point samples
+ *  (this tool's trajectory CSV / GeoJSON export); absent for plain plan files. */
+export interface ImportedTrajectory {
+  points: TrajectoryPoint[];
+  /** Filed-route waypoints with coordinates (GeoJSON only; empty for CSV). */
+  route: RouteWaypoint[];
+}
+
 export interface FlightRecord {
   callsign?: string;
   actype?: string;
@@ -48,6 +59,16 @@ export interface FlightRecord {
    *  re-import rebuilds a single plan with a route queue rather than one
    *  tab per route. */
   routes?: string[];
+  /** Full 4D samples when the upload was a trajectory export — lets the app
+   *  load a previously-downloaded (e.g. post-CD&R-fix) path exactly as saved,
+   *  bypassing regeneration. */
+  trajectory?: ImportedTrajectory;
+}
+
+/** Coerce a phase string to the Phase union (defaults to cruise). */
+function asPhase(raw: unknown): TrajectoryPoint["phase"] {
+  const s = String(raw ?? "").toLowerCase();
+  return s === "climb" || s === "descent" ? s : "cruise";
 }
 
 /** Normalise an EOBT to the datetime-local input format. */
@@ -208,10 +229,65 @@ function parseTrajectoryBlock(block: string): FlightRecord | null {
 
   // Skip a block that yielded nothing identifiable.
   if (!route && !adep && !ades && !actype) return null;
+  const trajectory = pointsFromCsvBlock(block);
   return {
     callsign, actype, adep, ades, eobt, rfl, route, sid, star, approach,
     depRwy, arrRwy,
+    ...(trajectory ? { trajectory } : {}),
   };
+}
+
+/** Split one CSV line, honouring double-quoted fields (the Sector column may be
+ *  a comma-joined list wrapped in quotes). */
+function splitCsvLine(line: string): string[] {
+  return (line.match(/("([^"]*)"|[^,]*)(,|$)/g) ?? [])
+    .slice(0, -1)
+    .map((c) => c.replace(/,$/, "").replace(/^"|"$/g, "").trim());
+}
+
+/** Recover the 4D samples from the `Timestamp,UTC,Callsign,Lat,Lon,Altitude,
+ *  Speed,Direction,Phase,Sector,Event,Waypoint` data table of one trajectory-CSV
+ *  block, plus the filed route from the `Waypoint` marker column. Returns
+ *  undefined when there aren't enough rows to form a path (a plan-only block). */
+function pointsFromCsvBlock(block: string): ImportedTrajectory | undefined {
+  const hdrIdx = block.search(/^Timestamp,UTC,Callsign/m);
+  if (hdrIdx === -1) return undefined;
+  const lines = block.slice(hdrIdx).split("\n");
+  const header = splitCsvLine(lines[0]).map((h) => h.toLowerCase());
+  const wpIdx = header.indexOf("waypoint");
+  const points: TrajectoryPoint[] = [];
+  const route: RouteWaypoint[] = [];
+  for (const line of lines.slice(1)) {
+    if (!line.includes(",")) continue;
+    const c = splitCsvLine(line);
+    if (c.length < 9) continue;
+    const lat = Number(c[3]);
+    const lon = Number(c[4]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    const alt = Number(c[5]);
+    const gs = Number(c[6]);
+    const trk = Number(c[7]);
+    // Column 1 is the ISO-8601 UTC timestamp ("…Z"); fall back to epoch seconds.
+    const iso = c[1];
+    const epoch_ts =
+      iso && /\d{4}-\d{2}-\d{2}/.test(iso)
+        ? (normEobtIso(iso) as string)
+        : new Date(Number(c[0]) * 1000).toISOString();
+    points.push({
+      lat,
+      lon,
+      epoch_ts,
+      altitude_ft: Number.isFinite(alt) ? alt : null,
+      gs_kt: Number.isFinite(gs) ? gs : 0,
+      track_deg: Number.isFinite(trk) ? trk : 0,
+      phase: asPhase(c[8]),
+    });
+    // A named fix marker → a route waypoint at this sample's position, so the
+    // re-imported flight's summary lists the same waypoints as when generated.
+    const wp = wpIdx >= 0 ? c[wpIdx] : "";
+    if (wp) route.push({ ident: wp, lat, lon });
+  }
+  return points.length >= 2 ? { points, route } : undefined;
 }
 
 /** True when the text is one of the tool's trajectory CSV exports rather
@@ -232,7 +308,7 @@ function isTrajectoryCsv(text: string): boolean {
  */
 type GeoFeature = {
   properties?: Record<string, unknown>;
-  geometry?: { type?: string };
+  geometry?: { type?: string; coordinates?: unknown };
 };
 
 /** Recover one FlightRecord from the features of a single flight. */
@@ -245,6 +321,9 @@ function recordFromFeatures(
   let routeProps: Record<string, unknown> | undefined;
   let firstPointProps: Record<string, unknown> | undefined;
   const idents: string[] = [];
+  const samples: TrajectoryPoint[] = [];
+  const wpMarks: { ident: string; lat: number; lon: number; ts: string }[] = [];
+  let routeLine: RouteWaypoint[] = [];
 
   for (const f of features) {
     const p = f.properties ?? {};
@@ -256,9 +335,27 @@ function recordFromFeatures(
     ) {
       if (!explicitRoute) explicitRoute = String(p["route"]).trim();
       routeProps = p;
+      routeLine = routeWaypointsFrom(f);
       continue;
     }
-    // (2) Ordered waypoint idents (plain navdata geojson).
+    // (2) A trajectory sample point (this tool's per-point export): a Point with
+    //     a timestamp. Collected for an as-is (no-regen) load.
+    if (f.geometry?.type === "Point" && p["epoch_ts"] != null) {
+      const coords = f.geometry.coordinates;
+      const pt = trajectoryPointFrom(p, Array.isArray(coords) ? coords : []);
+      if (pt) {
+        samples.push(pt);
+        // A named fix marker (the export's `waypoint` column) → a route
+        // waypoint at this sample, so the re-import's summary lists them.
+        const wp = p["waypoint"];
+        if (typeof wp === "string" && wp.trim()) {
+          wpMarks.push({ ident: wp.trim(), lat: pt.lat, lon: pt.lon, ts: pt.epoch_ts });
+        }
+        if (!firstPointProps) firstPointProps = p;
+        continue;
+      }
+    }
+    // (3) Ordered waypoint idents (plain navdata geojson).
     const id =
       p["waypoint_identifier"] ??
       p["ident"] ??
@@ -268,7 +365,7 @@ function recordFromFeatures(
     if (id != null && String(id).trim()) {
       idents.push(String(id).trim());
     } else if (!firstPointProps) {
-      firstPointProps = p; // (3) trajectory sample → metadata fallback
+      firstPointProps = p; // (4) trajectory sample → metadata fallback
     }
   }
 
@@ -284,7 +381,71 @@ function recordFromFeatures(
     base.route ??
     meta.route;
 
-  return { ...meta, ...base, route };
+  let trajectory: ImportedTrajectory | undefined;
+  if (samples.length >= 2) {
+    samples.sort((a, b) => a.epoch_ts.localeCompare(b.epoch_ts));
+    // Prefer the `waypoint` markers (named fixes along the flown path, in order)
+    // for the route; fall back to the filed LineString when none are present.
+    wpMarks.sort((a, b) => a.ts.localeCompare(b.ts));
+    const wpRoute: RouteWaypoint[] = wpMarks.map((m) => ({
+      ident: m.ident,
+      lat: m.lat,
+      lon: m.lon,
+    }));
+    trajectory = { points: samples, route: wpRoute.length ? wpRoute : routeLine };
+  }
+
+  return { ...meta, ...base, route, ...(trajectory ? { trajectory } : {}) };
+}
+
+/** One trajectory sample from a GeoJSON Point feature (`coords` = [lon,lat,alt_m]). */
+function trajectoryPointFrom(
+  p: Record<string, unknown>,
+  coords: unknown[],
+): TrajectoryPoint | null {
+  const lon = Number(coords[0] ?? p["lon"]);
+  const lat = Number(coords[1] ?? p["lat"]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  const ts = p["epoch_ts"];
+  const epoch_ts = normEobtIso(ts);
+  if (!epoch_ts) return null;
+  const alt = numOrUndef(p["altitude_ft"]);
+  return {
+    lat,
+    lon,
+    epoch_ts,
+    altitude_ft: alt ?? null,
+    gs_kt: numOrUndef(p["gs_kt"]) ?? 0,
+    tas_kt: numOrUndef(p["tas_kt"]) ?? null,
+    track_deg: numOrUndef(p["track_deg"]) ?? 0,
+    phase: asPhase(p["phase"]),
+  };
+}
+
+/** Filed-route waypoints from a route LineString feature: zip its coordinates
+ *  with the `idents` property (falls back to blank idents when absent). */
+function routeWaypointsFrom(f: GeoFeature): RouteWaypoint[] {
+  const coords = f.geometry?.coordinates;
+  if (!Array.isArray(coords)) return [];
+  const idents = f.properties?.["idents"];
+  const names = Array.isArray(idents) ? idents.map((x) => String(x)) : [];
+  const out: RouteWaypoint[] = [];
+  coords.forEach((c, i) => {
+    if (Array.isArray(c) && Number.isFinite(Number(c[0])) && Number.isFinite(Number(c[1]))) {
+      out.push({ ident: names[i] ?? "", lat: Number(c[1]), lon: Number(c[0]) });
+    }
+  });
+  return out;
+}
+
+/** Normalise a timestamp to strict ISO-8601 so `new Date()` parses it
+ *  identically across browsers. The GeoJSON export uses a space between the
+ *  date and time ("2025-12-23 00:00:00+00:00"); turn it into a "T". */
+function normEobtIso(raw: unknown): string | undefined {
+  if (raw == null) return undefined;
+  const s = String(raw).trim();
+  if (!s) return undefined;
+  return s.replace(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})/, "$1T$2");
 }
 
 function parseGeojson(obj: unknown): FlightRecord[] {

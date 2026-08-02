@@ -125,25 +125,43 @@ export default function RouteResultTabs({
   const { stats, profile, meta } = trajectory;
 
   // Per-waypoint readout for the summary table: snap each route fix to its
-  // nearest emitted trajectory sample for that fix's FL / speed / phase.
+  // nearest emitted trajectory sample for FL / speed, and DERIVE the phase from
+  // the LOCAL VERTICAL RATE at that sample — climbing / level / descending —
+  // never the sample's own phase label. So the PHASE column always matches the
+  // FL column even when the samples carry an unreliable phase (e.g. a flight
+  // whose samples are all tagged "climb", or with no TOC/TOD computed).
   const waypointRows = useMemo(() => {
     const pts = trajectory.points;
     if (pts.length === 0) return [];
+    const tMs = pts.map((p) => new Date(p.epoch_ts).getTime());
+    const LEVEL_FPM = 300; // |rate| below this = level (cruise)
+    // Vertical rate (fpm) around sample `idx`, over a ~±20 s window for stability.
+    const rateAt = (idx: number): number => {
+      const lo = Math.max(0, idx - 3);
+      const hi = Math.min(pts.length - 1, idx + 3);
+      const a0 = pts[lo].altitude_ft;
+      const a1 = pts[hi].altitude_ft;
+      if (a0 == null || a1 == null) return 0;
+      const dtMin = (tMs[hi] - tMs[lo]) / 60000;
+      return dtMin > 0 ? (a1 - a0) / dtMin : 0;
+    };
     return trajectory.route.map((wp) => {
-      let best = pts[0];
+      let bestI = 0;
       let bestD = Infinity;
-      for (const p of pts) {
-        const d = (p.lat - wp.lat) ** 2 + (p.lon - wp.lon) ** 2;
+      for (let i = 0; i < pts.length; i++) {
+        const d = (pts[i].lat - wp.lat) ** 2 + (pts[i].lon - wp.lon) ** 2;
         if (d < bestD) {
           bestD = d;
-          best = p;
+          bestI = i;
         }
       }
+      const r = rateAt(bestI);
+      const phase: Phase = r > LEVEL_FPM ? "climb" : r < -LEVEL_FPM ? "descent" : "cruise";
       return {
         ident: wp.ident,
-        altFt: best.altitude_ft,
-        gsKt: best.gs_kt,
-        phase: best.phase as Phase,
+        altFt: pts[bestI].altitude_ft,
+        gsKt: pts[bestI].gs_kt,
+        phase,
       };
     });
   }, [trajectory.route, trajectory.points]);

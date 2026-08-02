@@ -24,6 +24,10 @@ interface Props {
    *  standalone Airspace dropdown. */
   sectorsOn: Record<SectorKey, boolean>;
   onToggleSector: (key: SectorKey) => void;
+  /** How sector polygons are coloured: by zone (legend), distinct per sector,
+   *  or by altitude. */
+  sectorColorMode: "zone" | "sector" | "altitude";
+  onSectorColorMode: (mode: "zone" | "sector" | "altitude") => void;
   /** Open the tabbed Layer Options panel (Airports / Airway / SID / …) —
    *  the Layers button goes straight there (no intermediate dropdown). */
   onOpenLayers: () => void;
@@ -43,6 +47,8 @@ function MapOverlay({
   onBasemap,
   sectorsOn,
   onToggleSector,
+  sectorColorMode,
+  onSectorColorMode,
   onOpenLayers,
   onToggleSidebar,
   onZoomIn,
@@ -84,6 +90,8 @@ function MapOverlay({
             onOpenChange={(o) => setOpenMenu(o ? "airspace" : null)}
             sectorsOn={sectorsOn}
             onToggleSector={onToggleSector}
+            colorMode={sectorColorMode}
+            onColorMode={onSectorColorMode}
           />
 
           <select

@@ -29,7 +29,11 @@ from trajectory_sim.performance import (
     tas_to_mach,
     target_tas_kt,
 )
-from trajectory_sim.trajectory import build_flight_timeline
+from trajectory_sim.trajectory import (
+    _leg_distances_nm,
+    _locate_along_route,
+    build_flight_timeline,
+)
 
 # VTBS → VTSP — both endpoints, no enroute waypoints.
 _VTBS = (13.6811, 100.7475)
@@ -239,3 +243,30 @@ def test_timeline_endpoints_anchored_to_route() -> None:
     assert haversine_distance(
         tl.samples[-1].lat, tl.samples[-1].lon, *_VTSP
     ) < 1.0
+
+
+def test_endpoint_track_carries_over_a_trailing_zero_length_leg() -> None:
+    """A path whose final fix is duplicated (e.g. the runway threshold repeated
+    as the ADES anchor) has a zero-length last leg. The endpoint sample's track
+    must carry the real inbound heading, not snap to due north — the touchdown
+    heading darting to 000° was the VTSP R27 "cut" artifact."""
+    # Two legs heading due east (~090°) then a coincident final point.
+    waypoints = [(8.0, 98.0), (8.0, 98.1), (8.0, 98.1)]
+    legs = _leg_distances_nm(waypoints)
+    assert legs[-1] == pytest.approx(0.0, abs=1e-9)
+    total = sum(legs)
+    # A sample AT the end and one PAST it both report the eastbound heading.
+    for d in (total, total + 5.0):
+        _lat, _lon, track = _locate_along_route(waypoints, legs, d)
+        assert track == pytest.approx(90.0, abs=1.0)
+
+
+def test_sample_on_a_mid_route_zero_length_leg_keeps_prior_heading() -> None:
+    """A duplicated fix mid-sequence must not zero the heading either: a sample
+    landing on it keeps the last ground-covering leg's track."""
+    waypoints = [(8.0, 98.0), (8.0, 98.1), (8.0, 98.1), (8.0, 98.2)]
+    legs = _leg_distances_nm(waypoints)
+    total = sum(legs)
+    # Land exactly on the duplicated fix (end of legs[0], on the zero leg[1]).
+    _lat, _lon, track = _locate_along_route(waypoints, legs, legs[0])
+    assert track == pytest.approx(90.0, abs=1.0)

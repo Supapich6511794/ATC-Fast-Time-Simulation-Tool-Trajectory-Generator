@@ -222,13 +222,13 @@ def test_gdf_terminal_cols_blank_by_default() -> None:
 
 _DATA_COLS = [
     "timestamp", "utc", "callsign", "lat", "lon", "alt", "speed", "dir",
-    "phase", "sector", "event",
+    "phase", "sector", "event", "waypoint",
 ]
 
 
 def _read_csv_data(path: Path) -> pd.DataFrame:
     """Read the data section of the ATC-format CSV (skips the metadata
-    header block; the 11 column names line up 1-to-1 with the 11 fields
+    header block; the 12 column names line up 1-to-1 with the 12 fields
     of each data row)."""
     with path.open() as f:
         lines = f.readlines()

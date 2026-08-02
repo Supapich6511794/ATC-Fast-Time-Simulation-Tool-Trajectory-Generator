@@ -57,8 +57,21 @@ import {
   type SectorCollection,
   type SectorKey,
 } from "@/lib/geojson";
-import type { ProcLayerState } from "@/components/LayerOptions";
+import { layerBand } from "@/lib/airspace";
+import type {
+  HoldingLayerState,
+  ProcLayerState,
+} from "@/components/LayerOptions";
+import {
+  holdingRacetrack,
+  HOLDING_CATEGORY_LABEL,
+  type HoldingCategory,
+  type HoldingPattern,
+} from "@/lib/holdings";
 import type { ProcedureDto } from "@/lib/api";
+import ConflictLayer from "@/components/cdr/ConflictLayer";
+import type { TrackedConflict } from "@/lib/cdr/lifecycle";
+import type { CdrAircraft } from "@/lib/cdr/types";
 
 interface Props {
   basemap: Basemap;
@@ -80,6 +93,9 @@ interface Props {
   /** Airspace sector overlays (BACC / subsector / CTR / TMA / PDR), each
    *  present only when its layer is toggled on. */
   sectors?: Partial<Record<SectorKey, SectorCollection | null>>;
+  /** How sector polygons are filled: "zone" = the per-zone legend colour,
+   *  "sector" = a distinct colour per sector, "altitude" = by the coded band. */
+  sectorColorMode?: "zone" | "sector" | "altitude";
   /** SID/STAR procedure tracks + fixes (full collections; visibility,
    *  filtering and styling are driven by `sid`/`star`). */
   sidLines?: ProcedureLineCollection | null;
@@ -92,6 +108,10 @@ interface Props {
   ilsWpts?: ProcedureWaypointCollection | null;
   /** Layer Options state per procedure layer (routes/waypoints on,
    *  airport+procedure filters, opacity, line thickness). */
+  /** Every holding pattern in the FIR + the Holding tab's layer state. Null
+   *  until the layer is first switched on (the data is fetched lazily). */
+  holdings?: HoldingPattern[] | null;
+  holding?: HoldingLayerState;
   sid?: ProcLayerState;
   star?: ProcLayerState;
   pbn?: ProcLayerState;
@@ -175,6 +195,26 @@ interface Props {
    *  drive zoom buttons rendered outside MapContainer (e.g. the +/− on
    *  the floating top-right toolbar). */
   onMapReady?: (map: L.Map | null) => void;
+  /** CD&R overlay: active conflicts + the traffic snapshot they were computed
+   *  from, the selected conflict (drawn with full predicted tracks + CPA), and
+   *  a flightKey→callsign resolver for labels. Undefined when CD&R is off. */
+  cdrConflicts?: TrackedConflict[];
+  cdrTraffic?: CdrAircraft[];
+  cdrSelectedId?: string | null;
+  cdrNameOf?: (id: string) => string;
+  /** A resolution being previewed: the modified trajectory's path, drawn dashed
+   *  and uncommitted. Null when nothing is previewed. */
+  cdrPreview?: { lat: number; lon: number }[] | null;
+  /** An APPLIED auto-resolve route the user opened for inspection: the flight's
+   *  post-fix path, drawn dashed with a pulsing green glow. Null when none. */
+  cdrResolvedRoute?: { lat: number; lon: number }[] | null;
+  /** The same flight's PRE-fix path, drawn faint and dashed underneath so the
+   *  maneuver reads as "was → is". Null when none. */
+  cdrOriginalRoute?: { lat: number; lon: number }[] | null;
+  /** Hover labels for the two lines above ("BKP102 · Climb FL160 — from FL140"
+   *  / "BKP102 · original route"). Omitted = no tooltip. */
+  cdrResolvedLabel?: string | null;
+  cdrOriginalLabel?: string | null;
 }
 
 /** Captures the Leaflet map instance (only obtainable from inside a
@@ -231,6 +271,17 @@ const PREVIEW_COLORS = [
 
 const DEFAULT_CENTER: L.LatLngExpression = [11.0, 99.5];
 const DEFAULT_ZOOM = 6;
+
+/** Holding-pattern colours, one per kind, so the four read apart on the map. */
+const HOLDING_COLORS: Record<HoldingCategory, string> = {
+  published: "#22d3ee",
+  missed: "#fb7185",
+  enroute: "#a78bfa",
+  hilpt: "#facc15",
+};
+/** Below this zoom the holding fix labels are hidden — there are ~240 of them
+ *  and they turn the whole FIR into a wall of text when zoomed out. */
+const HOLDING_LABEL_ZOOM = 7;
 
 /** Per-layer colours: SID green, STAR magenta, PBN amber, ILS red. */
 const SID_COLOR = "#34d399";
@@ -617,6 +668,32 @@ function altitudeColor(altFt: number | null): string {
   return `hsl(${hue.toFixed(0)}, 92%, ${light.toFixed(0)}%)`;
 }
 
+/** A stable, distinct colour for a named sector — the sector's identity hashed
+ *  onto the hue wheel, so 2S / 3S / 4S / each CTR-TMA-PDR read apart. */
+function sectorHashColor(name: string): string {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360}, 70%, 58%)`;
+}
+
+/** Warm→cool colour for a normalised altitude fraction (0 = lowest band, 1 =
+ *  highest) — same yellow→cyan feel as the trajectory legend. */
+function altBandColor(f: number): string {
+  const x = Math.max(0, Math.min(1, f));
+  return `hsl(${(45 + x * 165).toFixed(0)}, 88%, ${(62 - x * 24).toFixed(0)}%)`;
+}
+
+/** Mid altitude (ft) of a sector feature's coded band; NaN when it has none. */
+function sectorMidFt(props: Record<string, unknown>, key: SectorKey): number {
+  const b = layerBand(props, key);
+  const lo = Number.isFinite(b.lo) ? b.lo : NaN;
+  const hi = Number.isFinite(b.hi) ? b.hi : NaN;
+  if (!Number.isFinite(lo) && !Number.isFinite(hi)) return NaN;
+  if (!Number.isFinite(hi)) return lo; // open top
+  if (!Number.isFinite(lo)) return hi;
+  return (lo + hi) / 2;
+}
+
 /**
  * A dot with a much larger *invisible* hit circle on top, so hovering a
  * waypoint is easy without enlarging the visible marker. The visible
@@ -704,6 +781,7 @@ export default function LeafletMap({
   waypoints,
   fir,
   sectors,
+  sectorColorMode = "zone",
   sidLines,
   starLines,
   sidWpts,
@@ -712,6 +790,8 @@ export default function LeafletMap({
   pbnWpts,
   ilsLines,
   ilsWpts,
+  holdings,
+  holding,
   sid,
   star,
   pbn,
@@ -740,6 +820,15 @@ export default function LeafletMap({
   onAircraftClick,
   onAircraftHover,
   onMapReady,
+  cdrConflicts,
+  cdrTraffic,
+  cdrSelectedId,
+  cdrNameOf,
+  cdrPreview,
+  cdrResolvedRoute,
+  cdrOriginalRoute,
+  cdrResolvedLabel,
+  cdrOriginalLabel,
 }: Props) {
   const tiles = BASEMAPS[basemap];
 
@@ -928,18 +1017,56 @@ export default function LeafletMap({
       SECTORS.map((s) => {
         const data = sectors?.[s.key];
         if (!data) return null;
+        // Altitude mode: normalise each sector's mid-band across THIS layer's
+        // own min→max, so bands spread over the whole warm→cool palette (BACC
+        // mids cluster tightly, so absolute colouring looks uniform — relative
+        // colouring makes low/high sectors clearly different).
+        let loMid = Infinity;
+        let hiMid = -Infinity;
+        if (sectorColorMode === "altitude") {
+          for (const f of data.features) {
+            const mid = sectorMidFt(
+              (f.properties ?? {}) as Record<string, unknown>,
+              s.key,
+            );
+            if (Number.isFinite(mid)) {
+              if (mid < loMid) loMid = mid;
+              if (mid > hiMid) hiMid = mid;
+            }
+          }
+        }
+        const span = hiMid - loMid;
+        const colorFor = (props: Record<string, unknown>): string => {
+          if (sectorColorMode === "altitude") {
+            const mid = sectorMidFt(props, s.key);
+            if (!Number.isFinite(mid)) return s.color; // no coded band
+            const f = span > 1 ? (mid - loMid) / span : 0.5;
+            return altBandColor(f);
+          }
+          if (sectorColorMode === "sector") {
+            const name = String(props.name ?? props.ident ?? "").trim();
+            return name ? sectorHashColor(name) : s.color;
+          }
+          return s.color; // "zone" → the zone's legend colour
+        };
         return (
           <GeoJSON
-            key={`sector-${s.key}-${data.features.length}`}
+            // Include the colour mode in the key so a mode switch restyles.
+            key={`sector-${s.key}-${sectorColorMode}-${data.features.length}`}
             data={data}
-            style={() => ({
-              color: s.color,
-              weight: 1,
-              opacity: 0.8,
-              fillColor: s.color,
-              fillOpacity: 0.06,
-              dashArray: "8 4",
-            })}
+            style={(feature) => {
+              const c = colorFor(
+                (feature?.properties ?? {}) as Record<string, unknown>,
+              );
+              return {
+                color: c,
+                weight: 1,
+                opacity: 0.85,
+                fillColor: c,
+                fillOpacity: sectorColorMode === "altitude" ? 0.22 : 0.1,
+                dashArray: "8 4",
+              };
+            }}
             onEachFeature={(f, layer) => {
               const p = (f.properties ?? {}) as Record<string, unknown>;
               const name = p.name ?? p.ident ?? s.label;
@@ -948,7 +1075,7 @@ export default function LeafletMap({
           />
         );
       }).filter(Boolean),
-    [sectors],
+    [sectors, sectorColorMode],
   );
 
   // SID/STAR procedure tracks. Filtered by the Layer Options airport +
@@ -1041,6 +1168,98 @@ export default function LeafletMap({
       })
       .filter(Boolean);
   }, [gates, zoom]);
+
+  // Holding patterns — the racetrack outline of every coded hold, drawn to
+  // scale from its inbound course, turn direction and leg time. Filtered by the
+  // Holding tab's four category checkboxes plus the airport / fix dropdowns;
+  // the fix ident only labels once zoomed in (there are ~240 across the FIR).
+  const holdingLayer = useMemo(() => {
+    if (!holdings || !holding?.patterns) return null;
+    const labelled = holding.labels && zoom >= HOLDING_LABEL_ZOOM;
+    return holdings
+      .filter(
+        (h) =>
+          holding.categories.has(h.category) &&
+          (holding.airports.size === 0 || holding.airports.has(h.region)) &&
+          (holding.holdings.size === 0 || holding.holdings.has(h.ident)),
+      )
+      .map((h, i) => {
+        const color = HOLDING_COLORS[h.category];
+        const leg =
+          h.legLengthNm != null
+            ? `${h.legLengthNm} NM leg`
+            : `${h.legTimeMin ?? 1} min leg`;
+        const alt =
+          h.minAltFt != null && h.maxAltFt != null
+            ? `${h.minAltFt}–${h.maxAltFt} ft`
+            : h.minAltFt != null
+              ? `≥${h.minAltFt} ft`
+              : h.maxAltFt != null
+                ? `≤${h.maxAltFt} ft`
+                : null;
+        return (
+          <Fragment key={`hold-${h.ident}-${h.category}-${i}`}>
+            <Polyline
+              positions={holdingRacetrack(h)}
+              pathOptions={{
+                color,
+                weight: holding.thickness,
+                opacity: holding.opacity,
+                fillColor: color,
+                fillOpacity: 0.06,
+              }}
+            >
+              <Tooltip direction="top" sticky className="holding-tip">
+                <span className="holding-tip-id">{h.ident}</span>
+                <span className={`holding-tip-cat ${h.category}`}>
+                  {HOLDING_CATEGORY_LABEL[h.category]}
+                </span>
+                <span className="holding-tip-sub">
+                  {h.region}
+                  {h.procedure ? ` · ${h.procedure}` : ""}
+                </span>
+                <span className="holding-tip-sub">
+                  INB {Math.round(h.inboundCourseDeg)}° ·{" "}
+                  {h.turn === "R" ? "right" : "left"} turns · {leg}
+                  {h.speedKt != null ? ` · ${h.speedKt} kt` : ""}
+                </span>
+                {alt && <span className="holding-tip-sub">{alt}</span>}
+              </Tooltip>
+            </Polyline>
+            <CircleMarker
+              center={[h.lat, h.lon]}
+              radius={2.5}
+              interactive={false}
+              pathOptions={{
+                color,
+                weight: 1,
+                fillColor: color,
+                fillOpacity: 0.9,
+                opacity: holding.opacity,
+              }}
+            >
+              {labelled && (
+                <Tooltip
+                  permanent
+                  direction="right"
+                  offset={[6, 0]}
+                  className="holding-label"
+                >
+                  {h.ident}
+                </Tooltip>
+              )}
+            </CircleMarker>
+          </Fragment>
+        );
+      });
+  }, [holdings, holding, zoom]);
+
+  // A dedicated SVG renderer for the CD&R route overlays (previewed fix +
+  // applied auto-resolve route). The map uses `preferCanvas`, so by default
+  // Polylines have no SVG element for CSS to target (no glow/blink). Giving just
+  // these layers an SVG renderer restores CSS animation on them while leaving
+  // all other traffic on the fast canvas.
+  const cdrRouteRenderer = useMemo(() => L.svg({ padding: 0.5 }), []);
 
   // Highlighted procedure (from the lookup form / map click): a bright
   // yellow glow path through its fixes, with permanent ident labels.
@@ -1513,6 +1732,7 @@ export default function LeafletMap({
       {starWptLayer}
       {pbnWptLayer}
       {ilsWptLayer}
+      {holdingLayer}
       {gateLayer}
       {runwayLayer}
       {airportLayer}
@@ -1692,6 +1912,115 @@ export default function LeafletMap({
           </Fragment>
         );
       })}
+
+      {/* CD&R resolution preview — the modified (uncommitted) path, dashed with
+          a pulsing cyan glow (cyan = proposed, green = already applied). Same
+          SVG-renderer trick as the applied route below, since the canvas
+          renderer can't run the CSS keyframes. */}
+      {cdrPreview && cdrPreview.length >= 2 && (
+        <>
+          <Polyline
+            positions={cdrPreview.map((p) => [p.lat, p.lon])}
+            interactive={false}
+            pathOptions={{
+              renderer: cdrRouteRenderer,
+              color: "#38bdf8",
+              weight: 8,
+              opacity: 0.4,
+              lineCap: "round",
+              className: "cdr-preview-route-glow",
+            }}
+          />
+          <Polyline
+            positions={cdrPreview.map((p) => [p.lat, p.lon])}
+            interactive={false}
+            pathOptions={{
+              renderer: cdrRouteRenderer,
+              color: "#f8fafc",
+              weight: 2.5,
+              opacity: 0.95,
+              dashArray: "7 6",
+              lineCap: "round",
+              className: "cdr-preview-route-dash",
+            }}
+          />
+        </>
+      )}
+
+      {/* The pre-fix path of the same flight — faint, thin dashes, drawn FIRST
+          so the new route sits on top of it. Hovering names it. */}
+      {cdrOriginalRoute && cdrOriginalRoute.length >= 2 && (
+        <Polyline
+          positions={cdrOriginalRoute.map((p) => [p.lat, p.lon])}
+          pathOptions={{
+            renderer: cdrRouteRenderer,
+            color: "#94a3b8",
+            weight: 2,
+            opacity: 0.5,
+            dashArray: "3 8",
+            lineCap: "round",
+          }}
+        >
+          {cdrOriginalLabel && (
+            <Tooltip sticky className="cdr-route-tip was">
+              {cdrOriginalLabel}
+            </Tooltip>
+          )}
+        </Polyline>
+      )}
+
+      {/* An applied auto-resolve route opened for inspection: the post-fix path,
+          dashed with a pulsing green glow. The map runs in CANVAS mode
+          (preferCanvas) where CSS classes/animations don't apply, so these two
+          layers force an SVG renderer of their own — that's what lets the
+          `cdr-resolved-route-*` keyframes (globals.css) actually blink/glow. */}
+      {cdrResolvedRoute && cdrResolvedRoute.length >= 2 && (
+        <>
+          {/* The wide glow halo doubles as the hover target for the tooltip —
+              the 3 px dashed line on its own is too thin to hit reliably. */}
+          <Polyline
+            positions={cdrResolvedRoute.map((p) => [p.lat, p.lon])}
+            pathOptions={{
+              renderer: cdrRouteRenderer,
+              color: "#22c55e",
+              weight: 8,
+              opacity: 0.4,
+              lineCap: "round",
+              className: "cdr-resolved-route-glow",
+            }}
+          >
+            {cdrResolvedLabel && (
+              <Tooltip sticky className="cdr-route-tip now">
+                {cdrResolvedLabel}
+              </Tooltip>
+            )}
+          </Polyline>
+          <Polyline
+            positions={cdrResolvedRoute.map((p) => [p.lat, p.lon])}
+            interactive={false}
+            pathOptions={{
+              renderer: cdrRouteRenderer,
+              color: "#86efac",
+              weight: 3,
+              opacity: 1,
+              dashArray: "7 6",
+              lineCap: "round",
+              className: "cdr-resolved-route-dash",
+            }}
+          />
+        </>
+      )}
+
+      {/* CD&R overlay — predicted tracks + CPA for the selected conflict, faint
+          CPA ticks for the rest. Rendered last so it sits above the traffic. */}
+      {cdrConflicts && cdrTraffic && (
+        <ConflictLayer
+          conflicts={cdrConflicts}
+          traffic={cdrTraffic}
+          selectedId={cdrSelectedId ?? null}
+          nameOf={cdrNameOf ?? ((id) => id)}
+        />
+      )}
 
       <FitBounds airways={airways} trajectories={trajectories} />
     </MapContainer>

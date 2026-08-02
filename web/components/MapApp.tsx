@@ -11,7 +11,7 @@
 
 import type L from "leaflet";
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import AltitudeLegend from "@/components/AltitudeLegend";
 import DownloadModal, {
@@ -54,7 +54,7 @@ import {
   type SectorCollection,
   type SectorKey,
 } from "@/lib/geojson";
-import { fetchProcedure, type ProcedureDto } from "@/lib/api";
+import { fetchProcedure, recacheTrajectory, type ProcedureDto } from "@/lib/api";
 import {
   fetchGates,
   fetchIlsLines,
@@ -69,14 +69,16 @@ import {
 } from "@/lib/atcLayers";
 import type { ProcedureSelection } from "@/components/LeafletMap";
 import LayerOptions, {
+  DEFAULT_HOLDING_LAYER,
   DEFAULT_PROC_LAYER,
   type AirwayExtra,
+  type HoldingLayerState,
   type ProcLayerState,
 } from "@/components/LayerOptions";
 import { fetchCsvRouteIdents } from "@/lib/routeCsv";
 import type { Basemap, Theme } from "@/lib/mapPrefs";
 import type { PreviewPoint } from "@/lib/routePreview";
-import type { TrajectoryResult } from "@/lib/trajectory/types";
+import type { TrajectoryPoint, TrajectoryResult } from "@/lib/trajectory/types";
 import type {
   AirwayCollection,
   FirCollection,
@@ -99,13 +101,52 @@ import {
   airspaceAt,
   buildAirspaceIndex,
   buildAirspaceSegments,
+  formatAirspace,
   type AirspaceMembership,
   type AirspaceSegment,
 } from "@/lib/airspace";
+import {
+  fetchHoldingPatterns,
+  fetchHoldings,
+  type Holding,
+  type HoldingPattern,
+} from "@/lib/holdings";
+import { useCdr } from "@/lib/cdr/useCdr";
+import {
+  DEFAULT_CDR_CONFIG,
+  type CdrConfig,
+  type DeepPartial,
+} from "@/lib/cdr/config";
+import { useToasts } from "@/lib/cdr/useToasts";
+import { playAlert } from "@/lib/cdr/sound";
+import { conflictHeadline, fmtFromValue } from "@/lib/cdr/format";
+import type { CdrEvent } from "@/lib/cdr/lifecycle";
+import { applyManeuver, maneuverTiming } from "@/lib/cdr/kinematics";
+import type { AppliedFix, Maneuver } from "@/lib/cdr/types";
+import {
+  scanFlightPlanConflicts,
+  type PlanConflict,
+  type PlanFlight,
+} from "@/lib/cdr/planScan";
+import { restrictedAreasFrom } from "@/lib/cdr/constraints";
+import {
+  generatePlanResolutions,
+  type PlanResolution,
+} from "@/lib/cdr/planAdvisory";
+import ToastStack from "@/components/cdr/ToastStack";
+import ConflictPanel from "@/components/cdr/ConflictPanel";
+import NotificationPanel from "@/components/cdr/NotificationPanel";
+import SuggestionCards from "@/components/cdr/SuggestionCards";
 
 const LeafletMap = dynamic(() => import("@/components/LeafletMap"), {
   ssr: false,
   loading: () => <div className="status">Loading map…</div>,
+});
+
+// The CD&R before/after preview modal embeds its own react-leaflet map, so it
+// must stay client-only (no SSR).
+const PreviewModal = dynamic(() => import("@/components/cdr/PreviewModal"), {
+  ssr: false,
 });
 
 /** Format an altitude constraint DTO as a compact label (e.g. "≤18000ft"). */
@@ -390,6 +431,9 @@ export default function MapApp() {
         setPlaybackIdx("all");
         // Any prior camera-follow ends with the new generation.
         setFollowActive(false);
+        // Fresh traffic → drop the previous run's CD&R fix history.
+        setAppliedFixes([]);
+        setSelectedConflictId(null);
       }
     },
     [],
@@ -432,6 +476,12 @@ export default function MapApp() {
     (k: SectorKey) => setSectorsOn((prev) => ({ ...prev, [k]: !prev[k] })),
     [],
   );
+  // How the sector polygons are coloured: "zone" = the per-zone legend colour
+  // (BACC/CTR/TMA/… — matches the Airspace menu swatches), "sector" = a distinct
+  // colour per individual sector, "altitude" = by the sector's coded band.
+  const [sectorColorMode, setSectorColorMode] = useState<
+    "zone" | "sector" | "altitude"
+  >("zone");
 
   // Airway reference layers (the Airway tab): VOR + reporting points, lazily
   // loaded when toggled, plus a shared opacity for the lines + points.
@@ -462,6 +512,9 @@ export default function MapApp() {
   const [star, setStar] = useState<ProcLayerState>(DEFAULT_PROC_LAYER);
   const [pbn, setPbn] = useState<ProcLayerState>(DEFAULT_PROC_LAYER);
   const [ils, setIls] = useState<ProcLayerState>(DEFAULT_PROC_LAYER);
+  const [holdingLayer, setHoldingLayer] = useState<HoldingLayerState>(
+    DEFAULT_HOLDING_LAYER,
+  );
   const [sidWpts, setSidWpts] = useState<ProcedureWaypointCollection | null>(
     null,
   );
@@ -480,6 +533,12 @@ export default function MapApp() {
   const [ilsWpts, setIlsWpts] = useState<ProcedureWaypointCollection | null>(
     null,
   );
+  // Holding patterns for the map layer (distinct from the CD&R holdings index
+  // below: this one is categorised + drawable). Fetched on first enable.
+  const [holdingPatterns, setHoldingPatterns] = useState<
+    HoldingPattern[] | null
+  >(null);
+  const [holdingLoading, setHoldingLoading] = useState(false);
   // Procedure inspector: legs + constraints fetched when a SID/STAR line is
   // clicked. null = closed.
   const [procView, setProcView] = useState<{
@@ -571,8 +630,10 @@ export default function MapApp() {
     }
     return Number.isFinite(m) ? m : 0;
   }, [trajectories]);
-  const allSpanPoints = useMemo(() => {
-    if (trajectories.length === 0) return undefined;
+  // Latest landing time across all routes (the "all"-mode timeline end). Split
+  // out so `allSpanPoints` can be keyed on the NUMERIC span, not the trajectory
+  // array identity.
+  const allEndMs = useMemo(() => {
     let end = -Infinity;
     for (const t of trajectories) {
       const ps = t.points;
@@ -580,13 +641,32 @@ export default function MapApp() {
       const b = new Date(ps[ps.length - 1].epoch_ts).getTime();
       if (b > end) end = b;
     }
-    if (!Number.isFinite(end) || end <= allOriginMs) return undefined;
-    const base = trajectories[0].points[0];
+    return Number.isFinite(end) ? end : 0;
+  }, [trajectories]);
+  const allSpanPoints = useMemo(() => {
+    if (allEndMs <= allOriginMs) return undefined;
+    // A synthetic 2-point span: in "all" mode useSimPlayback only reads the
+    // first/last epoch for the shared clock (its interpolated aircraft is unused
+    // there — the per-route planes are drawn in LeafletMap). Keying on the
+    // numeric span means a fix that DOESN'T extend the timeline keeps the SAME
+    // array reference, so useSimPlayback no longer resets + replays the clock on
+    // every applied fix — the churn that made auto-resolve re-render the whole
+    // map ~every commit and freeze the tab at high sim speed.
+    const base: TrajectoryPoint = {
+      lat: 0,
+      lon: 0,
+      epoch_ts: "",
+      altitude_ft: null,
+      gs_kt: 0,
+      tas_kt: null,
+      track_deg: 0,
+      phase: "cruise",
+    };
     return [
       { ...base, epoch_ts: new Date(allOriginMs).toISOString() },
-      { ...base, epoch_ts: new Date(end).toISOString() },
+      { ...base, epoch_ts: new Date(allEndMs).toISOString() },
     ];
-  }, [trajectories, allOriginMs]);
+  }, [allOriginMs, allEndMs]);
 
   const sim = useSimPlayback(
     safePlaybackIdx === "all" ? allSpanPoints : activeTrajectory?.points,
@@ -687,6 +767,27 @@ export default function MapApp() {
     () => buildAirspaceIndex(sectorData),
     [sectorData],
   );
+
+  // Position-dependent horizontal separation minimum for CD&R: 3 NM inside the
+  // Bangkok TMA (terminal radar minimum), 5 NM everywhere else (en-route). The
+  // TMA polygon is loaded once any flight exists (see the all-sectors effect
+  // below), so it's available whenever the detector runs. Fed to BOTH the
+  // realtime detector and the plan-scan via `configOverrides`, so `cdr.config`
+  // carries it and every downstream path (detect, planConflicts, advisories)
+  // uses the same per-position minimum. Falls back to the flat en-route minimum
+  // until the polygon loads.
+  const sepMinNmAt = useMemo(() => {
+    if (!airspaceIndex.tma) return undefined;
+    const { enrouteNm, terminalNm } = DEFAULT_CDR_CONFIG.horizontal;
+    return (lat: number, lon: number, altFt: number | null): number =>
+      airspaceAt(airspaceIndex, lon, lat, altFt).tma === "BANGKOK TMA"
+        ? terminalNm
+        : enrouteNm;
+  }, [airspaceIndex]);
+  const cdrConfigOverrides = useMemo<DeepPartial<CdrConfig> | undefined>(
+    () => (sepMinNmAt ? { sepMinNmAt } : undefined),
+    [sepMinNmAt],
+  );
   const samplesByIdx = useMemo(
     () => trajectories.map((t) => toSamples(t.points)),
     [trajectories],
@@ -740,6 +841,579 @@ export default function MapApp() {
     }
     return out;
   }, [trajectories, airspaceIndex]);
+
+  // --- Conflict Detection & Resolution (CD&R) --------------------------------
+  // A read-only consumer of the same trajectories + shared clock the map uses.
+  // Detection runs continuously in "all" mode (the one timeline where every
+  // aircraft is truly airborne) — it is NOT gated on the panel, so the live
+  // conflict count (badge) and the bottom-right alerts appear without the user
+  // opening anything. The ⚡ CD&R button just toggles the detailed Conflict View
+  // panel. Detection/lifecycle live in lib/cdr.
+  const cdrMonitoring = safePlaybackIdx === "all";
+  // Which CD&R view is open (chosen from the ⚡ CD&R dropdown), and whether the
+  // dropdown itself is showing. "notifications" = the realtime alert stack;
+  // "dashboard" = the strategic 2-column LoS/Fixed board.
+  const [cdrView, setCdrView] = useState<"notifications" | "dashboard" | null>(
+    null,
+  );
+  const [cdrMenuOpen, setCdrMenuOpen] = useState(false);
+  // Auto-resolve: when on, the top plan-validated fix is applied automatically
+  // to every detected conflict (no manual Apply). Off by default — the operator
+  // opts in. Proactive: a conflict is fixed as soon as it's detected (up to the
+  // 10-min prediction horizon), mirroring how ATC clears traffic ahead of time.
+  const [autoResolve, setAutoResolve] = useState(false);
+  const [selectedConflictId, setSelectedConflictId] = useState<string | null>(
+    null,
+  );
+  // Log of resolutions the user has APPLIED — drives the Dashboard's "Fixed"
+  // list + the ✓ badge on rows that have been dealt with. Keyed newest-first.
+  const [appliedFixes, setAppliedFixes] = useState<AppliedFix[]>([]);
+  // An applied fix the user opened (by clicking its auto-resolve toast) to
+  // inspect: shows the "from → to" detail card and highlights the new route on
+  // the map (dashed + glowing). Keyed by conflict id.
+  const [highlightFixId, setHighlightFixId] = useState<string | null>(null);
+  const highlightedFix = useMemo(
+    () =>
+      highlightFixId
+        ? appliedFixes.find((f) => f.conflictId === highlightFixId) ?? null
+        : null,
+    [highlightFixId, appliedFixes],
+  );
+  // The POST-fix route of the maneuvered flight, for the glowing dashed overlay.
+  // Prefers the snapshot taken when the fix was applied; falls back to the live
+  // trajectory for fixes logged before snapshots existed.
+  const resolvedRoutePts = useMemo(() => {
+    if (!highlightedFix) return null;
+    if (highlightedFix.afterPath) return highlightedFix.afterPath;
+    const t = trajectories.find(
+      (tr) => tr.meta.flightKey === highlightedFix.target,
+    );
+    return t ? t.points.map((p) => ({ lat: p.lat, lon: p.lon })) : null;
+  }, [highlightedFix, trajectories]);
+  // The route the flight WOULD have flown — drawn faint + dashed underneath.
+  const originalRoutePts = highlightedFix?.beforePath ?? null;
+  // The before/after Preview & Fix modal (opened from a dashboard row).
+  const [previewModalOpen, setPreviewModalOpen] = useState(false);
+  const toasts = useToasts();
+  // flightKey → callsign, so alerts read "THA201 ↔ AIQ34", not raw keys.
+  const callsignByKey = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const t of trajectories) m[t.meta.flightKey] = t.meta.callsign;
+    return m;
+  }, [trajectories]);
+  const nameOf = useCallback(
+    (id: string) => callsignByKey[id] ?? id,
+    [callsignByKey],
+  );
+  // Hover readouts for the two before/after overlay lines. The new route carries
+  // the instruction with its "from" value ("Climb FL160 — from FL140").
+  const resolvedRouteLabel = useMemo(() => {
+    if (!highlightedFix) return null;
+    const who = highlightedFix.targetCallsign ?? nameOf(highlightedFix.target);
+    const instr = highlightedFix.fromLabel
+      ? `${highlightedFix.instruction} — from ${highlightedFix.fromLabel}`
+      : highlightedFix.instruction;
+    return `${who} · ${instr}`;
+  }, [highlightedFix, nameOf]);
+  const originalRouteLabel = useMemo(() => {
+    if (!highlightedFix) return null;
+    const who = highlightedFix.targetCallsign ?? nameOf(highlightedFix.target);
+    return `${who} · original route (before the fix)`;
+  }, [highlightedFix, nameOf]);
+  const handleCdrEvent = useCallback(
+    (e: CdrEvent) => {
+      if (e.kind === "resolved") {
+        // Conflict cleared → drop its transient toast and the panel selection if
+        // it was the open one. The Dashboard's "Fixed" list keeps the record.
+        toasts.dismiss(e.conflict.id);
+        setSelectedConflictId((cur) => (cur === e.conflict.id ? null : cur));
+        return;
+      }
+      // NEW or ESCALATED → upsert the sticky toast + sound (dedup/gating done in
+      // the lifecycle). The alert now stays until the conflict resolves.
+      const { title, body } = conflictHeadline(e.conflict, nameOf);
+      toasts.upsert({
+        conflictId: e.conflict.id,
+        severity: e.conflict.severity,
+        kind: e.kind,
+        title,
+        body,
+      });
+      playAlert(e.conflict.severity);
+    },
+    [nameOf, toasts],
+  );
+  const cdr = useCdr({
+    trajectories,
+    simT: sim.simT,
+    simSec,
+    playbackIdx: safePlaybackIdx,
+    enabled: cdrMonitoring,
+    onEvent: handleCdrEvent,
+    configOverrides: cdrConfigOverrides,
+  });
+
+  // Realtime notification list. An APPLIED fix is authoritative: a resolved
+  // conflict is shown as "✓ Fixed" only BRIEFLY (a confirmation) and then drops
+  // off the live stack — it must not linger as a loss alert even when the
+  // detector still trips on residual geometry (e.g. a maneuver that narrows but
+  // doesn't fully open the CPA). Unfixed conflicts always show.
+  const FIX_NOTIF_LINGER_SEC = 6;
+  const notifConflicts = useMemo(() => {
+    const appliedAt = new Map(
+      appliedFixes.map((f) => [f.conflictId, f.appliedAtSec]),
+    );
+    return cdr.conflicts.filter((c) => {
+      const at = appliedAt.get(c.id);
+      return at == null || simSec - at < FIX_NOTIF_LINGER_SEC;
+    });
+  }, [cdr.conflicts, appliedFixes, simSec]);
+
+  // Live conflicts NOT yet resolved by an applied fix — drives the toolbar
+  // badge/count, so a fixed conflict stops inflating the "active" number.
+  const unresolvedConflicts = useMemo(() => {
+    const fixedIds = new Set(appliedFixes.map((f) => f.conflictId));
+    return cdr.conflicts.filter((c) => !fixedIds.has(c.id));
+  }, [cdr.conflicts, appliedFixes]);
+
+  // Live clock in a ref so the Preview/Apply click handlers can read "now"
+  // without being re-created every animation frame.
+  const simTRef = useRef(sim.simT);
+  simTRef.current = sim.simT;
+  const playingRef = useRef(sim.playing);
+  playingRef.current = sim.playing;
+
+  // Applying a resolution replaces a trajectory, which makes useSimPlayback
+  // reset the clock to 0 and pause (its reset fires on a new sample table). We
+  // don't want the animation to jump back to the start on Apply — capture the
+  // clock + play state here and restore them once the new trajectories commit.
+  const restorePlaybackRef = useRef<{ t: number; playing: boolean } | null>(null);
+  useEffect(() => {
+    const r = restorePlaybackRef.current;
+    if (!r) return;
+    restorePlaybackRef.current = null;
+    sim.seek(r.t);
+    if (r.playing) sim.play();
+    // Runs after the trajectory change (and after the hook's reset effect);
+    // sim.seek/play are read from the current render's sim.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trajectories]);
+
+  // Strategic full-flight-plan conflict scan — every loss of separation the
+  // filed plans will produce across the WHOLE timeline (not just the live
+  // look-ahead), so the Dashboard can list future conflicts that haven't
+  // alerted yet. Recomputed only when the trajectories change (e.g. after an
+  // Apply), not per animation frame.
+  // Shared per-flight tables (samples + EOBT offset + duration) for the plan
+  // scan and the constraint re-check.
+  const planFlights = useMemo<PlanFlight[]>(
+    () =>
+      trajectories.map((t, i) => ({
+        id: t.meta.flightKey,
+        callsign: t.meta.callsign,
+        samples: samplesByIdx[i],
+        offsetSec: routeOffsets[i] ?? 0,
+        durationSec: totalSeconds(t.points),
+      })),
+    [trajectories, samplesByIdx, routeOffsets],
+  );
+  const planConflicts = useMemo<PlanConflict[]>(() => {
+    if (!cdrMonitoring || planFlights.length < 2) return [];
+    return scanFlightPlanConflicts(planFlights, cdr.config);
+  }, [cdrMonitoring, planFlights, cdr.config]);
+
+  // Published Bangkok-FIR holdings (AIRAC 2607) — loaded once, enables the CD&R
+  // HOLD resolution (fly a racetrack loop at a holding fix on the route to
+  // delay + open spacing; the realistic fix for an arrival-merge conflict).
+  const [holdings, setHoldings] = useState<Map<string, Holding>>(new Map());
+  useEffect(() => {
+    let alive = true;
+    void fetchHoldings().then((m) => {
+      if (alive) setHoldings(m);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Prohibited/Danger/Restricted areas (from the AIP PDR polygons) for the
+  // constraint engine's airspace check.
+  const restrictedAreas = useMemo(
+    () => restrictedAreasFrom(sectorData.pdr ?? null),
+    [sectorData.pdr],
+  );
+  // flightKey → its trajectory + EOBT offset, for building/validating maneuvers.
+  const trajById = useMemo(() => {
+    const m = new Map<string, { traj: TrajectoryResult; offset: number }>();
+    trajectories.forEach((t, i) =>
+      m.set(t.meta.flightKey, { traj: t, offset: routeOffsets[i] ?? 0 }),
+    );
+    return m;
+  }, [trajectories, routeOffsets]);
+
+  // Auto-generated, plan-validated resolutions for the SELECTED conflict — the
+  // advisory engine analyses the whole plan (full-trajectory what-ifs, unlike the
+  // realtime short-horizon engine) and returns ranked fixes with reason + score.
+  // Used by BOTH the inline notification cards and the Preview modal, so they
+  // agree and both get the correct answer for long-timescale fixes (e.g. an
+  // in-trail overtake, where a speed change clears but a turn only delays it).
+  // Computed on demand (a conflict is selected), not per frame; clock snapshot.
+  const planSuggestions = useMemo<PlanResolution[]>(() => {
+    if (!selectedConflictId) return [];
+    const c = planConflicts.find((x) => x.id === selectedConflictId);
+    if (!c) return [];
+    return generatePlanResolutions({
+      conflict: c,
+      flights: planFlights,
+      trajById,
+      simT: simTRef.current,
+      cfg: cdr.config,
+      restricted: restrictedAreas,
+      holdings,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    selectedConflictId,
+    planConflicts,
+    planFlights,
+    trajById,
+    cdr.config,
+    restrictedAreas,
+    holdings,
+  ]);
+
+  // Resolutions shown in the INLINE notification cards. These use the SAME
+  // plan-validated engine as the Preview modal (full-trajectory what-ifs,
+  // carrying the exact validated timing) — so the two ALWAYS agree: an auto
+  // resolution appears in both or neither. No fallback to the realtime advisory
+  // (whose short-horizon what-ifs can disagree with the modal and offer fixes
+  // that don't actually clear).
+  const inlineSuggestions = useMemo<
+    (Maneuver & {
+      timing?: { tManLocal: number; deviationSec: number; rejoinSec: number };
+    })[]
+  >(
+    () =>
+      planSuggestions.map((r) => ({
+        ...r,
+        timing: {
+          tManLocal: r.tManLocal,
+          deviationSec: r.deviationSec,
+          rejoinSec: r.rejoinSec,
+        },
+      })),
+    [planSuggestions],
+  );
+
+  // Preview / Apply of a suggestion. Preview computes the modified path once (on
+  // click) and draws it dashed; Apply commits it into the trajectory so the
+  // engine detects the resolution on the next tick. Both apply the maneuver at
+  // the target flight's current route-local time.
+  const [previewIdx, setPreviewIdx] = useState<number | null>(null);
+  const [previewPts, setPreviewPts] = useState<{ lat: number; lon: number }[] | null>(
+    null,
+  );
+  const [previewAtSec, setPreviewAtSec] = useState(0);
+
+  const localManeuverTime = useCallback(
+    (flightKey: string): { idx: number; tMan: number } => {
+      const idx = trajectories.findIndex((t) => t.meta.flightKey === flightKey);
+      const off = routeOffsets[idx] ?? 0;
+      return { idx, tMan: simTRef.current - off };
+    },
+    [trajectories, routeOffsets],
+  );
+
+  const handlePreview = useCallback(
+    (idx: number | null) => {
+      setPreviewIdx(idx);
+      if (idx == null) {
+        setPreviewPts(null);
+        return;
+      }
+      const m = inlineSuggestions[idx];
+      if (!m) return;
+      const { idx: ti, tMan } = localManeuverTime(m.target);
+      if (ti < 0) return;
+      // Draw the preview with the SAME (validated) timing Apply will use, so the
+      // dashed path matches what gets committed.
+      const modified = m.timing
+        ? applyManeuver(trajectories[ti], m, m.timing.tManLocal, {
+            deviationSec: m.timing.deviationSec,
+            rejoinSec: m.timing.rejoinSec,
+            bankAngleDeg: cdr.config.bankAngleDeg,
+          })
+        : applyManeuver(trajectories[ti], m, tMan);
+      setPreviewPts(modified.points.map((p) => ({ lat: p.lat, lon: p.lon })));
+      setPreviewAtSec(Math.round(simTRef.current));
+    },
+    [inlineSuggestions, trajectories, localManeuverTime, cdr.config],
+  );
+
+  // Commit a maneuver into the target flight's trajectory (the shared write
+  // path for both the suggestion cards and the Preview modal). Keeps playback
+  // where it is, logs the fix against the currently-open conflict, and clears
+  // that conflict's toast.
+  const commitManeuver = useCallback(
+    (
+      m: Pick<Maneuver, "type" | "target" | "instruction" | "resolution"> & {
+        // Optional plan-resolution detail for the "from → to" readout.
+        targetCallsign?: string;
+        reason?: string;
+        origDCpaNm?: number;
+        newDCpaNm?: number;
+        origVertFt?: number;
+        newVertFt?: number;
+        timing?: { tManLocal: number; deviationSec: number; rejoinSec: number };
+      },
+      // Explicit conflict to log the fix against — used by auto-resolve, which
+      // has no "selected" conflict. Falls back to `selectedConflictId`.
+      forConflict?: { id: string; a: string; b: string },
+    ) => {
+      const { idx: ti } = localManeuverTime(m.target);
+      if (ti < 0) return;
+      const off = routeOffsets[ti] ?? 0;
+      // Prefer the exact timing the maneuver was validated with (from the modal /
+      // advisory); recomputing it from the current track would apply a different,
+      // unvalidated maneuver. Fall back to a kinematic recompute otherwise.
+      let timing = m.timing
+        ? { tMan: m.timing.tManLocal, deviationSec: m.timing.deviationSec, rejoinSec: m.timing.rejoinSec }
+        : null;
+      if (!timing) {
+        const live = cdr.conflicts.find((x) => x.id === selectedConflictId);
+        const plan = planConflicts.find((x) => x.id === selectedConflictId);
+        const tCpaAbs = plan
+          ? plan.tCpaAbsSec
+          : live
+            ? simTRef.current + live.tCpa
+            : simTRef.current + 300;
+        const stNow = aircraftAt(
+          toSamples(trajectories[ti].points),
+          Math.max(0, simTRef.current - off),
+        );
+        timing = maneuverTiming(
+          stNow?.gsKt ?? 450,
+          stNow?.track ?? 0,
+          tCpaAbs,
+          off,
+          simTRef.current,
+          m,
+          cdr.config,
+        );
+      }
+      // Snapshot the pre-fix path + the value the maneuver is about to change,
+      // BEFORE the trajectory is replaced — that's the only moment either is
+      // still available for the dashboard's before/after map overlay.
+      const beforeTraj = trajectories[ti];
+      const beforePath = beforeTraj.points.map((p) => ({ lat: p.lat, lon: p.lon }));
+      const fromLabel = fmtFromValue(
+        m.type,
+        aircraftAt(toSamples(beforeTraj.points), Math.max(0, timing.tMan)),
+      );
+      const modified = applyManeuver(beforeTraj, m, timing.tMan, {
+        deviationSec: timing.deviationSec,
+        rejoinSec: timing.rejoinSec,
+        bankAngleDeg: cdr.config.bankAngleDeg,
+      });
+      restorePlaybackRef.current = { t: simTRef.current, playing: playingRef.current };
+      setTrajectories((prev) => prev.map((t, i) => (i === ti ? modified : t)));
+      // Keep the DOWNLOAD in sync with the fix: re-cache the backend export from
+      // the modified points so every download format serves the post-fix path.
+      void recacheTrajectory(modified.meta.flightKey, modified.points);
+      setPreviewIdx(null);
+      setPreviewPts(null);
+      setPreviewModalOpen(false);
+      const c =
+        forConflict ??
+        planConflicts.find((x) => x.id === selectedConflictId) ??
+        cdr.conflicts.find((x) => x.id === selectedConflictId);
+      if (c) {
+        setAppliedFixes((prev) => [
+          {
+            conflictId: c.id,
+            a: c.a,
+            b: c.b,
+            target: m.target,
+            instruction: m.instruction,
+            appliedAtSec: Math.round(simTRef.current),
+            maneuverType: m.type,
+            targetCallsign: m.targetCallsign,
+            reason: m.reason,
+            beforeSepNm: m.origDCpaNm,
+            afterSepNm: m.newDCpaNm,
+            beforeVertFt: m.origVertFt,
+            afterVertFt: m.newVertFt,
+            beforePath,
+            afterPath: modified.points.map((p) => ({ lat: p.lat, lon: p.lon })),
+            fromLabel: fromLabel ?? undefined,
+          },
+          ...prev.filter((f) => f.conflictId !== c.id),
+        ]);
+      }
+      const dismissId = forConflict?.id ?? selectedConflictId;
+      if (dismissId) toasts.dismiss(dismissId);
+    },
+    [trajectories, routeOffsets, localManeuverTime, planConflicts, cdr.conflicts, cdr.config, selectedConflictId, toasts],
+  );
+
+  const handleApply = useCallback(
+    (idx: number) => {
+      const m = inlineSuggestions[idx];
+      if (m) commitManeuver(m);
+    },
+    [inlineSuggestions, commitManeuver],
+  );
+
+  // Top plan-validated resolution for ANY conflict (not just the selected one),
+  // shaped like an inline suggestion so `commitManeuver` can apply it directly.
+  // Returns null when the advisory engine finds no fix that actually clears the
+  // conflict — auto-resolve then leaves it for manual handling.
+  const topResolutionFor = useCallback(
+    (
+      c: PlanConflict,
+    ):
+      | (Maneuver & {
+          timing: { tManLocal: number; deviationSec: number; rejoinSec: number };
+        })
+      | null => {
+      const res = generatePlanResolutions({
+        conflict: c,
+        flights: planFlights,
+        trajById,
+        simT: simTRef.current,
+        cfg: cdr.config,
+        restricted: restrictedAreas,
+        holdings,
+      });
+      const r = res[0];
+      if (!r) return null;
+      return {
+        ...r,
+        timing: {
+          tManLocal: r.tManLocal,
+          deviationSec: r.deviationSec,
+          rejoinSec: r.rejoinSec,
+        },
+      };
+    },
+    [planFlights, trajById, cdr.config, restrictedAreas, holdings],
+  );
+
+  // Auto-resolve loop. A SELF-SCHEDULING stepper (not a dependency-driven
+  // effect): every AUTO_STEP_MS it handles ONE conflict — apply the top validated
+  // fix if one exists, mark the conflict tried (so an unresolvable one is never
+  // re-validated), then schedule the next step. Each fix is validated against the
+  // already-modified traffic (sequential, self-consistent).
+  //
+  // Why a timer loop and not an effect keyed on the conflicts: committing a fix
+  // rebuilds the "all"-mode span (resets/re-seeks the sim clock) AND re-scans the
+  // whole plan, which changes `planConflicts`/`commitManeuver` identities. An
+  // effect keyed on those re-fires on every commit and runs the heavy
+  // `generatePlanResolutions` + plan re-scan back-to-back with NO idle gap — that
+  // pinned one CPU core at 100% and froze the tab. This loop instead reads the
+  // latest state through refs and only ever does one heavy step per interval,
+  // leaving a guaranteed gap for the browser to paint and stay responsive.
+  //
+  // The conflict SOURCE is the REALTIME detector (`cdr.conflicts`, minus ones
+  // already fixed): auto-resolve then fixes each conflict as it enters the
+  // look-ahead — proactive, controller-like, "real time" — rather than reaching
+  // out to fix conflicts an hour away. `autoTriedRef` makes each pair (a stable
+  // `a|b` id) attempted exactly once, so the finite set of pairs drains even as
+  // the sliding look-ahead surfaces them over time. `planConflicts` supplies the
+  // full-timeline geometry (`tCpaAbsSec`) the resolver needs for the match.
+  const AUTO_STEP_MS = 400;
+  const autoTriedRef = useRef<Set<string>>(new Set());
+  // Live snapshots read by the timer callback (so the loop needn't re-subscribe
+  // on every render — which is what caused the back-to-back heavy work).
+  const autoStateRef = useRef({
+    unresolvedConflicts,
+    planConflicts,
+    topResolutionFor,
+    commitManeuver,
+    toasts,
+    nameOf,
+  });
+  autoStateRef.current = {
+    unresolvedConflicts,
+    planConflicts,
+    topResolutionFor,
+    commitManeuver,
+    toasts,
+    nameOf,
+  };
+  useEffect(() => {
+    if (!autoResolve || !cdrMonitoring) {
+      autoTriedRef.current.clear(); // fresh opt-in re-attempts everything
+      return;
+    }
+    let cancelled = false;
+    let timer: number | null = null;
+    const step = () => {
+      if (cancelled) return;
+      const t0 = performance.now();
+      try {
+        const s = autoStateRef.current;
+        const target = s.unresolvedConflicts.find(
+          (c) => !autoTriedRef.current.has(c.id),
+        );
+        if (target) {
+          const pc = s.planConflicts.find((x) => x.id === target.id);
+          if (pc) {
+            autoTriedRef.current.add(target.id); // attempt once
+            const m = s.topResolutionFor(pc);
+            const dt = Math.round(performance.now() - t0);
+            // eslint-disable-next-line no-console
+            console.debug(
+              `[auto-resolve] ${pc.id} → ${m ? m.type + " " + (m.instruction ?? "") : "no fix"} (${dt}ms)`,
+            );
+            if (m) {
+              s.commitManeuver(m, { id: pc.id, a: pc.a, b: pc.b });
+              // Pop a green confirmation of what auto-resolve just did.
+              s.toasts.upsert({
+                conflictId: pc.id,
+                severity: target.severity,
+                kind: "auto",
+                title: `Auto-resolved · ${s.nameOf(m.target)}`,
+                body: m.instruction || "resolution applied",
+              });
+            }
+          }
+        }
+      } catch (err) {
+        // Never let a bad resolution kill the loop or freeze the tab silently.
+        // eslint-disable-next-line no-console
+        console.error("[auto-resolve] step failed:", err);
+      }
+      // Keep polling: the sliding look-ahead surfaces new conflicts over time.
+      if (!cancelled) timer = window.setTimeout(step, AUTO_STEP_MS);
+    };
+    timer = window.setTimeout(step, AUTO_STEP_MS);
+    return () => {
+      cancelled = true;
+      if (timer != null) window.clearTimeout(timer);
+    };
+  }, [autoResolve, cdrMonitoring]);
+
+  // Clear any preview when the open conflict changes, and expire a stale preview
+  // after 10 s of sim time (the maneuver geometry it was drawn for has moved on).
+  useEffect(() => {
+    setPreviewIdx(null);
+    setPreviewPts(null);
+  }, [selectedConflictId]);
+  // Turning CD&R off clears the sticky alerts (they'd otherwise linger).
+  useEffect(() => {
+    // Leaving "all" mode (no multi-aircraft picture) clears the sticky alerts.
+    if (!cdrMonitoring) {
+      toasts.clear();
+      setHighlightFixId(null);
+    }
+  }, [cdrMonitoring, toasts.clear]);
+  useEffect(() => {
+    if (previewPts && simSec - previewAtSec > 10) {
+      setPreviewIdx(null);
+      setPreviewPts(null);
+    }
+  }, [simSec, previewAtSec, previewPts]);
 
   useEffect(() => {
     let cancelled = false;
@@ -932,6 +1606,37 @@ export default function MapApp() {
         setError(e instanceof Error ? e.message : "Failed to load STAR fixes"),
       );
   }, [star.waypoints, starWpts]);
+
+  // Holding patterns — fetched the first time the layer is switched on (three
+  // files: the AIP holding table plus the ILS/PBN approaches the missed-approach
+  // and HILPT holds are coded in).
+  useEffect(() => {
+    if (!holdingLayer.patterns || holdingPatterns || holdingLoading) return;
+    setHoldingLoading(true);
+    fetchHoldingPatterns()
+      .then(setHoldingPatterns)
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : "Failed to load holdings"),
+      )
+      .finally(() => setHoldingLoading(false));
+  }, [holdingLayer.patterns, holdingPatterns, holdingLoading]);
+
+  // AIRPORT / HOLDING dropdown options. Like the procedure tabs, the holding
+  // idents cascade from the airport selection ("ENRT" = the enroute holds).
+  const holdingOpts = useMemo(() => {
+    const airports = new Set<string>();
+    const idents = new Set<string>();
+    for (const h of holdingPatterns ?? []) {
+      airports.add(h.region);
+      if (holdingLayer.airports.size === 0 || holdingLayer.airports.has(h.region)) {
+        idents.add(h.ident);
+      }
+    }
+    return {
+      airports: [...airports].sort(),
+      holdings: [...idents].sort(),
+    };
+  }, [holdingPatterns, holdingLayer.airports]);
 
   // Distinct airport / procedure options for the SID/STAR filter dropdowns.
   // PROCEDURE options cascade from the AIRPORT selection.
@@ -1421,6 +2126,97 @@ export default function MapApp() {
                 >
                   ⚲ Filter
                 </button>
+                {trajectories.length >= 2 && (
+                  <div className="cdr-dropdown-wrap">
+                    <button
+                      type="button"
+                      className={`map-filter-btn cdr-toggle${
+                        cdrView ? " active" : ""
+                      }${unresolvedConflicts.length > 0 ? " alerting" : ""}`}
+                      onClick={() => {
+                        // Detection runs on its own in "all" mode; this button
+                        // just opens the CD&R view menu. In single-route
+                        // playback, switch to "all" so there's traffic to
+                        // separate.
+                        if (safePlaybackIdx !== "all") setPlaybackIdx("all");
+                        setCdrMenuOpen((v) => !v);
+                      }}
+                      aria-haspopup="menu"
+                      aria-expanded={cdrMenuOpen}
+                      title={
+                        safePlaybackIdx === "all"
+                          ? `Conflict Detection — ${unresolvedConflicts.length} active`
+                          : "Switch playback to “All routes” to run conflict detection"
+                      }
+                    >
+                      ⚡ Conflict Detection ▾
+                      {cdrMonitoring && unresolvedConflicts.length > 0 && (
+                        <span
+                          className={`cdr-badge sev-${unresolvedConflicts[0].severity.toLowerCase()}`}
+                        >
+                          {unresolvedConflicts.length}
+                        </span>
+                      )}
+                    </button>
+                    {cdrMenuOpen && (
+                      <div
+                        className="cdr-menu-backdrop"
+                        onClick={() => setCdrMenuOpen(false)}
+                      />
+                    )}
+                    {cdrMenuOpen && (
+                      <div className="cdr-menu" role="menu">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className={cdrView === "notifications" ? "active" : ""}
+                          onClick={() => {
+                            setCdrView("notifications");
+                            setCdrMenuOpen(false);
+                          }}
+                        >
+                          🔔 Conflict notifications
+                          {cdrMonitoring && unresolvedConflicts.length > 0 && (
+                            <span className="cdr-menu-count">
+                              {unresolvedConflicts.length}
+                            </span>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className={cdrView === "dashboard" ? "active" : ""}
+                          onClick={() => {
+                            setCdrView("dashboard");
+                            setCdrMenuOpen(false);
+                          }}
+                        >
+                          ⚡ Conflict dashboard
+                        </button>
+                        <div className="cdr-menu-sep" role="separator" />
+                        <button
+                          type="button"
+                          role="menuitemcheckbox"
+                          aria-checked={autoResolve}
+                          className={`cdr-auto-toggle${
+                            autoResolve ? " active" : ""
+                          }`}
+                          onClick={() => setAutoResolve((v) => !v)}
+                          title="Automatically apply the top validated fix to every detected conflict"
+                        >
+                          <span>🤖 Auto-resolve conflicts</span>
+                          <span
+                            className={`cdr-auto-pill${
+                              autoResolve ? " on" : ""
+                            }`}
+                          >
+                            {autoResolve ? "ON" : "OFF"}
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
             <FilterPanel
@@ -1457,6 +2253,8 @@ export default function MapApp() {
               onBasemap={setBasemap}
               sectorsOn={sectorsOn}
               onToggleSector={toggleSector}
+              sectorColorMode={sectorColorMode}
+              onSectorColorMode={setSectorColorMode}
               onOpenLayers={() => setLayersOpen(true)}
               onToggleSidebar={toggleSidebar}
               onZoomIn={handleZoomIn}
@@ -1516,6 +2314,11 @@ export default function MapApp() {
                 index: ilsIndex,
                 lookup: (a, n, t) => lookupProcedure("ILS", a, n, t),
               }}
+              holding={holdingLayer}
+              onHoldingChange={setHoldingLayer}
+              holdingAirportOpts={holdingOpts.airports}
+              holdingOpts={holdingOpts.holdings}
+              holdingLoading={holdingLoading}
             />
             <LeafletMap
               basemap={basemap}
@@ -1534,6 +2337,7 @@ export default function MapApp() {
                   sectorData[s.key] ?? null,
                 ]),
               )}
+              sectorColorMode={sectorColorMode}
               sidLines={sidLines}
               starLines={starLines}
               sidWpts={sidWpts}
@@ -1542,6 +2346,8 @@ export default function MapApp() {
               pbnWpts={pbnWpts}
               ilsLines={ilsLines}
               ilsWpts={ilsWpts}
+              holdings={holdingPatterns}
+              holding={holdingLayer}
               sid={sid}
               star={star}
               pbn={pbn}
@@ -1576,6 +2382,15 @@ export default function MapApp() {
               onAircraftClick={handleAircraftClick}
               onAircraftHover={handleAircraftHover}
               onMapReady={onMapReady}
+              cdrConflicts={cdrMonitoring ? cdr.conflicts : undefined}
+              cdrTraffic={cdrMonitoring ? cdr.traffic : undefined}
+              cdrSelectedId={selectedConflictId}
+              cdrNameOf={nameOf}
+              cdrPreview={previewPts}
+              cdrResolvedRoute={resolvedRoutePts}
+              cdrOriginalRoute={originalRoutePts}
+              cdrResolvedLabel={resolvedRouteLabel}
+              cdrOriginalLabel={originalRouteLabel}
             />
             {previewRoutes.length > 0 && (
               <div className={`preview-fab${previewHidden ? " off" : ""}`}>
@@ -1635,6 +2450,182 @@ export default function MapApp() {
               onToggleAllRoutes={toggleAllRoutesHidden}
             />
             {trajectories.length > 0 && <AltitudeLegend />}
+
+            {/* CD&R toast notifications — NEW / ESCALATED conflicts. Clicking a
+                toast opens the realtime notification stack. */}
+            <ToastStack
+              toasts={toasts.toasts}
+              onDismiss={toasts.dismiss}
+              onOpen={(id) => {
+                // An auto-resolve toast → open its "from → to" detail + highlight
+                // the new route on the map. A conflict alert → open the stack.
+                if (appliedFixes.some((f) => f.conflictId === id)) {
+                  setHighlightFixId(id);
+                } else {
+                  setSelectedConflictId(id);
+                  setCdrView("notifications");
+                }
+              }}
+            />
+
+            {/* Auto-resolve detail card — what changed, from → to. */}
+            {highlightedFix && (
+              <div className="cdr-fix-detail" role="dialog" aria-label="Applied fix detail">
+                <div className="cdr-fix-detail-head">
+                  {/* Only the auto-resolver fills in `reason`; a hand-applied
+                      fix opened from the dashboard gets the neutral label. */}
+                  <span className="cdr-fix-detail-ico" aria-hidden>
+                    {highlightedFix.reason ? "🤖" : "✓"}
+                  </span>
+                  <span className="cdr-fix-detail-title">
+                    {highlightedFix.reason ? "Auto-resolved" : "Resolved"} ·{" "}
+                    {highlightedFix.targetCallsign ?? nameOf(highlightedFix.target)}
+                  </span>
+                  <button
+                    type="button"
+                    className="cdr-fix-detail-close"
+                    onClick={() => setHighlightFixId(null)}
+                    aria-label="Close"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div className="cdr-fix-detail-body">
+                  <div className="cdr-fix-detail-instr">
+                    {highlightedFix.maneuverType && (
+                      <span className="cdr-fix-detail-tag">
+                        {highlightedFix.maneuverType}
+                      </span>
+                    )}
+                    {highlightedFix.instruction}
+                  </div>
+                  {highlightedFix.beforeSepNm != null &&
+                    highlightedFix.afterSepNm != null && (
+                      <div className="cdr-fix-detail-row">
+                        <span>Separation</span>
+                        <span>
+                          <b className="was">
+                            {highlightedFix.beforeSepNm.toFixed(1)}
+                          </b>{" "}
+                          →{" "}
+                          <b className="now">
+                            {highlightedFix.afterSepNm.toFixed(1)} NM
+                          </b>
+                        </span>
+                      </div>
+                    )}
+                  {highlightedFix.maneuverType === "flightlevel" &&
+                    highlightedFix.beforeVertFt != null &&
+                    highlightedFix.afterVertFt != null && (
+                      <div className="cdr-fix-detail-row">
+                        <span>Vertical gap</span>
+                        <span>
+                          <b className="was">{highlightedFix.beforeVertFt}</b> →{" "}
+                          <b className="now">{highlightedFix.afterVertFt} ft</b>
+                        </span>
+                      </div>
+                    )}
+                  {highlightedFix.reason && (
+                    <div className="cdr-fix-detail-reason">{highlightedFix.reason}</div>
+                  )}
+                  <div className="cdr-fix-detail-hint">
+                    Old route faint &amp; dashed, new route glowing — hover either
+                    for its readout
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Realtime notification stack — the live conflicts within the
+                look-ahead (MTCD → STCA → LOS), appearing/escalating/clearing.
+                Selecting one expands its inline Preview/Apply cards (the Preview
+                draws the modified path dashed on the main map; no popup). */}
+            {cdrView === "notifications" && cdrMonitoring && (
+              <NotificationPanel
+                conflicts={notifConflicts}
+                nameOf={nameOf}
+                selectedId={selectedConflictId}
+                onSelect={setSelectedConflictId}
+                onClose={() => {
+                  setCdrView(null);
+                  setSelectedConflictId(null);
+                }}
+                appliedFixes={appliedFixes}
+                renderAdvisory={(id) =>
+                  id === selectedConflictId ? (
+                    inlineSuggestions.length > 0 ? (
+                      <SuggestionCards
+                        suggestions={inlineSuggestions}
+                        nameOf={nameOf}
+                        previewIdx={previewIdx}
+                        onPreview={handlePreview}
+                        onApply={handleApply}
+                      />
+                    ) : (
+                      <p className="cdr-adv-empty">
+                        No clear resolution within the maneuver envelope.
+                      </p>
+                    )
+                  ) : null
+                }
+              />
+            )}
+
+            {/* Strategic dashboard — whole-plan losses of separation + fixed. */}
+            {cdrView === "dashboard" && cdrMonitoring && (
+              <ConflictPanel
+                planConflicts={planConflicts}
+                simT={sim.simT}
+                nameOf={nameOf}
+                appliedFixes={appliedFixes}
+                onClearFixes={() => setAppliedFixes([])}
+                onOpenPreview={(id) => {
+                  setSelectedConflictId(id);
+                  setPreviewModalOpen(true);
+                }}
+                selectedFixId={highlightFixId}
+                // Draw that fix's before/after routes and step out of the way —
+                // the dashboard sits over the middle of the map, so it has to
+                // close for the lines to be visible. The detail card that opens
+                // top-right carries the same "what changed" readout.
+                onSelectFix={(id) => {
+                  setHighlightFixId((cur) => (cur === id ? null : id));
+                  setCdrView(null);
+                }}
+                onClose={() => {
+                  setCdrView(null);
+                  setSelectedConflictId(null);
+                }}
+              />
+            )}
+
+            {/* Before/after Preview & fix modal. */}
+            {previewModalOpen &&
+              (() => {
+                const c = planConflicts.find((x) => x.id === selectedConflictId);
+                if (!c) return null;
+                const ia = trajectories.findIndex((t) => t.meta.flightKey === c.a);
+                const ib = trajectories.findIndex((t) => t.meta.flightKey === c.b);
+                if (ia < 0 || ib < 0) return null;
+                return (
+                  <PreviewModal
+                    conflict={c}
+                    trajA={trajectories[ia]}
+                    trajB={trajectories[ib]}
+                    offsetA={routeOffsets[ia] ?? 0}
+                    offsetB={routeOffsets[ib] ?? 0}
+                    simT={sim.simT}
+                    planSuggestions={planSuggestions}
+                    nameOf={nameOf}
+                    config={cdr.config}
+                    allFlights={planFlights}
+                    restricted={restrictedAreas}
+                    holdings={holdings}
+                    onApply={(m) => commitManeuver(m)}
+                    onClose={() => setPreviewModalOpen(false)}
+                  />
+                );
+              })()}
 
             {/* Flight detail card — live readout for the picked aircraft. When
                 LOCKED (clicked on the map) the camera tracks it at centre and
@@ -1719,6 +2710,24 @@ export default function MapApp() {
                   <div>
                     <dt>HDG</dt>
                     <dd>{Math.round(cardAircraft.track)}°</dd>
+                  </div>
+                  <div>
+                    <dt>Sector</dt>
+                    <dd>
+                      {(() => {
+                        // Controlled sector only — PDR (prohibited/danger/
+                        // restricted) is EXCLUDED: those areas are assumed closed
+                        // (an aircraft wouldn't be routed through an active one),
+                        // so they shouldn't read as the plane's "sector".
+                        const m = airspaceByKey[cardTraj.meta.flightKey];
+                        return (
+                          formatAirspace(
+                            m ? { ...m, pdr: undefined } : m,
+                            "full",
+                          ) || "—"
+                        );
+                      })()}
+                    </dd>
                   </div>
                   <div>
                     <dt>Status</dt>

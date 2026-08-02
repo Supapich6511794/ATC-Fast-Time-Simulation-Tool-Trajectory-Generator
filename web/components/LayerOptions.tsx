@@ -14,6 +14,11 @@ import { memo, useEffect, useMemo, useState } from "react";
 
 import type { PanelAirport } from "@/lib/atcLayers";
 import type { ProcedureDto } from "@/lib/api";
+import {
+  HOLDING_CATEGORIES,
+  HOLDING_CATEGORY_LABEL,
+  type HoldingCategory,
+} from "@/lib/holdings";
 
 /** Visibility + style state for one procedure layer (SID or STAR). */
 export interface ProcLayerState {
@@ -43,7 +48,33 @@ type TabKey =
   | "star"
   | "pbn"
   | "ils"
+  | "holding"
   | "airway";
+
+/** Holding-tab layer state: the racetracks, their fix labels, which of the four
+ *  kinds are drawn, and the airport / holding-fix filters. */
+export interface HoldingLayerState {
+  patterns: boolean;
+  labels: boolean;
+  /** Which categories are drawn. All four on = the published default. */
+  categories: Set<HoldingCategory>;
+  /** Airport ICAO filter ("ENRT" for enroute holds) — empty Set = all. */
+  airports: Set<string>;
+  /** Holding-fix ident filter — empty Set = all. */
+  holdings: Set<string>;
+  opacity: number; // 0..1
+  thickness: number; // px
+}
+
+export const DEFAULT_HOLDING_LAYER: HoldingLayerState = {
+  patterns: false,
+  labels: true,
+  categories: new Set(HOLDING_CATEGORIES),
+  airports: new Set(),
+  holdings: new Set(),
+  opacity: 0.8,
+  thickness: 2,
+};
 
 /** Airway-tab layer flags (lines opacity is shared with the points). */
 export interface AirwayExtra {
@@ -64,6 +95,7 @@ const TABS: { key: TabKey; icon: string; label: string }[] = [
   { key: "star", icon: "🛬", label: "STAR" },
   { key: "pbn", icon: "📍", label: "PBN" },
   { key: "ils", icon: "📡", label: "ILS" },
+  { key: "holding", icon: "⭕", label: "Holding" },
   { key: "airway", icon: "🛩", label: "Airway" },
 ];
 
@@ -116,6 +148,14 @@ interface Props {
   star: ProcLayerWiring;
   pbn: ProcLayerWiring;
   ils: ProcLayerWiring;
+  // Holding patterns
+  holding: HoldingLayerState;
+  onHoldingChange: (s: HoldingLayerState) => void;
+  /** Airport ICAOs ("ENRT" included) and holding-fix idents present in the
+   *  data, for the two filter dropdowns. Empty until the layer first loads. */
+  holdingAirportOpts: string[];
+  holdingOpts: string[];
+  holdingLoading: boolean;
 }
 
 function LayerOptions({
@@ -144,6 +184,11 @@ function LayerOptions({
   star,
   pbn,
   ils,
+  holding,
+  onHoldingChange,
+  holdingAirportOpts,
+  holdingOpts,
+  holdingLoading,
 }: Props) {
   const [tab, setTab] = useState<TabKey>("airports");
   if (!open) return null;
@@ -279,6 +324,15 @@ function LayerOptions({
               boundaries load on first enable (~15 MB).
             </p>
           </>
+        )}
+        {tab === "holding" && (
+          <HoldingTab
+            state={holding}
+            onChange={onHoldingChange}
+            airportOpts={holdingAirportOpts}
+            holdingOpts={holdingOpts}
+            loading={holdingLoading}
+          />
         )}
         {(tab === "sid" || tab === "star" || tab === "pbn" || tab === "ils") && (
           <ProcTab
@@ -474,6 +528,112 @@ function ProcTab({
           onHighlight={onHighlight}
         />
       )}
+    </div>
+  );
+}
+
+/* --- Holding tab ---------------------------------------------------------- */
+
+function HoldingTab({
+  state,
+  onChange,
+  airportOpts,
+  holdingOpts,
+  loading,
+}: {
+  state: HoldingLayerState;
+  onChange: (s: HoldingLayerState) => void;
+  airportOpts: string[];
+  holdingOpts: string[];
+  loading: boolean;
+}) {
+  const set = (patch: Partial<HoldingLayerState>) =>
+    onChange({ ...state, ...patch });
+
+  // Same single-open rule as the procedure tabs — the two dropdown menus are
+  // absolutely positioned and would otherwise stack on each other.
+  const [openMs, setOpenMs] = useState<"airport" | "holding" | null>(null);
+
+  const flipCategory = (c: HoldingCategory) => {
+    const next = new Set(state.categories);
+    if (next.has(c)) next.delete(c);
+    else next.add(c);
+    set({ categories: next });
+  };
+
+  return (
+    <div className="lo-proc">
+      <label className="lo-check">
+        <span>Holding Patterns{loading ? " (loading…)" : ""}</span>
+        <input
+          type="checkbox"
+          checked={state.patterns}
+          onChange={(e) => set({ patterns: e.target.checked })}
+        />
+      </label>
+      <label className="lo-check">
+        <span>Labels</span>
+        <input
+          type="checkbox"
+          checked={state.labels}
+          onChange={(e) => set({ labels: e.target.checked })}
+        />
+      </label>
+
+      <div className="lo-field">
+        <span className="lo-label">HOLDING PATTERN</span>
+        {HOLDING_CATEGORIES.map((c) => (
+          <label key={c} className={`lo-check lo-hold-cat ${c}`}>
+            <span>{HOLDING_CATEGORY_LABEL[c]}</span>
+            <input
+              type="checkbox"
+              checked={state.categories.has(c)}
+              onChange={() => flipCategory(c)}
+            />
+          </label>
+        ))}
+      </div>
+
+      <MultiSelect
+        label="AIRPORT"
+        options={airportOpts}
+        selected={state.airports}
+        onChange={(s) => set({ airports: s })}
+        open={openMs === "airport"}
+        onOpenChange={(o) => setOpenMs(o ? "airport" : null)}
+      />
+      <MultiSelect
+        label="HOLDING"
+        options={holdingOpts}
+        selected={state.holdings}
+        onChange={(s) => set({ holdings: s })}
+        open={openMs === "holding"}
+        onOpenChange={(o) => setOpenMs(o ? "holding" : null)}
+      />
+
+      <Slider
+        label="OPACITY"
+        value={Math.round(state.opacity * 100)}
+        min={10}
+        max={100}
+        step={5}
+        suffix="%"
+        onChange={(v) => set({ opacity: v / 100 })}
+      />
+      <Slider
+        label="LINE THICKNESS"
+        value={state.thickness}
+        min={1}
+        max={8}
+        step={1}
+        suffix="PX"
+        onChange={(v) => set({ thickness: v })}
+      />
+      <p className="lo-empty">
+        Racetracks are drawn to scale from the coded inbound course, turn
+        direction and leg time at the holding speed. Enroute holds file under
+        the “ENRT” airport.
+      </p>
     </div>
   );
 }
