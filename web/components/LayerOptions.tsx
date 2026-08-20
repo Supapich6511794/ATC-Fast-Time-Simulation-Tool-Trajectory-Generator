@@ -126,6 +126,8 @@ interface Props {
   onHideAllAirports: () => void;
   showRunways: boolean;
   onShowRunways: (on: boolean) => void;
+  runwayLabels: boolean;
+  onRunwayLabels: (on: boolean) => void;
   // Gates
   gatesOn: boolean;
   onGatesOn: (on: boolean) => void;
@@ -168,6 +170,8 @@ function LayerOptions({
   onHideAllAirports,
   showRunways,
   onShowRunways,
+  runwayLabels,
+  onRunwayLabels,
   gatesOn,
   onGatesOn,
   airwaysOn,
@@ -236,6 +240,8 @@ function LayerOptions({
             onHideAllAirports={onHideAllAirports}
             showRunways={showRunways}
             onShowRunways={onShowRunways}
+            runwayLabels={runwayLabels}
+            onRunwayLabels={onRunwayLabels}
           />
         )}
         {tab === "gates" && (
@@ -361,6 +367,8 @@ function AirportsTab({
   onHideAllAirports,
   showRunways,
   onShowRunways,
+  runwayLabels,
+  onRunwayLabels,
 }: Pick<
   Props,
   | "airportList"
@@ -370,6 +378,8 @@ function AirportsTab({
   | "onHideAllAirports"
   | "showRunways"
   | "onShowRunways"
+  | "runwayLabels"
+  | "onRunwayLabels"
 >) {
   const [q, setQ] = useState("");
   const filtered = useMemo(() => {
@@ -404,6 +414,23 @@ function AirportsTab({
           onChange={(e) => onShowRunways(e.target.checked)}
         />
       </label>
+      {/* Threshold idents ride on the runway strips, so the labels are only
+          meaningful while the strips themselves are drawn. */}
+      <label className={`lo-check${showRunways ? "" : " lo-check-off"}`}>
+        <span>Show Runway Labels</span>
+        <input
+          type="checkbox"
+          checked={runwayLabels}
+          disabled={!showRunways}
+          onChange={(e) => onRunwayLabels(e.target.checked)}
+        />
+      </label>
+      {showRunways && runwayLabels && (
+        <p className="lo-empty">
+          Runway idents (03L, 21R…) label each threshold when zoomed in to an
+          airport.
+        </p>
+      )}
       <input
         className="lo-search"
         placeholder="Search airports…"

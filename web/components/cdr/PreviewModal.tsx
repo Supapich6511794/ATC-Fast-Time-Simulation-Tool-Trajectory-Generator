@@ -40,10 +40,13 @@ import {
 } from "@/lib/cdr/constraints";
 import type { CdrConfig, ManeuverType } from "@/lib/cdr/config";
 import type { Blocker, PlanResolution } from "@/lib/cdr/planAdvisory";
+import type { ConflictSector } from "@/lib/cdr/sector";
 import type { Maneuver, ManeuverResolution } from "@/lib/cdr/types";
 import { holdLegSec, holdLoopSec, type Holding } from "@/lib/holdings";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
 import { aircraftAt, toSamples, totalSeconds, type AircraftState } from "@/lib/useSimPlayback";
+
+import SectorChip from "./SectorChip";
 
 interface Sample extends AircraftState { t: number }
 
@@ -67,6 +70,10 @@ interface Props {
   restricted: RestrictedArea[];
   /** Published holdings by ident — enables the manual HOLD option. */
   holdings?: Map<string, Holding>;
+  /** The ATS unit responsible for this conflict. Shown in the header because
+   *  this is the screen the fix is actually issued from — the controller has
+   *  to see whose airspace it is, and whether it needs coordinating. */
+  sector?: ConflictSector | null;
   onApply: (
     m: Pick<Maneuver, "type" | "target" | "instruction" | "resolution"> & {
       /** Exact timing to apply the maneuver with (from the validated candidate),
@@ -166,6 +173,7 @@ export default function PreviewModal({
   allFlights,
   restricted,
   holdings,
+  sector,
   onApply,
   onClose,
 }: Props) {
@@ -198,6 +206,9 @@ export default function PreviewModal({
   // A picked auto-suggestion (drives the resolution until the user hand-edits).
   // Route/direct suggestions can only be represented here, not by the sliders.
   const [picked, setPicked] = useState<PlanResolution | null>(null);
+  // "What does 100 mean?" — the score legend, collapsed by default so it
+  // explains itself on demand without pushing the list down every time.
+  const [scoreHelp, setScoreHelp] = useState(false);
 
   // Reset the level target when the target aircraft changes.
   useEffect(() => {
@@ -584,6 +595,7 @@ export default function PreviewModal({
           <strong>
             Preview &amp; fix — {nameOf(conflict.a)} ↔ {nameOf(conflict.b)}
           </strong>
+          <SectorChip sector={sector} ids={conflict} nameOf={nameOf} />
           <button type="button" className="cdr-modal-close" onClick={onClose} aria-label="Close">
             ✕
           </button>
@@ -680,7 +692,46 @@ export default function PreviewModal({
             {/* Auto-generated ranked resolutions. */}
             {planSuggestions.length > 0 ? (
               <div className="cdr-sugg">
-                <div className="cdr-sugg-head">Suggested resolutions</div>
+                <div className="cdr-sugg-head">
+                  <span>Suggested resolutions</span>
+                  <button
+                    type="button"
+                    className="cdr-sugg-info"
+                    aria-expanded={scoreHelp}
+                    onClick={() => setScoreHelp((v) => !v)}
+                    title="What the score means"
+                  >
+                    ⓘ What is the score?
+                  </button>
+                </div>
+                {scoreHelp && (
+                  <div className="cdr-sugg-help">
+                    <p>
+                      <b>100 = the least disruptive fix on this list.</b> The
+                      cheapest option always scores 100 and every other one is
+                      measured against it —{" "}
+                      <code>100 × (best cost + 1) ÷ (this cost + 1)</code>. So
+                      50 costs about twice the best, and 1 is ~100× as
+                      disruptive.
+                    </p>
+                    <p>
+                      Cost is what the maneuver takes away from the flight:
+                      <b> 1</b> per degree off track, <b>2</b> per extra NM
+                      flown, <b>3</b> per 1 000 ft of level change, plus a fixed
+                      penalty for the kind of instruction — Speed <b>0</b>,
+                      Level <b>10</b>, Heading <b>20</b>, Direct <b>30</b>, Hold{" "}
+                      <b>40</b>. Speed control keeps the aircraft on its route
+                      AND its level and just re-times the crossing, so it is the
+                      cheapest; a hold is the dearest.
+                    </p>
+                    <p className="cdr-sugg-help-note">
+                      The score is <b>relative to this conflict only</b> — it
+                      ranks the options against each other, it is not a safety
+                      rating. Every option shown already restores the separation
+                      minima and passed the constraint check below.
+                    </p>
+                  </div>
+                )}
                 {planSuggestions.map((r, i) => {
                   const sel =
                     picked != null &&
@@ -703,8 +754,16 @@ export default function PreviewModal({
                         <span className="cdr-sugg-instr">
                           <strong>{nameOf(r.target)}</strong> {r.instruction}
                         </span>
-                        <span className="cdr-sugg-score" title="Score (higher is better)">
+                        <span
+                          className={`cdr-sugg-score${r.score === 100 ? " best" : ""}`}
+                          title={
+                            r.score === 100
+                              ? "Score 100 — the least disruptive option here; every other score is measured against this one."
+                              : `Score ${r.score} of 100 — about ${(100 / r.score).toFixed(1)}× as disruptive as the best option on this list.`
+                          }
+                        >
                           {r.score}
+                          <small>/100</small>
                         </span>
                       </div>
                       <div className="cdr-sugg-meta">

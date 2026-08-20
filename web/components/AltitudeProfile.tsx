@@ -7,7 +7,7 @@
  * Renders the Phase 2 vertical profile (climb → cruise → descent) as a
  * filled area on an SVG canvas with dashed cruise-level + TOC/TOD
  * gridlines. The plane is driven by the SAME `simT` clock that animates the
- * map, so Play/Pause, the x1…x100 speed and the TOC/TOD crossings all stay
+ * map, so Play/Pause, the x1…x200 speed and the TOC/TOD crossings all stay
  * in lock-step with the map aircraft. The chart SVG is stretched with
  * preserveAspectRatio="none" (which would distort an icon drawn inside it),
  * so the plane is an absolutely-positioned overlay whose %-position maps
@@ -38,8 +38,9 @@ interface Props {
   airspace?: AirspaceMembership;
   /** Whole-route airspace breakdown (from MapApp): each contiguous stretch the
    *  aircraft spends in the same set of sectors. Paints the profile area in
-   *  colour blocks tinted by those sectors' map colours. */
-  airspaceSegments?: AirspaceSegment[];
+   *  colour blocks tinted by those sectors' map colours. Passed as a lookup so
+   *  the walk happens when a chart mounts, not for every loaded flight. */
+  airspaceSegmentsFor?: (flightKey: string) => AirspaceSegment[];
 }
 
 /** Soft translucent fill for a profile block, from the colour of the ONE
@@ -98,8 +99,14 @@ export default function AltitudeProfile({
   height = 140,
   simT,
   airspace,
-  airspaceSegments,
+  airspaceSegmentsFor,
 }: Props) {
+  // Resolved here rather than by the parent: this chart only exists for a route
+  // the user opened, so the sector walk is paid for one route at a time.
+  const airspaceSegments = useMemo(
+    () => airspaceSegmentsFor?.(trajectory.meta.flightKey) ?? [],
+    [airspaceSegmentsFor, trajectory.meta.flightKey],
+  );
   const samples = useMemo<AltSample[]>(() => {
     const pts = trajectory.points;
     if (pts.length === 0) return [];

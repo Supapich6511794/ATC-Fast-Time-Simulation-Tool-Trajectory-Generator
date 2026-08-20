@@ -43,6 +43,8 @@ from trajectory_sim.geodesy import (
     haversine_distance,
     route_distance_nm,
 )
+from trajectory_sim.tactical import splice_tactical_extension
+from trajectory_sim.vectors import VectorToFinal, plan_open_star_join
 from trajectory_sim.navdata import (
     ALTITUDE_TERMINATED,
     AltitudeConstraintType,
@@ -193,6 +195,27 @@ class GenerateRequest(BaseModel):
     # IAF transition auto-picks from the STAR's terminal fix (or set it here).
     approach: str | None = None
     approach_transition: str | None = None
+    # Take radar vectors to final instead of flying the published procedure to
+    # the runway. Only an OPEN STAR (one ending in a VM "expect vectors" leg)
+    # can be vectored; on any other arrival this is ignored with a warning.
+    #
+    # This is the CONFLICT branch of the arrival flow. With no conflict an
+    # arrival stays on the procedure — STAR to its last fix, then the approach
+    # from its IAF — so this defaults off. Setting `extend_downwind_nm` implies
+    # it, since a downwind can only be extended under vectors.
+    vector_to_final: bool | None = None
+    # Extra track distance (NM) to absorb on the vector-to-final of an OPEN
+    # STAR — the arrival sequencer's spacing deficit, flown as a longer
+    # downwind before the turn onto final ("maintain heading until separation",
+    # Doc 4444 §8.9.3.6).
+    extend_downwind_nm: float | None = None
+    # Apply `extend_downwind_nm` TACTICALLY — as an instruction to an aircraft
+    # already at the hand-over fix — rather than re-planning the whole flight
+    # with a longer route. Without this the re-plan pushes top-of-descent back,
+    # so the aircraft passes the hand-over fix thousands of feet higher and the
+    # extra track is flown in the cruise band; the delay the extension was meant
+    # to buy is then mostly lost. See trajectory_sim.tactical.
+    tactical_extend: bool | None = None
 
     # --- Optional speed-schedule overrides (Phase 3 tuning) -----------
     # Any field left None keeps the airframe's default. Applied per
@@ -241,10 +264,19 @@ def _cache_export(
     route_str: str,
     rfl: float,
     route_feature: dict[str, object],
+    request: "GenerateRequest | None" = None,
 ) -> None:
-    """Stash everything needed to write this route's files on demand."""
+    """Stash everything needed to write this route's files on demand.
+
+    The originating REQUEST is kept alongside so a flight can be re-flown with a
+    tactical change (see ``/api/extend``) without the client having to hold the
+    spec. It cannot rebuild one from the response: the resolved ``route`` is a
+    fix list, not the Item-15 string, and for a vectored arrival it carries the
+    invented TURN/INTC fixes, which are not routable input.
+    """
     _EXPORT_CACHE[flight_key] = {
         "gdf": gdf,
+        "request": request,
         "route_str": route_str,
         "rfl": rfl,
         "route_feature": route_feature,
@@ -259,6 +291,12 @@ def _cache_export(
     # handing back the OLD file (e.g. the previous Surveillance cadence). A
     # fresh gdf must replace its files, so drop them now and let the next
     # download rewrite them from this cache entry.
+    _drop_files(flight_key)
+
+
+def _drop_files(flight_key: str) -> None:
+    """Delete this flight's materialised export files, so the next download
+    re-renders them from the (now changed) cache entry."""
     for _ext in _MEDIA:
         stale = _OUT_DIR / f"{flight_key}.{_ext}"
         if stale.exists():
@@ -1018,6 +1056,81 @@ def _glide_to_threshold(
     ]
 
 
+#: Steepest base-leg descent gradient (ft/NM) treated as flyable. ~700 ft/NM is
+#: about 6.5° at approach speed — already twice a normal 3° path and about the
+#: limit of an idle, speedbrake-out descent. Beyond it the plan is not a plan.
+_MAX_BASE_GRADIENT_FT_NM = 700.0
+
+
+def _level_on_the_assigned_heading(
+    gdf: object,  # geopandas GeoDataFrame
+    handover_ll: "tuple[float, float]",
+    turn_ll: "tuple[float, float]",
+    intercept_ll: "tuple[float, float]",
+) -> float:
+    """In place: fly the assigned-heading leg LEVEL, then descend from the turn.
+
+    The VTBS STAR chart's note is a heading instruction and nothing else —
+    "After ESGEN, ATKIN maintain heading 015 or as directed by ATC" — and Doc
+    4444 §8.9.4.2 has the aircraft hold its last assigned level until it is
+    established. An aircraft on an open-ended radar heading has no descent
+    clearance: it maintains what it was given until ATC turns it onto base and
+    descends it. Continuing the STAR's descent profile down the downwind is
+    therefore the wrong shape, and it gets worse the longer the downwind is
+    extended for spacing — the aircraft would arrive at the turn progressively
+    lower for a delay that is supposed to cost track miles, not altitude.
+
+    Every sample between the hand-over fix and the turn point is clamped to the
+    level the aircraft crossed the hand-over fix at. The descent then resumes
+    from the turn, over the base leg, exactly as the chart has it.
+
+    Returns the resulting gradient over the WHOLE base leg in ft/NM (turn point
+    to intercept, 0 when nothing was changed), so the caller can warn if
+    holding the level makes the base steeper than the aircraft can fly.
+    """
+    from shapely.geometry import Point
+
+    n = len(gdf)
+    if n < 3:
+        return 0.0
+    lats = [float(g.y) for g in gdf.geometry]
+    lons = [float(g.x) for g in gdf.geometry]
+    alts = [None if a is None else float(a) for a in gdf["altitude_ft"]]
+
+    def nearest(ll: "tuple[float, float]") -> int:
+        return min(
+            range(n),
+            key=lambda i: (lats[i] - ll[0]) ** 2 + (lons[i] - ll[1]) ** 2,
+        )
+
+    i0, i1 = nearest(handover_ll), nearest(turn_ll)
+    if i1 <= i0 or alts[i0] is None:
+        return 0.0
+    level = float(alts[i0])
+    new_alts = list(alts)
+    for j in range(i0, i1 + 1):
+        new_alts[j] = level
+    gdf["altitude_ft"] = [None if a is None else round(a, 1) for a in new_alts]
+    gdf["geometry"] = [
+        Point(lon, lat, 0.0 if a is None else a * 0.3048)
+        for lat, lon, a in zip(lats, lons, new_alts)
+    ]
+
+    # How steep the base leg now has to be — the altitude the downwind no
+    # longer gives away has to come off somewhere. Measured over the WHOLE leg,
+    # turn point to intercept: a per-sample slope would report the steepest
+    # instant rather than the descent the aircraft actually has to fly.
+    i2 = nearest(intercept_ll)
+    if i2 <= i1 or new_alts[i2] is None:
+        return 0.0
+    base_nm = sum(
+        haversine_distance(lats[j - 1], lons[j - 1], lats[j], lons[j])
+        for j in range(i1 + 1, i2 + 1)
+    )
+    drop = level - float(new_alts[i2])
+    return drop / base_nm if base_nm > 0.1 and drop > 0 else 0.0
+
+
 def _proc_runway(proc: "Procedure | None") -> str | None:
     """The runway a resolved SID/STAR serves — for the trajectory export.
 
@@ -1712,9 +1825,63 @@ def _splice_terminal_procedures(
         sid_proc = _expand_departure(req, adep, sid_proc)
 
     enroute = [RouteWaypoint(ident=i, lat=la, lon=lo) for i, la, lo in route_pts]
-    spliced = splice_procedures(
-        enroute, sid=sid_proc, star=star_proc, approach=approach_proc
-    )
+
+    # An arrival off an OPEN STAR (last leg a VM — "fly heading 015, expect
+    # vectors") can be flown two ways, and WHICH ONE is a controller decision,
+    # not a property of the procedure:
+    #
+    #   no conflict  ->  stay on the published path: the STAR runs to its last
+    #                    fix, then the approach from its IAF (ATKIN, LETMA,
+    #                    LAVOG, LOTMU, FAF, MAPt). This is the default.
+    #   conflict     ->  leave the procedure at the STAR's end, hold the
+    #                    published heading until the spacing is there, then turn
+    #                    to intercept the extended centreline (TURN, INTC, …).
+    #
+    # So vectoring is opt-in: `vector_to_final`, or implicitly any request to
+    # extend the downwind, which is only meaningful under vectors.
+    extend_nm = max(0.0, float(req.extend_downwind_nm or 0.0))
+    want_vectors = bool(req.vector_to_final) or extend_nm > 0
+    vector_join: "VectorToFinal | None" = None
+    if (
+        want_vectors
+        and star_proc is not None
+        and star_proc.is_open
+        and approach_proc is not None
+    ):
+        landing = _approach_runway(approach_name) or (
+            (req.star_runway or "").strip().upper() or _proc_runway(star_proc)
+        )
+        rwy_end = runway_end(ades, landing)
+        if rwy_end is not None:
+            planned = plan_open_star_join(
+                star_proc, approach_proc, rwy_end, extend_nm=extend_nm
+            )
+            if planned is not None:
+                arrival_fixes, vector_join = planned
+        if vector_join is None:
+            warnings.append(
+                f"Vectors to final were requested but no path could be planned "
+                f"for {star_name}; flown on the published procedure instead."
+            )
+    elif want_vectors and star_proc is not None and not star_proc.is_open:
+        warnings.append(
+            f"{star_name} does not end in radar vectors, so there is no "
+            "published heading to hold; flown on the published procedure."
+        )
+
+    if vector_join is not None:
+        # enroute + SID through the normal splice (it collapses the route's
+        # shared boundary fixes), then the arrival the vector planner built:
+        # STAR fixes, the two vector legs, and the approach from the intercept
+        # inwards. Those idents cannot collide with an enroute fix, so they
+        # simply append.
+        spliced = splice_procedures(enroute, sid=sid_proc, star=star_proc)
+        star_len = len(star_proc.waypoints()) if star_proc is not None else 0
+        spliced = [*spliced, *arrival_fixes[star_len:]]
+    else:
+        spliced = splice_procedures(
+            enroute, sid=sid_proc, star=star_proc, approach=approach_proc
+        )
     spliced_pts = [(w.ident, w.lat, w.lon) for w in spliced]
     # Resolved terminal selection for the export — the runway is the one the
     # resolver actually picked (so an "Auto" request still records a runway).
@@ -1724,22 +1891,117 @@ def _splice_terminal_procedures(
         req = (requested or "").strip().upper()
         return req or _proc_runway(proc)
 
+    # An approach names the runway it lands on, and that beats the STAR's: they
+    # can disagree (a STAR resolved to RW01 flown into the R02L approach lands
+    # on 02L), and it is the approach that puts the aircraft on the tarmac.
+    arr_rwy = _approach_runway(approach_name) or _rwy(req.star_runway, star_proc)
     terminal = {
         "sid": sid_name or None,
         "star": star_name or None,
         "approach": approach_name or None,
         "dep_rwy": _rwy(req.sid_runway, sid_proc),
-        # An approach names the runway it lands on, and that beats the STAR's:
-        # they can disagree (a STAR resolved to RW01 flown into the R02L
-        # approach lands on 02L), and it is the approach that puts the aircraft
-        # on the tarmac.
-        "arr_rwy": _approach_runway(approach_name)
-        or _rwy(req.star_runway, star_proc),
+        "arr_rwy": arr_rwy,
+        # Can this arrival be VECTORED at all? Only an open STAR publishes a
+        # heading to hold, so the client uses these to decide whether the
+        # "maintain heading" resolution is on the table for a flight.
+        "star_open": bool(star_proc is not None and star_proc.is_open),
+        "vector_heading_deg": _vector_heading_true(ades, star_proc, arr_rwy),
+        # ...and the same heading AS THE CHART PRINTS IT. The geometry is
+        # solved in true, but "maintain heading 015" is what a controller
+        # transmits and what the AIP note says; quoting the true course back at
+        # them (014 here, after 0°42'W variation) is simply the wrong number
+        # for an instruction.
+        "vector_heading_mag_deg": _vector_heading_magnetic(star_proc),
+        "vectored": vector_join is not None,
+        # The chart forbids entering the approach without a clearance, so BOTH
+        # flows record the clearance they were flown under.
+        "clearance": _arrival_clearance(
+            star_proc, approach_proc, approach_name, vector_join is not None
+        ),
     }
     return _finish(
         req, adep, ades, spliced_pts, terminal,
         sid_proc, star_proc, approach_proc, warnings,
     )
+
+
+def _arrival_clearance(
+    star_proc: "Procedure | None",
+    approach_proc: "Procedure | None",
+    approach_name: str,
+    vectored: bool,
+) -> str | None:
+    """The ATC clearance this arrival is flown under, as phraseology.
+
+    The VTBS STAR charts print, against the vector hand-over fixes:
+
+        "After ESGEN, ATKIN maintain heading 015 or as directed by ATC.
+         Do not proceed Instrument Approach Procedure without ATC clearance."
+
+    So an open STAR NEVER continues into the approach on its own. Both flows
+    are therefore clearances and both are recorded — the difference is which
+    one was issued:
+
+        vectored   AFTER ATKIN MAINTAIN HEADING 015, VECTORS R19
+        published  DIRECT LETMA, CLEARED R19 APPROACH
+
+    A closed STAR connects to the IAF by design, so it carries the approach
+    clearance alone. ``None`` when there is no approach to be cleared for.
+    """
+    name = (approach_name or "").strip().upper()
+    if approach_proc is None or not name:
+        return None
+    if star_proc is not None and star_proc.is_open:
+        leg = star_proc.vector_termination
+        start = star_proc.last_fix()
+        if vectored and leg is not None and start is not None:
+            # Magnetic, as the chart prints it and as ATC would say it — not
+            # the true course the geometry is solved in.
+            crs = leg.magnetic_course
+            hdg = f"{int(round(crs)) % 360:03d}" if crs is not None else "AS ASSIGNED"
+            return f"AFTER {start.ident} MAINTAIN HEADING {hdg}, VECTORS {name}"
+        entry = approach_proc.waypoints()
+        if entry:
+            return f"DIRECT {entry[0].ident}, CLEARED {name} APPROACH"
+    return f"CLEARED {name} APPROACH"
+
+
+def _threshold_json(ades: str, arr_rwy: object) -> dict[str, float] | None:
+    """Landing threshold coordinates for the response, or ``None`` when the
+    runway isn't on record. The client has no runway database of its own, and
+    the threshold is what arrival sequencing measures spacing against."""
+    rwy = runway_end(ades, arr_rwy if isinstance(arr_rwy, str) else None)
+    return {"lat": rwy.lat, "lon": rwy.lon} if rwy is not None else None
+
+
+def _vector_heading_true(
+    ades: str, star_proc: "Procedure | None", arr_rwy: str | None
+) -> float | None:
+    """The published heading an OPEN STAR hands the arrival over on, in degrees
+    TRUE. ``None`` for a closed STAR, or when the runway's magnetic variation
+    isn't on record (the leg publishes the course magnetic)."""
+    if star_proc is None:
+        return None
+    leg = star_proc.vector_termination
+    if leg is None or leg.magnetic_course is None:
+        return None
+    rwy = runway_end(ades, arr_rwy)
+    if rwy is None:
+        return None
+    return round((leg.magnetic_course + rwy.magnetic_variation) % 360.0, 1)
+
+
+def _vector_heading_magnetic(star_proc: "Procedure | None") -> float | None:
+    """The vector-termination course exactly as the chart publishes it — the
+    magnetic course coded on the VM leg, no variation applied. This is the
+    number that belongs in phraseology; :func:`_vector_heading_true` is the one
+    that belongs in the geometry."""
+    if star_proc is None:
+        return None
+    leg = star_proc.vector_termination
+    if leg is None or leg.magnetic_course is None:
+        return None
+    return round(leg.magnetic_course % 360.0, 1)
 
 
 def _constraint_json(con: object) -> dict[str, object]:
@@ -2156,6 +2418,7 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
                 approach=terminal.get("approach"),
                 dep_rwy=terminal.get("dep_rwy"),
                 arr_rwy=terminal.get("arr_rwy"),
+                clearance=terminal.get("clearance"),
                 # The filed route fixes (SID + enroute + STAR + approach, with
                 # idents) → the `waypoint` marker column. Taken from route_pts,
                 # not the smoothed path_pts (whose idents are sparse).
@@ -2175,6 +2438,34 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
             set_speed_restriction(
                 cas_kt=orig_restrict[0], below_alt_ft=orig_restrict[1]
             )
+
+    # An aircraft on an assigned radar heading holds its last cleared level —
+    # the chart note gives it a heading and nothing else, and no descent comes
+    # with it. Flatten the downwind before the final glide is straightened, so
+    # the two edits compose in the order they happen in the air.
+    if terminal.get("vectored"):
+        turn_i = next(
+            (i for i, w in enumerate(route_pts) if w[0] == "TURN" and i > 0), None
+        )
+        if turn_i is not None and turn_i + 1 < len(route_pts):
+            handover = route_pts[turn_i - 1]
+            turn, intc = route_pts[turn_i], route_pts[turn_i + 1]
+            grad = _level_on_the_assigned_heading(
+                gdf,
+                (handover[1], handover[2]),
+                (turn[1], turn[2]),
+                (intc[1], intc[2]),
+            )
+            # Holding the level moves that altitude onto the base leg. Say so
+            # when the base then needs a gradient no jet flies rather than
+            # emitting a profile that only looks right.
+            if grad > _MAX_BASE_GRADIENT_FT_NM:
+                warnings.append(
+                    f"Vectors to final: holding the assigned level to the base "
+                    f"turn leaves {grad:.0f} ft/NM to lose on the base leg "
+                    f"(over {_MAX_BASE_GRADIENT_FT_NM:.0f}); the descent may "
+                    f"not be flyable as planned."
+                )
 
     # Land a flown approach ON the runway threshold. The shallow near-ground
     # descent rate + the MAPt's threshold-crossing altitude otherwise leave the
@@ -2329,11 +2620,14 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
             "flight_key": flight_key,
             "route": route_for_header,
             "callsign": req.callsign,
-            "aircraft_type": "B738",
+            "aircraft_type": actype,
             "adep": adep,
             "ades": ades,
             "rfl": int(req.rfl),
             "eobt": eobt.isoformat(),
+            # The ATC clearance the arrival was flown under — plan metadata, so
+            # it belongs on the route feature as well as the sampled points.
+            "clearance": terminal.get("clearance"),
             "idents": [p[0] for p in route_pts],
         },
         "geometry": {
@@ -2364,7 +2658,10 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
     # download endpoints write each format on demand (see `_materialise`).
     # This is what makes "Generate all" fast — no GDAL writes during
     # generation, only the JSON response below.
-    _cache_export(flight_key, gdf, route_for_header, float(req.rfl), route_feature)
+    _cache_export(
+        flight_key, gdf, route_for_header, float(req.rfl), route_feature,
+        request=req,
+    )
 
     return {
         "flight_key": flight_key,
@@ -2374,6 +2671,26 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
             "adep": adep,
             "ades": ades,
             "eobt": eobt.isoformat(),
+            # Resolved terminal selection — the DEPARTURE half as well as the
+            # arrival: a flight flown on a SID is not the same climb-out as a
+            # DCT off the aerodrome, so anything reading the response back (the
+            # dummy-file generators, a re-import of a downloaded flight) has to
+            # be able to see which one it was. The arrival runway and its
+            # threshold are what the client needs to sequence arrivals (it has
+            # no runway database of its own for this); `star_open` and the
+            # published vector heading say whether this arrival CAN be
+            # vectored, which gates the "maintain heading" resolution.
+            "sid": terminal.get("sid"),
+            "dep_rwy": terminal.get("dep_rwy"),
+            "star": terminal.get("star"),
+            "approach": terminal.get("approach"),
+            "arr_rwy": terminal.get("arr_rwy"),
+            "arr_threshold": _threshold_json(ades, terminal.get("arr_rwy")),
+            "star_open": bool(terminal.get("star_open")),
+            "vector_heading_deg": terminal.get("vector_heading_deg"),
+            "vector_heading_mag_deg": terminal.get("vector_heading_mag_deg"),
+            "vectored": bool(terminal.get("vectored")),
+            "clearance": terminal.get("clearance"),
             "engine": (
                 "Python trajectory_sim · pyproj.Geod (WGS-84) · "
                 f"{PERFORMANCE_SOURCE}"
@@ -2417,8 +2734,78 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
     }
 
 
+def _generate_tactical(req: "GenerateRequest") -> dict[str, object]:
+    """Fly `extend_downwind_nm` as an INSTRUCTION rather than a re-plan.
+
+    Generates the flight twice — once as filed (vectored, no extension) and once
+    with the longer downwind — then splices them at the hand-over fix, keeping
+    everything already flown and taking only the new ground track. See
+    :mod:`trajectory_sim.tactical` for why the re-plan alone is wrong.
+
+    Applied for ANY extension including zero. That is deliberate: the splice
+    re-times the tail from the speeds the aircraft actually reports, so a
+    vectored arrival flown with no extension must go through the same path as
+    one flown with 6 NM of it. Otherwise the two differ by the re-timing alone,
+    and "extend by D" would appear to buy D plus a constant.
+
+    Falls back to the plain re-plan whenever there is nothing to splice (no
+    vector legs were produced, or the hand-over fix can't be identified).
+    """
+    extend_nm = max(0.0, float(req.extend_downwind_nm or 0.0))
+    extended = _generate_one(
+        req.model_copy(update={"vector_to_final": True})
+    )
+
+    idents = [w["ident"] for w in extended.get("route", [])]
+    if "TURN" not in idents or idents.index("TURN") == 0:
+        return extended
+    handover = extended["route"][idents.index("TURN") - 1]
+
+    baseline = _generate_one(
+        req.model_copy(update={"extend_downwind_nm": 0.0, "vector_to_final": True})
+    )
+    spliced = splice_tactical_extension(
+        baseline.get("points") or [],
+        extended.get("points") or [],
+        float(handover["lat"]),
+        float(handover["lon"]),
+    )
+    if len(spliced) < 2:
+        return extended
+
+    # The route (ground track) is the extended one; the flown path is the
+    # splice. Re-derive the headline numbers from what is actually flown.
+    dist_nm = sum(
+        haversine_distance(a["lat"], a["lon"], b["lat"], b["lon"])
+        for a, b in zip(spliced, spliced[1:])
+    )
+    t0 = datetime.fromisoformat(str(spliced[0]["epoch_ts"]).replace("Z", "+00:00"))
+    t1 = datetime.fromisoformat(str(spliced[-1]["epoch_ts"]).replace("Z", "+00:00"))
+    out = dict(extended)
+    out["points"] = spliced
+    out["stats"] = {
+        **extended["stats"],
+        "point_count": len(spliced),
+        "distance_nm": round(dist_nm, 1),
+        "time_minutes": round((t1 - t0).total_seconds() / 60.0, 2),
+    }
+    meta = dict(extended.get("meta") or {})
+    meta["tactical_extend_nm"] = extend_nm
+    meta["tactical_handover"] = handover["ident"]
+    out["meta"] = meta
+    if extend_nm > 0:
+        out["warnings"] = [
+            *(extended.get("warnings") or []),
+            f"Downwind extended {extend_nm:.1f} NM tactically from "
+            f"{handover['ident']}; the flight before that fix is unchanged.",
+        ]
+    return out
+
+
 @app.post("/api/generate")
 def generate(req: GenerateRequest) -> dict[str, object]:
+    if req.tactical_extend:
+        return _generate_tactical(req)
     return _generate_one(req)
 
 
@@ -2492,6 +2879,12 @@ def _materialise(flight_key: str, ext: str) -> "Path | None":
     if bundle is None:
         return None
     gdf = bundle["gdf"]
+    # Unresolved losses of separation (posted by the client's CD&R scan) become
+    # a per-sample `conflict` column, so every format says at WHICH timestamps
+    # this flight is below minima and against whom.
+    spans = bundle.get("conflicts") or []
+    if spans:
+        gdf = _with_conflict_column(gdf, spans)  # type: ignore[arg-type]
     if ext == "gpkg":
         if path.exists():
             path.unlink()  # GPKG driver appends; ensure a clean layer
@@ -2502,6 +2895,7 @@ def _materialise(flight_key: str, ext: str) -> "Path | None":
             path,
             route_str=str(bundle["route_str"]),
             rfl=bundle["rfl"],  # type: ignore[arg-type]
+            conflicts=spans,  # type: ignore[arg-type]
         )
     elif ext == "geojson":
         # Build the FeatureCollection straight from the GeoDataFrame (no slow
@@ -2511,10 +2905,64 @@ def _materialise(flight_key: str, ext: str) -> "Path | None":
         g["epoch_ts"] = g["epoch_ts"].astype(str)
         fc = json.loads(g.to_json())
         fc.setdefault("features", [])
-        fc["features"].insert(0, bundle["route_feature"])
+        # The route feature carries the plan metadata — give it the conflict
+        # windows too, so a reader gets the summary without scanning points.
+        route_feature = bundle["route_feature"]
+        if spans:
+            route_feature = {
+                **route_feature,  # type: ignore[dict-item]
+                "properties": {
+                    **(route_feature.get("properties") or {}),  # type: ignore[union-attr]
+                    "unresolved_conflicts": spans,
+                },
+            }
+        fc["features"].insert(0, route_feature)
         fc["route"] = bundle["route_str"]  # foreign member; handy on re-import
         path.write_text(json.dumps(fc), encoding="utf-8")
     return path
+
+
+def _conflict_labels(
+    timestamps: "list", spans: "list[dict[str, object]]"
+) -> list[str]:
+    """Label each sample that falls inside an unresolved LOS window.
+
+    ``"LOS <other callsign>"`` per breached window, several joined with ``" ; "``
+    when a flight loses separation against more than one aircraft at the same
+    instant. Rows outside every window stay blank — same convention as the
+    ``event`` / ``waypoint`` marker columns.
+    """
+    windows: list[tuple[datetime, datetime, str]] = []
+    for s in spans:
+        try:
+            a = datetime.fromisoformat(str(s.get("start_ts", "")).replace("Z", "+00:00"))
+            b = datetime.fromisoformat(str(s.get("end_ts", "")).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if a.tzinfo is None:
+            a = a.replace(tzinfo=timezone.utc)
+        if b.tzinfo is None:
+            b = b.replace(tzinfo=timezone.utc)
+        other = str(s.get("with_callsign") or "").strip()
+        windows.append((a, b, f"LOS {other}".strip()))
+
+    out: list[str] = []
+    for ts in timestamps:
+        t = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        hits = [label for a, b, label in windows if a <= t <= b]
+        out.append(" ; ".join(hits))
+    return out
+
+
+def _with_conflict_column(gdf: object, spans: "list[dict[str, object]]") -> object:
+    """Copy of the export gdf carrying the `conflict` marker column. Copied
+    rather than mutated: the cached gdf is shared with the live JSON response
+    and with the other formats' renders."""
+    g = gdf.copy()  # type: ignore[union-attr]
+    g["conflict"] = _conflict_labels(list(g["epoch_ts"]), spans)  # type: ignore[index]
+    return g
 
 
 @app.get("/api/download/{flight_key}.{ext}")
@@ -2617,6 +3065,51 @@ def _points_to_gdf(
     return assign_waypoint_column(gdf, fixes or [])
 
 
+class ExtendRequest(BaseModel):
+    """POST body for /api/extend/{flight_key}."""
+
+    #: Extra distance to touchdown (NM) the arrival must absorb — the spacing
+    #: deficit the sequencer reported.
+    extend_nm: float = 0.0
+
+
+@app.post("/api/extend/{flight_key}")
+def extend_downwind(flight_key: str, body: ExtendRequest) -> dict[str, object]:
+    """Re-fly an arrival with a longer downwind, tactically.
+
+    The client sends only the flight key and how much track to absorb; the
+    request that produced the flight is taken from the export cache, so nothing
+    about the original spec has to be round-tripped through the browser.
+
+    The result is spliced at the hand-over fix (see
+    :func:`_generate_tactical`), so everything the aircraft has already flown
+    is preserved and only the track after the hand-over changes.
+    """
+    if "/" in flight_key or "\\" in flight_key or ".." in flight_key:
+        raise HTTPException(400, "Invalid flight key.")
+    bundle = _EXPORT_CACHE.get(flight_key)
+    if bundle is None:
+        raise HTTPException(404, "Unknown flight key — generate it first.")
+    req = bundle.get("request")
+    if not isinstance(req, GenerateRequest):
+        # Cached before the request was retained, or evicted and rebuilt from
+        # a recache. Say so rather than silently doing nothing.
+        raise HTTPException(
+            409, "This flight was not generated with a retained request; "
+                 "re-generate it before extending."
+        )
+    extend_nm = max(0.0, float(body.extend_nm))
+    return _generate_tactical(
+        req.model_copy(
+            update={
+                "vector_to_final": True,
+                "extend_downwind_nm": extend_nm,
+                "tactical_extend": True,
+            }
+        )
+    )
+
+
 @app.post("/api/recache")
 def recache(req: RecacheRequest) -> dict[str, object]:
     """Rebuild a flight's download export from a client-supplied (modified) point
@@ -2652,6 +3145,63 @@ def recache(req: RecacheRequest) -> dict[str, object]:
         req.flight_key, gdf, bundle["route_str"], bundle["rfl"], bundle["route_feature"]
     )
     return {"ok": True, "flight_key": req.flight_key, "points": len(req.points)}
+
+
+class ConflictSpan(BaseModel):
+    """One stretch of a flight's path where it is below separation minima against
+    another flight, as measured by the client's plan scan."""
+
+    #: The other aircraft in the pair.
+    with_callsign: str = ""
+    with_flight_key: str = ""
+    #: Inclusive UTC bounds of the breach (ISO 8601, "…Z" or "+00:00").
+    start_ts: str
+    end_ts: str
+    #: Tightest gap reached inside the window, and the minima it breached.
+    min_sep_nm: float | None = None
+    min_vert_ft: float | None = None
+    sep_min_nm: float | None = None
+    sep_min_ft: float | None = None
+
+
+class FlightConflictMarks(BaseModel):
+    """The unresolved LOS windows of ONE flight. An empty ``spans`` clears the
+    flight's marks (its conflict has been resolved)."""
+
+    flight_key: str
+    spans: list[ConflictSpan] = Field(default_factory=list)
+
+
+class ConflictMarksRequest(BaseModel):
+    """POST body for ``/api/conflict_marks``."""
+
+    marks: list[FlightConflictMarks] = Field(default_factory=list)
+
+
+@app.post("/api/conflict_marks")
+def conflict_marks(req: ConflictMarksRequest) -> dict[str, object]:
+    """Record which timestamps of a flight are in loss of separation.
+
+    CD&R detection runs in the browser (it needs every flight's trajectory at
+    once, which only the client holds), so the export cannot derive this itself.
+    The client posts the UNRESOLVED windows just before a download; every format
+    then carries a ``conflict`` column marking the affected track samples, plus —
+    in the CSV — a ``CONFLICT:`` header line per window. Re-posting replaces a
+    flight's marks, so a resolved conflict clears by posting an empty list.
+    """
+    updated = 0
+    for m in req.marks:
+        if not _safe_key(m.flight_key):
+            continue
+        bundle = _EXPORT_CACHE.get(m.flight_key)
+        if bundle is None:
+            continue  # never generated / evicted — nothing to annotate
+        bundle["conflicts"] = [s.model_dump() for s in m.spans]
+        # Any already-written file predates these marks; drop it so the next
+        # download re-renders with (or without) the conflict column.
+        _drop_files(m.flight_key)
+        updated += 1
+    return {"ok": True, "updated": updated}
 
 
 class IngestFix(BaseModel):

@@ -87,6 +87,17 @@ interface ApiPayload {
     ades: string;
     eobt: string;
     engine: string;
+    sid?: string | null;
+    dep_rwy?: string | null;
+    star?: string | null;
+    approach?: string | null;
+    arr_rwy?: string | null;
+    arr_threshold?: { lat: number; lon: number } | null;
+    star_open?: boolean;
+    vector_heading_deg?: number | null;
+    vector_heading_mag_deg?: number | null;
+    vectored?: boolean;
+    clearance?: string | null;
   };
   stats: {
     waypoint_count: number;
@@ -182,6 +193,42 @@ export async function generateTrajectory(
   return mapPayload(p);
 }
 
+/**
+ * Re-fly an arrival with a longer downwind, applied TACTICALLY — as an
+ * instruction to an aircraft already at the vector hand-over fix, so everything
+ * it has already flown is preserved.
+ *
+ * Only the flight key and the track miles to absorb are sent: the request that
+ * produced the flight is held server-side, because the browser cannot rebuild
+ * one from a `TrajectoryResult` (the resolved route is a fix list, not the
+ * Item-15 string, and a vectored arrival's TURN/INTC are not routable input).
+ */
+export async function extendDownwind(
+  flightKey: string,
+  extendNm: number,
+): Promise<GenerateResponse> {
+  let res: Response;
+  try {
+    res = await fetch(
+      `${API_BASE}/api/extend/${encodeURIComponent(flightKey)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ extend_nm: extendNm }),
+      },
+    );
+  } catch {
+    throw new Error(`Cannot reach the Python API at ${API_BASE}.`);
+  }
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(
+      detail || `Could not extend the downwind (HTTP ${res.status}).`,
+    );
+  }
+  return mapPayload((await res.json()) as ApiPayload);
+}
+
 // Map the Python payload onto the shared TrajectoryResult shape so the
 // map components are unchanged. Shared by the single + batch endpoints.
 function mapPayload(p: ApiPayload): GenerateResponse {
@@ -268,6 +315,17 @@ function mapPayload(p: ApiPayload): GenerateResponse {
       adep: p.meta.adep,
       ades: p.meta.ades,
       eobtIso: p.meta.eobt,
+      sid: p.meta.sid ?? undefined,
+      depRwy: p.meta.dep_rwy ?? undefined,
+      star: p.meta.star ?? undefined,
+      approach: p.meta.approach ?? undefined,
+      arrRwy: p.meta.arr_rwy ?? undefined,
+      arrThreshold: p.meta.arr_threshold ?? undefined,
+      starOpen: p.meta.star_open ?? false,
+      vectorHeadingDeg: p.meta.vector_heading_deg ?? undefined,
+      vectorHeadingMagDeg: p.meta.vector_heading_mag_deg ?? undefined,
+      vectored: p.meta.vectored ?? false,
+      clearance: p.meta.clearance ?? undefined,
     },
   };
 
@@ -626,6 +684,29 @@ export async function ingestTrajectory(input: {
     };
   } catch {
     return null;
+  }
+}
+
+/**
+ * Attach (or clear) the unresolved loss-of-separation windows of one or more
+ * flights, so their downloaded files flag the timestamps at which minima are
+ * lost. Sent right before a download: the marks are derived from the CURRENT
+ * (post-fix) trajectories, and a flight whose conflict has been resolved posts
+ * an empty span list, which drops any mark left on an earlier export.
+ */
+export async function setConflictMarks(
+  marks: { flight_key: string; spans: unknown[] }[],
+): Promise<boolean> {
+  if (marks.length === 0) return true;
+  try {
+    const res = await fetch(`${API_BASE}/api/conflict_marks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ marks }),
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
 }
 

@@ -785,6 +785,40 @@ class Procedure:
     transition: str | None
     legs: tuple[ProcedureLeg, ...]
 
+    @property
+    def vector_termination(self) -> "ProcedureLeg | None":
+        """The vector-terminated leg this procedure ENDS on, if any.
+
+        An arrival is either *closed* — every leg ends on a fix, so the STAR
+        delivers the aircraft to the approach's IAF and no controller input is
+        needed — or *open*: its last leg is a VM/FM ("fly this heading until
+        further advised"), which is the published hand-off to radar vectors.
+        Doc 4444 §8.9.3.5 calls that leg the start of the vectored initial and
+        intermediate approach phases.
+
+        All 20 open STAR/runway groups in the Thai data are at VTBS: the
+        EAST/LEBI/NORT/TUMG/WILA arrivals, ending at ESGEN/ENKAA/ATKIN/BOGAS on
+        a published heading of 015° (landing south on 19/20) or 195° (landing
+        north on 01/02) — the downwind the aircraft holds until turned onto
+        final. Returns ``None`` for a closed procedure.
+        """
+        if not self.legs:
+            return None
+        last = self.legs[-1]
+        return last if last.path_terminator in VECTOR_TERMINATED else None
+
+    @property
+    def is_open(self) -> bool:
+        """True when the procedure ends in radar vectors rather than at a fix —
+        i.e. it cannot reach the runway without a vector-to-final path."""
+        return self.vector_termination is not None
+
+    def last_fix(self) -> "RouteWaypoint | None":
+        """The final flyable fix — where an open procedure's vector leg begins
+        (ESGEN, ENKAA, …), and the last fix of a closed one."""
+        pts = self.waypoints()
+        return pts[-1] if pts else None
+
     def waypoints(self) -> list[RouteWaypoint]:
         """Ordered fix waypoints (fixless legs dropped, dup idents collapsed)."""
         out: list[RouteWaypoint] = []

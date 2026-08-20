@@ -15,7 +15,7 @@
 
 import { statusFromLocalT } from "@/lib/flightStatus";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
-import { aircraftAt, totalSeconds, type AircraftState } from "@/lib/useSimPlayback";
+import { aircraftAt, type AircraftState } from "@/lib/useSimPlayback";
 
 import { futureGrid } from "./future";
 import type { CdrAircraft, FutureSample } from "./types";
@@ -64,7 +64,11 @@ export function sampleTraffic(
     const t = trajectories[i];
     const samples = samplesByIdx[i];
     if (!samples || samples.length < 2) continue;
-    const duration = totalSeconds(t.points);
+    // The sample table already carries elapsed seconds, so its last entry IS
+    // the flight duration — cheaper than re-parsing two ISO stamps per flight
+    // on every pass, which at a full traffic day is thousands of Date parses a
+    // second spent mostly on aircraft that aren't even airborne.
+    const duration = samples[samples.length - 1].t;
     const localT = simT - (offsets[i] ?? 0);
     if (statusFromLocalT(localT, duration) !== "enroute") continue;
     const ac = aircraftAt(samples, localT);

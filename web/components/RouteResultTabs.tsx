@@ -57,8 +57,10 @@ interface Props {
    *  shown on the altitude chart next to the moving plane. */
   airspace?: AirspaceMembership;
   /** Whole-route airspace breakdown (from MapApp) — colour-blocks the altitude
-   *  chart by the sectors the route crosses. */
-  airspaceSegments?: AirspaceSegment[];
+   *  chart by the sectors the route crosses. A LOOKUP, not a value: walking a
+   *  route's sectors is only worth doing for a card the user has expanded, so
+   *  the chart resolves it when it mounts. */
+  airspaceSegmentsFor?: (flightKey: string) => AirspaceSegment[];
   /** Collapsible card mode for the Route Profile list. */
   collapsible?: boolean;
   /** Whether the card is collapsed (header only). */
@@ -97,7 +99,7 @@ export default function RouteResultTabs({
   stacked,
   simT,
   airspace,
-  airspaceSegments,
+  airspaceSegmentsFor,
   collapsible,
   collapsed,
   onToggleCollapse,
@@ -194,7 +196,7 @@ export default function RouteResultTabs({
         trajectory={trajectory}
         simT={simT}
         airspace={airspace}
-        airspaceSegments={airspaceSegments}
+        airspaceSegmentsFor={airspaceSegmentsFor}
       />
 
       {/* Phase-3: planned speed schedule. */}

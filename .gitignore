@@ -21,3 +21,9 @@ web/Data/
 .claude/
 .vscode/
 .DS_Store
+
+# Vitest / Vite cache
+.vite/
+
+# Reference documents kept locally (ICAO PANS-ATM is a copyrighted publication)
+*.pdf

@@ -43,6 +43,10 @@ export interface FlightRecord {
   eobt?: string;
   /** Flight level in hundreds of feet, e.g. 350. */
   rfl?: number;
+  /** Planned cruise ground speed (kt). The panel has always had the field; it
+   *  is read back so a filed speed survives the round trip — and because the
+   *  departure-separation check compares filed speeds (Doc 4444 §5.6.2). */
+  gsKt?: number;
   /** Item-15 style route string. */
   route?: string;
   /** SID name spliced at ADEP / STAR name spliced at ADES (optional). */
@@ -103,6 +107,7 @@ function fromObject(o: Record<string, unknown>): FlightRecord {
     ades: get("ades", "des", "dest", "destination")?.toUpperCase(),
     eobt: normEobt(get("eobt", "etd", "departure_time")),
     rfl: numOrUndef(get("rfl", "fl", "level")),
+    gsKt: numOrUndef(get("gs", "gs_kt", "ground_speed", "speed_kt")),
     route: get("route", "route_string", "item15"),
     sid: get("sid", "sid_name")?.toUpperCase(),
     star: get("star", "star_name")?.toUpperCase(),
@@ -246,7 +251,7 @@ function splitCsvLine(line: string): string[] {
 }
 
 /** Recover the 4D samples from the `Timestamp,UTC,Callsign,Lat,Lon,Altitude,
- *  Speed,Direction,Phase,Sector,Event,Waypoint` data table of one trajectory-CSV
+ *  Speed,Direction,Phase,Sector,Event,Waypoint,Conflict` data table of one trajectory-CSV
  *  block, plus the filed route from the `Waypoint` marker column. Returns
  *  undefined when there aren't enough rows to form a path (a plan-only block). */
 function pointsFromCsvBlock(block: string): ImportedTrajectory | undefined {

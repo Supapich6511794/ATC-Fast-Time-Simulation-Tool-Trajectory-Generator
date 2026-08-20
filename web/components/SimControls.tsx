@@ -4,11 +4,11 @@
  * SimControls — playback bar for the aircraft animation.
  *
  * Sits at the bottom of the map. Play/pause/reset, a draggable time
- * scrubber, and the requested speed presets (x1 = real time … x100).
+ * scrubber, and the requested speed presets (x1 = real time … x200).
  * Hidden until a trajectory has been generated.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { TrajectoryResult } from "@/lib/trajectory/types";
 import {
@@ -149,6 +149,7 @@ function RouteSourcePicker({
   onToggleHidden?: (flightKey: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -161,6 +162,38 @@ function RouteSourcePicker({
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
+
+  // Start each opening from a clean list rather than the last search.
+  useEffect(() => {
+    if (!open) setQuery("");
+  }, [open]);
+
+  // Search over the flight identity (callsign / ADEP / ADES / type) AND the
+  // route number, so "THA" , "VTBS VTSP" and "R57" all find their row — with a
+  // whole traffic day loaded this list is hundreds of entries long.
+  const rows = useMemo(
+    () =>
+      trajectories
+        .map((t, i) => ({ t, i }))
+        .filter(({ t, i }) => {
+          const q = query.trim().toUpperCase();
+          if (!q) return true;
+          return q.split(/[\s,]+/).filter(Boolean).every((tok) => {
+            const hay = [
+              t.meta.callsign,
+              t.meta.adep,
+              t.meta.ades,
+              t.meta.aircraftType ?? "",
+            ]
+              .join(" ")
+              .toUpperCase();
+            return (
+              hay.includes(tok) || tok === `R${i + 1}` || tok === `${i + 1}`
+            );
+          });
+        }),
+    [trajectories, query],
+  );
 
   if (trajectories.length < 2) return null;
 
@@ -184,6 +217,23 @@ function RouteSourcePicker({
       </button>
       {open && (
         <ul className="sim-route-menu" role="listbox">
+          <li className="sim-route-search">
+            <input
+              type="search"
+              value={query}
+              placeholder="Search callsign, VTBS VTSP, R57…"
+              onChange={(e) => setQuery(e.target.value)}
+              // The menu closes on outside mousedown; keep clicks in the box
+              // (and Escape) from bubbling out to the listbox handlers.
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setQuery("");
+                e.stopPropagation();
+              }}
+              autoFocus
+            />
+          </li>
+          {/* "All routes" is the timeline itself, not a flight, so it stays put
+              regardless of the search. */}
           <li role="option" aria-selected={playbackIdx === "all"}>
             <button
               type="button"
@@ -198,7 +248,10 @@ function RouteSourcePicker({
               <span className="sim-route-key">All routes</span>
             </button>
           </li>
-          {trajectories.map((t, i) => {
+          {rows.length === 0 && (
+            <li className="sim-route-empty">No flight matches “{query}”.</li>
+          )}
+          {rows.map(({ t, i }) => {
             const hidden = hiddenKeys?.has(t.meta.flightKey) ?? false;
             return (
               <li
@@ -216,7 +269,7 @@ function RouteSourcePicker({
                     onChange(i);
                     setOpen(false);
                   }}
-                  title={t.meta.flightKey}
+                  title={`${t.meta.callsign} · ${t.meta.adep} → ${t.meta.ades}`}
                 >
                   <span className="sim-route-tag">R{i + 1}</span>
                   <span className="sim-route-key">{t.meta.callsign}</span>
