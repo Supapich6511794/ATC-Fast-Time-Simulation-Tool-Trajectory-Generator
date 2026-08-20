@@ -18,7 +18,10 @@
 
 import { fmtCountdown, fmtNm } from "@/lib/cdr/format";
 import type { PlanConflict } from "@/lib/cdr/planScan";
+import type { ConflictSector } from "@/lib/cdr/sector";
 import type { AppliedFix } from "@/lib/cdr/types";
+
+import SectorChip from "./SectorChip";
 
 interface Props {
   planConflicts: PlanConflict[];
@@ -34,6 +37,8 @@ interface Props {
   onSelectFix?: (conflictId: string) => void;
   /** The fix currently drawn on the map, so its row reads as active. */
   selectedFixId?: string | null;
+  /** The ATS unit responsible for a conflict — which sector has to work it. */
+  sectorOf?: (c: PlanConflict) => ConflictSector | null;
   onClose: () => void;
 }
 
@@ -46,6 +51,7 @@ export default function ConflictPanel({
   onOpenPreview,
   onSelectFix,
   selectedFixId,
+  sectorOf,
   onClose,
 }: Props) {
   // An APPLIED fix is authoritative: the pair is treated as resolved and shown
@@ -78,6 +84,9 @@ export default function ConflictPanel({
             {state === "now" ? "now" : state === "past" ? "passed" : fmtCountdown(rel)}
           </span>
         </button>
+        <div className="cdr-fix-sub">
+          <SectorChip sector={sectorOf?.(c)} ids={c} nameOf={nameOf} />
+        </div>
       </li>
     );
   };
@@ -147,6 +156,19 @@ export default function ConflictPanel({
                     )}
                     <div className="cdr-fix-sub">
                       {nameOf(f.target)} · {f.instruction}
+                      {f.sector && (
+                        <span
+                          className="cdr-sector"
+                          title={`Issued in ${f.sector}${
+                            f.sectorCoordination
+                              ? " — coordinated across a unit boundary"
+                              : ""
+                          }`}
+                        >
+                          {f.sector}
+                          {f.sectorCoordination ? " ·coord" : ""}
+                        </span>
+                      )}
                     </div>
                   </li>
                 );

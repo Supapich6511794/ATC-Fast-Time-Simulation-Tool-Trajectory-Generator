@@ -21,6 +21,7 @@ import {
   type ReactNode,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -39,7 +40,7 @@ import {
 
 import { BASEMAPS, type Basemap } from "@/lib/mapPrefs";
 import type { PreviewPoint } from "@/lib/routePreview";
-import type { TrajectoryResult } from "@/lib/trajectory/types";
+import type { TrajectoryPoint, TrajectoryResult } from "@/lib/trajectory/types";
 import { aircraftAt, toSamples } from "@/lib/useSimPlayback";
 import { formatAirspace, type AirspaceMembership } from "@/lib/airspace";
 import type {
@@ -124,6 +125,9 @@ interface Props {
   /** Gate points (shown when non-null) and runway threshold points. */
   gates?: GateCollection | null;
   runways?: RunwayPoint[] | null;
+  /** Label each runway threshold with its ident (03L, 21R…) — only rendered
+   *  once zoomed in past RUNWAY_LABEL_ZOOM, where the strips are readable. */
+  runwayLabels?: boolean;
   /** A procedure resolved via the lookup form / map click — drawn as a
    *  bright highlighted path with labelled fixes. */
   highlightProc?: ProcedureDto | null;
@@ -246,6 +250,9 @@ function ZoomWatcher({ onZoom }: { onZoom: (z: number) => void }) {
  *  above this zoom (airport-diagram level) — below it the labels would blanket
  *  the country, so gates just show as dots with a hover tooltip. */
 const GATE_ZOOM = 13;
+/** Runway idents only label from this zoom in — at FIR-wide zoom the strips
+ *  are sub-pixel and every aerodrome's labels would collide into a smear. */
+const RUNWAY_LABEL_ZOOM = 10;
 
 /** Per-route colours (cycled if there are more routes than entries). */
 const ROUTE_COLORS = [
@@ -483,9 +490,13 @@ function FitBounds({
   trajectories,
 }: Pick<Props, "airways" | "trajectories">) {
   const map = useMap();
-  const sig = trajectories
-    .map((t) => t.meta.flightKey)
-    .join("|");
+  // Which flights are loaded, not their contents: an applied fix rewrites one
+  // route's points but must not yank the camera. Memoised because this
+  // component re-renders on every animation frame.
+  const sig = useMemo(
+    () => trajectories.map((t) => t.meta.flightKey).join("|"),
+    [trajectories],
+  );
   useEffect(() => {
     const b = L.latLngBounds([]);
     if (trajectories.length) {
@@ -616,6 +627,17 @@ function gateBadge(text: string): L.DivIcon {
   });
 }
 
+/** Runway ident badge pinned on a threshold — same pill shape as the gate
+ *  badge, in the runway grey so it reads as part of the strip. */
+function runwayBadge(text: string): L.DivIcon {
+  return L.divIcon({
+    className: "rwy-badge",
+    iconSize: [0, 0],
+    iconAnchor: [-5, 6],
+    html: `<span class="rwy-badge-pill">${text}</span>`,
+  });
+}
+
 /** Destination point `distNm` NM from (lat, lon) along a true bearing (deg) —
  *  used to build a runway strip rectangle out of a threshold + length + width. */
 function destPoint(
@@ -639,6 +661,12 @@ function destPoint(
       Math.cos(d) - Math.sin(la1) * Math.sin(la2),
     );
   return [(la2 * 180) / Math.PI, (lo2 * 180) / Math.PI];
+}
+
+/** Display form of a coded runway ident — the ARINC "RW" prefix dropped so
+ *  the badge reads like the painted number (RW03L → 03L). */
+function rwyLabel(ident: string): string {
+  return ident.replace(/^RW/i, "").trim() || ident;
 }
 
 /** Reciprocal runway ident (RW03L → RW21R): +18 on the number (wrapping 1-36)
@@ -800,6 +828,7 @@ export default function LeafletMap({
   hiddenAirports,
   gates,
   runways,
+  runwayLabels,
   highlightProc,
   trajectories,
   showTrails = true,
@@ -1328,6 +1357,7 @@ export default function LeafletMap({
   const runwayLayer = useMemo(() => {
     if (!runways) return null;
     const NM_PER_FT = 1 / 6076.12;
+    const labelled = Boolean(runwayLabels) && zoom >= RUNWAY_LABEL_ZOOM;
     const byKey = new Map(runways.map((r) => [`${r.airport}|${r.ident}`, r]));
     const drawn = new Set<string>();
     const out: ReactNode[] = [];
@@ -1364,9 +1394,31 @@ export default function LeafletMap({
           }}
         />,
       );
+      if (labelled) {
+        // One badge per threshold: this end's ident, and the far end's when
+        // the reciprocal threshold is actually coded (a strip built from
+        // length alone has no second published ident to name).
+        out.push(
+          <Marker
+            key={`rwy-lbl-${r.airport}-${r.ident}`}
+            position={a}
+            icon={runwayBadge(rwyLabel(r.ident))}
+            interactive={false}
+          />,
+        );
+        if (other)
+          out.push(
+            <Marker
+              key={`rwy-lbl-${other.airport}-${other.ident}`}
+              position={b}
+              icon={runwayBadge(rwyLabel(other.ident))}
+              interactive={false}
+            />,
+          );
+      }
     }
     return out;
-  }, [runways]);
+  }, [runways, runwayLabels, zoom]);
 
   // Airport markers — shown per-airport from the Layer Options list
   // (checked = visible). Hidden aerodromes are dropped.
@@ -1485,13 +1537,69 @@ export default function LeafletMap({
 
   const multiRoute = trajectories.length > 1;
 
-  const trajectoryLayer = useMemo(
-    () =>
-      trajectories.map((trajectory, ti) => {
-        if (trajectory.points.length < 2) return null;
-        if (hiddenKeys?.has(trajectory.meta.flightKey)) return null;
-        // Top-center aircraft-type filter: skip non-matching flights' lines.
-        if (!matchesAcType(typeFilter, trajectory.meta.aircraftType)) return null;
+  // Per-route cache of the STATIC layer (line + fixes + endpoint markers), keyed
+  // by flight and invalidated only when that flight's points or the shared style
+  // change. An applied CD&R fix replaces ONE trajectory but hands down a new
+  // array, so without this the whole traffic day was rebuilt — thousands of
+  // Leaflet layers torn down and recreated — on every Apply.
+  const routeLayerCache = useRef(
+    new Map<string, { pts: TrajectoryPoint[]; sig: string; node: ReactNode }>(),
+  );
+
+  const trajectoryLayer = useMemo(() => {
+    // Colour segments are budgeted ACROSS routes, not per route: at 120 each a
+    // 599-flight day is ~72k Leaflet paths, which is what wedged the tab after a
+    // big generate. A single route still draws at full resolution.
+    const SEG_BUDGET = 12000;
+    const maxSeg = Math.max(
+      12,
+      Math.min(120, Math.floor(SEG_BUDGET / Math.max(1, trajectories.length))),
+    );
+    // With a tight budget the turn detector has to be coarser too, or a busy
+    // route re-adds the samples the stride just dropped.
+    const turnDeg = maxSeg >= 120 ? 2 : maxSeg >= 60 ? 4 : 8;
+    const styleSig = [
+      multiRoute,
+      showTrails,
+      flColorTrails,
+      trailDecaySec,
+      trailWeight,
+      showProfilePins,
+      maxSeg,
+      turnDeg,
+    ].join("|");
+    const cache = routeLayerCache.current;
+    const next = new Map<
+      string,
+      { pts: TrajectoryPoint[]; sig: string; node: ReactNode }
+    >();
+    const layers = trajectories.map((trajectory, ti) => {
+      if (trajectory.points.length < 2) return null;
+      if (hiddenKeys?.has(trajectory.meta.flightKey)) return null;
+      // Top-center aircraft-type filter: skip non-matching flights' lines.
+      if (!matchesAcType(typeFilter, trajectory.meta.aircraftType)) return null;
+      // `ti` rides in the signature because it picks the route colour and the
+      // R-badge number, so a reordered list must redraw.
+      const cacheKey = trajectory.meta.flightKey;
+      const sig = `${styleSig}|${ti}`;
+      const hit = cache.get(cacheKey);
+      if (hit && hit.pts === trajectory.points && hit.sig === sig) {
+        next.set(cacheKey, hit);
+        return hit.node;
+      }
+      const node = buildRouteLayer(trajectory, ti, maxSeg, turnDeg);
+      next.set(cacheKey, { pts: trajectory.points, sig, node });
+      return node;
+    });
+    routeLayerCache.current = next; // drops routes that are gone
+    return layers;
+
+    function buildRouteLayer(
+      trajectory: TrajectoryResult,
+      ti: number,
+      MAX_SEG: number,
+      TURN_DEG: number,
+    ): ReactNode {
         const pts = trajectory.points;
         const { route, meta } = trajectory;
         const color = ROUTE_COLORS[ti % ROUTE_COLORS.length];
@@ -1501,10 +1609,10 @@ export default function LeafletMap({
         // every 4 s ⇒ ~750 pts for a 50-min leg) doesn't explode into
         // thousands of Leaflet layers. With many routes on screen at once
         // the unbounded version exhausted browser memory ("Aw, Snap! Out
-        // of Memory"). We cap each route to ~MAX_SEG colour segments;
-        // short routes keep full resolution. The animation is unaffected —
-        // it interpolates the full-resolution `samplesByRoute` table.
-        const MAX_SEG = 120;
+        // of Memory"). Each route gets ~MAX_SEG colour segments out of the
+        // shared budget above; short routes keep full resolution. The
+        // animation is unaffected — it interpolates the full-resolution
+        // `samplesByRoute` table.
         const step = Math.max(1, Math.ceil((pts.length - 1) / MAX_SEG));
         const keep = new Set<number>([0, pts.length - 1]);
         // Decimate the STRAIGHT parts only. A turn is a handful of samples out
@@ -1513,8 +1621,7 @@ export default function LeafletMap({
         // the runway over half a minute gets drawn as a corner. Keep every
         // sample whose track has moved since the last one drawn, and the arcs
         // come out at full resolution while the long straight legs still cost
-        // almost nothing.
-        const TURN_DEG = 2;
+        // almost nothing. (TURN_DEG loosens as the segment budget tightens.)
         let lastKept = 0;
         for (let i = 1; i < pts.length; i++) {
           const turned =
@@ -1698,8 +1805,37 @@ export default function LeafletMap({
             )}
           </Fragment>
         );
-      }),
-    [trajectories, multiRoute, hiddenKeys, typeFilter, showTrails, flColorTrails, trailDecaySec, trailWeight, showProfilePins],
+    }
+  }, [
+    trajectories,
+    multiRoute,
+    hiddenKeys,
+    typeFilter,
+    showTrails,
+    flColorTrails,
+    trailDecaySec,
+    trailWeight,
+    showProfilePins,
+  ]);
+
+  // Decaying trails are rebuilt every frame, so their cost is shared: count who
+  // is actually airborne at this instant and split one segment budget between
+  // them. Twenty aircraft keep the full-resolution trail; a whole traffic day
+  // gets a coarser one instead of freezing the tab.
+  let airborneNow = 0;
+  if (playbackIdx === "all") {
+    for (let i = 0; i < trajectories.length; i++) {
+      const s = samplesByRoute[i];
+      if (!s?.length) continue;
+      const lt = simT - (routeOffsetSec[i] ?? 0);
+      if (lt >= 0 && lt <= s[s.length - 1].t) airborneNow++;
+    }
+  } else {
+    airborneNow = 1;
+  }
+  const trailSegBudget = Math.max(
+    8,
+    Math.min(120, Math.floor(2400 / Math.max(1, airborneNow))),
   );
 
   return (
@@ -1775,14 +1911,37 @@ export default function LeafletMap({
         if (showTrails && trailDecaySec > 0) {
           const samples = routeSamples;
           const lo = localT - trailDecaySec;
-          const win = samples.filter((s) => s.t <= localT && s.t >= lo);
+          // Binary-search the window edges instead of filtering the whole
+          // table: this runs per airborne aircraft per frame, and scanning
+          // every sample of every flight 60×/s is most of a frame budget once
+          // a full traffic day is loaded.
+          const firstAtOrAfter = (tt: number) => {
+            let a = 0;
+            let b = samples.length;
+            while (a < b) {
+              const mid = (a + b) >> 1;
+              if (samples[mid].t < tt) a = mid + 1;
+              else b = mid;
+            }
+            return a;
+          };
+          const i0 = firstAtOrAfter(lo);
+          let i1 = firstAtOrAfter(localT);
+          while (i1 < samples.length && samples[i1].t <= localT) i1++;
           const trailPts = [
-            ...win,
+            ...samples.slice(i0, i1),
             { lat: ac.lat, lon: ac.lon, altitudeFt: ac.altitudeFt, t: localT },
           ];
           if (trailPts.length >= 2) {
-            // Decimate so a long flown path stays ~120 segments per frame.
-            const stepT = Math.max(1, Math.ceil((trailPts.length - 1) / 120));
+            // Decimate so a long flown path stays within the per-frame budget.
+            // The cap shrinks as more aircraft are airborne — with FL colouring
+            // each kept sample is its own Polyline, so a whole traffic day at
+            // 120 apiece is thousands of layers rebuilt every single frame.
+            const perAcSeg = trailSegBudget;
+            const stepT = Math.max(
+              1,
+              Math.ceil((trailPts.length - 1) / perAcSeg),
+            );
             const keep = trailPts.filter(
               (_, i) => i % stepT === 0 || i === trailPts.length - 1,
             );

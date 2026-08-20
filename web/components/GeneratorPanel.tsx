@@ -64,6 +64,23 @@ import {
 } from "@/lib/cat62";
 import { kBestRoutes, type RouteOption } from "@/lib/routeFinder";
 import {
+  autoResolveDepartures,
+  eobtToMs,
+  findDepartureConflicts,
+  fmtInterval,
+  hhmmZ,
+  initialBearingDeg,
+  msToEobt,
+  resolvedEobtMs,
+  type DepartureConflict,
+  type DepartureFlight,
+} from "@/lib/departureSeparation";
+import {
+  eobtMonth,
+  runwayDefault,
+  type RunwayDefault,
+} from "@/lib/runwayDefault";
+import {
   aipRouteOptions,
   fetchAipRoutes,
   type AipRoute,
@@ -263,6 +280,12 @@ interface PlanDraft {
   approachTransition: string;
 }
 
+/** How many times "Auto fix all" re-scans. Moving a flight makes it the
+ *  neighbour of a different one, so the fix cascades; a handful of passes
+ *  settles a normal bank, and the cap stops a pathological set (every flight
+ *  filed at one minute) from looping. */
+const AUTO_FIX_PASSES = 8;
+
 let _planSeq = 0;
 const nextPlanId = () => `p${++_planSeq}`;
 
@@ -340,6 +363,19 @@ interface Props {
   onReadyChange?: (text: string) => void;
   /** Selectable waypoint idents (from the airway file) for RouteBuilder. */
   waypointIdents: string[];
+  /** Departure conflicts between the FILED PLANS, plus the actions that resolve
+   *  them. Emitted upward because the list belongs in the right-hand conflict
+   *  rail with the other CD&R panels, while the plans (and the tab the fix
+   *  redirects to) live in here. */
+  onDepartureConflicts?: (state: {
+    conflicts: DepartureConflict[];
+    ignore: (conflictId: string) => void;
+    ignoreAll: (conflictIds: string[]) => void;
+    fix: (conflictId: string, planId: string) => void;
+    autoFixAll: () => void;
+  }) => void;
+  /** Open that rail — the panel's own "N departure conflicts →" line calls it. */
+  onOpenDepartureConflicts?: () => void;
 }
 
 /** Selectable aircraft types. Each maps to a real BADA 3.16 climb/descent
@@ -383,6 +419,53 @@ function tidyAirportName(name: string): string {
     .replace(/\bInternational\b/i, "Intl");
 }
 
+const MONTH_ABBR = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
+/** Provenance line under a runway picker: the month's measured default, the
+ *  traffic behind it, and — when the user has picked something else — what
+ *  the default was. Nothing is shown until an aerodrome + EOBT are set. */
+function RwyDefaultHint({
+  def,
+  picked,
+  month,
+  kind,
+}: {
+  def: RunwayDefault | null;
+  picked: string;
+  month: number;
+  kind: "departures" | "arrivals";
+}) {
+  if (!def || !month) return null;
+  // README's reporting filter: below 100 movements or a single year, the
+  // percentage is arithmetic rather than evidence — say so rather than
+  // presenting it with the same confidence as VTBS's 17k movements.
+  const thin = def.movements < 100 || def.nYears < 2;
+  const stat = `${Math.round(def.pct)}% of ${def.movements.toLocaleString()} ${kind}`;
+  const mon = MONTH_ABBR[month - 1];
+  return (
+    <span className={`field-hint${thin ? " thin" : ""}`}>
+      {picked === def.ident
+        ? `${mon} default · ${stat}`
+        : `${mon} default: ${def.ident} · ${stat}`}
+      {def.source === "ALL" ? " · both directions pooled" : ""}
+      {thin ? " · thin sample" : ""}
+    </span>
+  );
+}
+
 // Memoised: this panel stays mounted (hidden via display:none) while the
 // map aircraft animates, so MapApp re-renders it ~60×/sec. Its props are
 // referentially stable (state setters + a useCallback'd onResult), so memo
@@ -394,6 +477,8 @@ function GeneratorPanel({
   onCurrentPreviewChange,
   onReadyChange,
   waypointIdents,
+  onDepartureConflicts,
+  onOpenDepartureConflicts,
 }: Props) {
   const [routeMode, setRouteMode] = useState<RouteMode>("fpl");
 
@@ -551,6 +636,13 @@ function GeneratorPanel({
     setStar(d.star);
     setDepRwy(d.depRwy ?? "");
     setArrRwy(d.arrRwy ?? "");
+    // A draft that already names a runway keeps it: claim its
+    // `${airport}|${month}` key so the default-runway effect below leaves the
+    // saved pick alone. A draft with no runway (a blank tab, an imported row
+    // that filed none) leaves the key open, so it gets the month's default.
+    const mo = eobtMonth(d.eobt);
+    depAutoKey.current = d.depRwy ? `${d.adep.trim().toUpperCase()}|${mo}` : "";
+    arrAutoKey.current = d.arrRwy ? `${d.ades.trim().toUpperCase()}|${mo}` : "";
     setApproach(d.approach ?? "");
     setApproachTransition(d.approachTransition ?? "");
     // Auto-select AIP vs Manual based on whether the route is a filed route.
@@ -567,6 +659,12 @@ function GeneratorPanel({
       setActiveId(id);
     }
   };
+
+  // Held in a ref so the departure-conflict handlers — which the parent panel
+  // keeps a reference to — can jump between tabs without themselves changing
+  // identity on every render.
+  const switchToRef = useRef(switchTo);
+  switchToRef.current = switchTo;
 
   const addPlan = () => {
     const snap = snapshotActive();
@@ -786,6 +884,208 @@ function GeneratorPanel({
     return m;
   }, [airports]);
 
+  // --- Departure separation between FILED PLANS ---------------------------
+  // Two FPLs off the same runway at the same EOBT never reach the CD&R engine:
+  // that works on generated 4D paths, and this is decided before either
+  // aircraft moves. So it is checked here, on the plans themselves, and shown
+  // the moment a file is imported — not after "Generate".
+  const fixLL = useMemo(() => {
+    const m = new Map<string, { lat: number; lon: number }>();
+    for (const f of allFixes) m.set(f.ident, { lat: f.lat, lon: f.lon });
+    return m;
+  }, [allFixes]);
+
+  /** The track a plan departs on, as far as a PLAN can know: the bearing from
+   *  the aerodrome to the first fix its route names, falling back to the
+   *  destination. Null when neither is in the navdata — which the rules read as
+   *  "same track", since the §5.6.1 divergence relief must be shown, not
+   *  assumed. */
+  const initialTrackOf = useCallback(
+    (d: PlanDraft): number | null => {
+      const from = airportLL.get(d.adep.trim().toUpperCase());
+      if (!from) return null;
+      const words = (draftCombos(d)[0]?.route ?? "").trim().toUpperCase().split(/\s+/);
+      const firstFix = words.find((w) => fixLL.has(w));
+      const to =
+        (firstFix ? fixLL.get(firstFix) : undefined) ??
+        airportLL.get(d.ades.trim().toUpperCase());
+      if (!to) return null;
+      return initialBearingDeg(from.lat, from.lon, to.lat, to.lon);
+    },
+    [airportLL, fixLL],
+  );
+
+  /** Conflicts the user has dismissed, by pair id. Cleared on a fresh import so
+   *  a new file always re-notifies. */
+  const [ignoredDepConflicts, setIgnoredDepConflicts] = useState<Set<string>>(
+    () => new Set(),
+  );
+  /** The conflict whose "which FPL?" chooser is open. */
+  const [depFixChoiceFor, setDepFixChoiceFor] = useState<string | null>(null);
+  /** The plan the user chose to fix, and the EOBT that would clear it. Drives
+   *  the red EOBT readout on that plan's own tab. */
+  const [depFix, setDepFix] = useState<{
+    conflictId: string;
+    planId: string;
+    suggestedMs: number;
+    otherCallsign: string;
+    otherEobtMs: number;
+    adep: string;
+    runway: string;
+    requiredSec: number;
+    reason: string;
+  } | null>(null);
+
+  /** Plans → the departure check's input. Shared by the live warning and by
+   *  "Auto fix all", which re-runs the scan over its own working copy. */
+  const toDepartureFlights = useCallback(
+    (drafts: PlanDraft[]): DepartureFlight[] =>
+      drafts.map((d, i) => ({
+        id: d.id,
+        callsign: d.callsign.trim() || planLabel(d, i),
+        actype: d.actype,
+        adep: d.adep.trim().toUpperCase(),
+        ades: d.ades.trim().toUpperCase(),
+        eobtMs: eobtToMs(d.eobt),
+        depRwy: d.depRwy,
+        trackDeg: initialTrackOf(d),
+        gsKt: d.gsKt,
+        rfl: d.rfl,
+      })),
+    [initialTrackOf],
+  );
+
+  const depConflicts = useMemo<DepartureConflict[]>(() => {
+    if (allDrafts.length < 2) return [];
+    return findDepartureConflicts(toDepartureFlights(allDrafts)).filter(
+      (c) => !ignoredDepConflicts.has(c.id),
+    );
+    // `allDrafts` is rebuilt every render (it carries the live editor state), so
+    // this recomputes as the user types — which is what keeps the warning
+    // truthful while an EOBT is being edited.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allDrafts, toDepartureFlights, ignoredDepConflicts]);
+
+  // Latest values for the handlers below, which are handed to the parent ONCE
+  // (they have to keep a stable identity or the panel would re-emit on every
+  // render and loop).
+  const depConflictsRef = useRef(depConflicts);
+  depConflictsRef.current = depConflicts;
+  const allDraftsRef = useRef(allDrafts);
+  allDraftsRef.current = allDrafts;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+  const toDepartureFlightsRef = useRef(toDepartureFlights);
+  toDepartureFlightsRef.current = toDepartureFlights;
+  const ignoredDepRef = useRef(ignoredDepConflicts);
+  ignoredDepRef.current = ignoredDepConflicts;
+
+  // A fix that has landed (or a pair that changed shape) stops being pending.
+  useEffect(() => {
+    if (depFix && !depConflicts.some((c) => c.id === depFix.conflictId)) {
+      setDepFix(null);
+    }
+  }, [depConflicts, depFix]);
+
+  /** The pending fix, when it belongs to the tab currently on screen. */
+  const depFixHere = depFix && depFix.planId === activeId ? depFix : null;
+
+  /** Take the user to the FPL they chose to move, carrying the conflict with
+   *  them so that plan's own EOBT field can say what it clashes with and what
+   *  to set it to. Which of the two moves is the controller's call — either
+   *  end of the pair opens the same interval. */
+  const startDepFix = useCallback((conflictId: string, planId: string) => {
+    const c = depConflictsRef.current.find((x) => x.id === conflictId);
+    if (!c) return;
+    const suggestedMs = resolvedEobtMs(c, planId);
+    if (suggestedMs == null) return;
+    const other = planId === c.leader.id ? c.follower : c.leader;
+    setDepFix({
+      conflictId: c.id,
+      planId,
+      suggestedMs,
+      otherCallsign: other.callsign,
+      otherEobtMs: other.eobtMs ?? 0,
+      adep: c.adep,
+      runway: c.runway,
+      requiredSec: c.requiredSec,
+      reason: c.reason,
+    });
+    setDepFixChoiceFor(null);
+    // The target tab may be hidden behind the FPL search filter — clear it, or
+    // the redirect lands on a tab the user cannot see.
+    setPlanQuery("");
+    if (planId !== activeIdRef.current) switchToRef.current(planId);
+    // Stable identity: everything mutable is read through a ref, because the
+    // parent holds on to this function.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Re-time EVERY listed pair in one go.
+   *
+   *  One of the two flights is picked AT RANDOM and moved to the time the rule
+   *  needs; which side that is has no operational meaning, so the panel says
+   *  so. It is the only workable option once an import brings in a hundred
+   *  pairs — the alternative is a hundred visits to a hundred tabs.
+   *
+   *  Re-scanned between passes because moving a flight makes it the neighbour
+   *  of a different one: the fix cascades down the departure bank, exactly like
+   *  the arrival ladder's inherited delay. */
+  const autoFixAllDepConflicts = useCallback(() => {
+    const { eobtMsById } = autoResolveDepartures(
+      toDepartureFlightsRef.current(allDraftsRef.current),
+      { passes: AUTO_FIX_PASSES, ignored: ignoredDepRef.current },
+    );
+    if (eobtMsById.size === 0) return;
+    const eobtOf = (id: string) => {
+      const ms = eobtMsById.get(id);
+      return ms == null ? null : msToEobt(ms);
+    };
+    setPlans((prev) =>
+      prev.map((p) => {
+        const next = eobtOf(p.id);
+        return next == null ? p : { ...p, eobt: next };
+      }),
+    );
+    // The tab on screen keeps its own copy of the fields, so if it was one of
+    // the flights that moved, its EOBT input has to be told.
+    const activeEobt = eobtOf(activeIdRef.current);
+    if (activeEobt != null) setEobt(activeEobt);
+    setDepFix(null);
+    setDepFixChoiceFor(null);
+  }, []);
+
+  const ignoreDepConflict = useCallback(
+    (id: string) => setIgnoredDepConflicts((prev) => new Set(prev).add(id)),
+    [],
+  );
+  const ignoreAllDepConflicts = useCallback(
+    (ids: string[]) =>
+      setIgnoredDepConflicts((prev) => new Set([...prev, ...ids])),
+    [],
+  );
+
+  // Hand the whole thing to the parent, which renders it in the right-hand
+  // rail beside the other conflict panels. Only the LIST changes identity here
+  // (the actions are stable), so this fires when the conflicts do and not on
+  // every keystroke.
+  useEffect(() => {
+    onDepartureConflicts?.({
+      conflicts: depConflicts,
+      ignore: ignoreDepConflict,
+      ignoreAll: ignoreAllDepConflicts,
+      fix: startDepFix,
+      autoFixAll: autoFixAllDepConflicts,
+    });
+  }, [
+    depConflicts,
+    onDepartureConflicts,
+    ignoreDepConflict,
+    ignoreAllDepConflicts,
+    startDepFix,
+    autoFixAllDepConflicts,
+  ]);
+
   // K best routes for ANY aerodrome pair — graph search (Yen's
   // k-shortest) over the whole Thai airway network. Empty when either
   // airport's coordinates aren't in the AIP (e.g. a free-typed field).
@@ -922,6 +1222,69 @@ function GeneratorPanel({
       cancelled = true;
     };
   }, [des]);
+
+  // --- Default runway in use (ADEP/ADES + EOBT month) --------------------
+  // With the city pair and the EOBT known, both runway pickers pre-fill with
+  // the runway that aerodrome actually uses in that month of the year
+  // (runway_default.csv: departures off the DEP rows, arrivals off the ARR
+  // rows). It is a starting point, not a constraint — the user can pick any
+  // other published runway, and that pick stands until the aerodrome or the
+  // EOBT month changes.
+  const month = eobtMonth(eobt);
+  const [depRwyDefault, setDepRwyDefault] = useState<RunwayDefault | null>(null);
+  const [arrRwyDefault, setArrRwyDefault] = useState<RunwayDefault | null>(null);
+  // `${AIRPORT}|${month}` combos whose default has already been applied, so
+  // re-renders (and a draft that carries its own runway) don't overwrite the
+  // selection. loadDraft claims the key up-front for exactly that reason.
+  const depAutoKey = useRef("");
+  const arrAutoKey = useRef("");
+
+  useEffect(() => {
+    if (!dep || !month) {
+      setDepRwyDefault(null);
+      return;
+    }
+    const k = `${dep}|${month}`;
+    let cancelled = false;
+    // The published runways are resolved alongside the default: a measured
+    // runway that publishes no SID (or isn't in the AIP at all) can't be
+    // offered, so in that case the picker is left on Auto.
+    Promise.all([staticRunways(dep), runwayDefault(dep, month, "DEP")]).then(
+      ([opts, def]) => {
+        if (cancelled) return;
+        const usable = def && opts.SID.includes(def.ident) ? def : null;
+        setDepRwyDefault(usable);
+        if (depAutoKey.current === k) return;
+        depAutoKey.current = k;
+        setDepRwy(usable ? usable.ident : "");
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [dep, month]);
+
+  useEffect(() => {
+    if (!des || !month) {
+      setArrRwyDefault(null);
+      return;
+    }
+    const k = `${des}|${month}`;
+    let cancelled = false;
+    Promise.all([staticRunways(des), runwayDefault(des, month, "ARR")]).then(
+      ([opts, def]) => {
+        if (cancelled) return;
+        const usable = def && opts.STAR.includes(def.ident) ? def : null;
+        setArrRwyDefault(usable);
+        if (arrAutoKey.current === k) return;
+        arrAutoKey.current = k;
+        setArrRwy(usable ? usable.ident : "");
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [des, month]);
 
   // PBN instrument approaches at the ADES, grouped by the arrival runway they
   // serve ({ RW09: ["R09-Y","R09-Z"], … }). Picking an Arrival RWY reveals its
@@ -1338,20 +1701,33 @@ function GeneratorPanel({
     setBuiltWpts([]);
   };
   // Changing EITHER aerodrome invalidates the whole terminal setup (the route
-  // is cleared, so its SID/STAR/approach + runways no longer apply). Reset them
-  // all to None / Auto so nothing stale carries over to the new city pair.
-  const resetTerminal = () => {
+  // is cleared, so its SID/STAR/approach no longer apply). Reset those to None,
+  // and the runways to the measured default of the aerodrome they belong to.
+  //
+  // Only the CHANGED end drops to Auto — its own effect re-fills it once the
+  // new aerodrome resolves (or leaves it on Auto when that aerodrome has no
+  // usable default). The other end keeps ITS default, which is still valid:
+  // editing the ADEP says nothing about which runway the ADES is landing on,
+  // and dropping it to Auto left the picker contradicting the hint right under
+  // it ("Aug default: RW36 · 98% of arrivals" over an "Auto" select).
+  const resetTerminal = (changed: "dep" | "arr") => {
     setSid("");
     setStar("");
-    setDepRwy("");
-    setArrRwy("");
     setApproach("");
+    // Release the one-shot auto-fill claims. They exist so a draft's saved
+    // runway survives, but they are keyed by `${airport}|${month}` and were
+    // never released — so returning to an aerodrome already visited this
+    // session found its key claimed and skipped the default for good.
+    depAutoKey.current = "";
+    arrAutoKey.current = "";
+    setDepRwy(changed === "dep" ? "" : depRwyDefault?.ident ?? "");
+    setArrRwy(changed === "arr" ? "" : arrRwyDefault?.ident ?? "");
   };
   const handleAdepChange = (v: string) => {
     const nv = v.trim().toUpperCase();
     if (nv !== adep.trim().toUpperCase()) {
       clearRouteSelection();
-      resetTerminal();
+      resetTerminal("dep");
       // ADES cascades from ADEP: if the new ADEP publishes AIP destinations
       // and the current ADES isn't one of them, clear it so the dependent
       // dropdown stays consistent.
@@ -1369,7 +1745,7 @@ function GeneratorPanel({
   const handleAdesChange = (v: string) => {
     if (v.trim().toUpperCase() !== ades.trim().toUpperCase()) {
       clearRouteSelection();
-      resetTerminal();
+      resetTerminal("arr");
     }
     setAdes(v);
   };
@@ -1524,6 +1900,7 @@ function GeneratorPanel({
     if (r.ades) p.ades = r.ades;
     if (r.eobt) p.eobt = r.eobt;
     if (r.rfl != null) p.rfl = r.rfl;
+    if (r.gsKt != null) p.gsKt = r.gsKt;
     if (r.sid) p.sid = r.sid;
     if (r.star) p.star = r.star;
     if (r.approach) p.approach = r.approach;
@@ -1550,6 +1927,12 @@ function GeneratorPanel({
         all.push(...(await parseFlightFile(f)));
       }
       if (all.length === 0) throw new Error("No flight rows found in file.");
+
+      // A new file is a new traffic sample: whatever departure conflicts were
+      // dismissed for the last one must not silence this one's.
+      setIgnoredDepConflicts(new Set());
+      setDepFix(null);
+      setDepFixChoiceFor(null);
 
       // Bulk import: one tab per row, ready for "Generate all" (the
       // 2000-flight Thai network case). Replaces the current plan set.
@@ -2024,6 +2407,29 @@ function GeneratorPanel({
       </div>
 
       <>
+          {/* Departure separation between the FILED PLANS — the pairs that
+              cannot both be cleared off the runway as filed. The list itself
+              lives in the right-hand conflict rail with the other CD&R panels;
+              what belongs HERE is the count and the way to it, because this is
+              the panel the user is looking at when a file lands. */}
+          {depConflicts.length > 0 && (
+            <button
+              type="button"
+              className="dep-conf-pointer"
+              onClick={() => onOpenDepartureConflicts?.()}
+              title="Open the Departure Conflict panel"
+            >
+              <span className="dep-conf-pointer-txt">
+                ⚠ There {depConflicts.length === 1 ? "is" : "are"}{" "}
+                <b>{depConflicts.length}</b> departure conflict
+                {depConflicts.length === 1 ? "" : "s"}
+              </span>
+              <span className="dep-conf-pointer-go">
+                Departure Conflict <span aria-hidden="true">→</span>
+              </span>
+            </button>
+          )}
+
           {fileNote && <p className="file-note">📄 {fileNote}</p>}
 
           <div className="field-row">
@@ -2076,9 +2482,34 @@ function GeneratorPanel({
             <span>EOBT (UTC)</span>
             <input
               type="datetime-local"
+              className={depFixHere ? "bad" : undefined}
               value={eobt}
               onChange={(e) => setEobt(e.target.value)}
             />
+            {/* The redirect target's own field says what is wrong with this
+                EOBT and what would clear it. The suggestion is the Doc 4444
+                minimum exactly — no padding, so the controller can see what
+                the rule actually costs. */}
+            {depFixHere && (
+              <span className="field-hint bad">
+                ⚠ {hhmmZ(eobtToMs(eobt) ?? depFixHere.suggestedMs)} clashes with{" "}
+                <b>{depFixHere.otherCallsign}</b> off {depFixHere.adep}{" "}
+                {depFixHere.runway} at {hhmmZ(depFixHere.otherEobtMs)} —{" "}
+                {fmtInterval(depFixHere.requiredSec)} required:{" "}
+                {depFixHere.reason}. Suggested EOBT{" "}
+                <b>{hhmmZ(depFixHere.suggestedMs)}</b>
+                <button
+                  type="button"
+                  className="dep-conf-apply"
+                  onClick={() => {
+                    setEobt(msToEobt(depFixHere.suggestedMs));
+                    setDepFix(null);
+                  }}
+                >
+                  Use {hhmmZ(depFixHere.suggestedMs)}
+                </button>
+              </span>
+            )}
           </label>
 
           <div className="field-row">
@@ -2459,6 +2890,12 @@ function GeneratorPanel({
                   </option>
                 ))}
               </select>
+              <RwyDefaultHint
+                def={depRwyDefault}
+                picked={depRwy}
+                month={month}
+                kind="departures"
+              />
             </label>
             <label className="field">
               <span>Arrival RWY (at {des || "ADES"})</span>
@@ -2477,6 +2914,12 @@ function GeneratorPanel({
                   </option>
                 ))}
               </select>
+              <RwyDefaultHint
+                def={arrRwyDefault}
+                picked={arrRwy}
+                month={month}
+                kind="arrivals"
+              />
             </label>
           </div>
 

@@ -6,8 +6,8 @@
  *
  * The trajectory points carry ISO timestamps every ~4 simulated seconds.
  * This hook converts them to an elapsed-seconds timeline and advances a
- * `simT` clock in real time multiplied by `speed` (x1 = real time, x100 =
- * 100× faster). Position/heading at the current `simT` are linearly
+ * `simT` clock in real time multiplied by `speed` (x1 = real time, x200 =
+ * 200× faster). Position/heading at the current `simT` are linearly
  * interpolated between the two bracketing samples.
  */
 
@@ -15,8 +15,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Phase, TrajectoryPoint } from "@/lib/trajectory/types";
 
-export type SimSpeed = 1 | 2 | 5 | 20 | 50 | 100;
-export const SIM_SPEEDS: SimSpeed[] = [1, 2, 5, 20, 50, 100];
+// x200 is there for the 24-hour traffic sets: a full day of movements runs in
+// ~7 min of wall clock instead of ~15.
+export type SimSpeed = 1 | 2 | 5 | 20 | 50 | 100 | 200;
+export const SIM_SPEEDS: SimSpeed[] = [1, 2, 5, 20, 50, 100, 200];
 
 export interface AircraftState {
   lat: number;
@@ -69,11 +71,23 @@ export function totalSeconds(points: TrajectoryPoint[] | undefined): number {
   );
 }
 
-/** Build the elapsed-seconds sample table for a trajectory. */
+// Sample tables are derived purely from the point array, so they are cached
+// against it. This matters at scale: `samplesByIdx`-style memos live in three
+// places (map, MapApp, CD&R) and all rebuild when the trajectory ARRAY changes
+// — which an applied CD&R fix does on every Apply, even though it replaces one
+// flight. Without the cache a 599-flight set re-parsed ~600k ISO timestamps
+// three times per Apply, which is what froze the tab. Keyed on the array
+// identity, so a replaced flight is the only one recomputed.
+const sampleCache = new WeakMap<TrajectoryPoint[], Sample[]>();
+
+/** Build the elapsed-seconds sample table for a trajectory (memoised on the
+ *  point array — see `sampleCache`). */
 export function toSamples(points: TrajectoryPoint[] | undefined): Sample[] {
   if (!points || points.length === 0) return [];
+  const cached = sampleCache.get(points);
+  if (cached) return cached;
   const t0 = new Date(points[0].epoch_ts).getTime();
-  return points.map((p) => ({
+  const out = points.map((p) => ({
     lat: p.lat,
     lon: p.lon,
     track: p.track_deg,
@@ -83,6 +97,8 @@ export function toSamples(points: TrajectoryPoint[] | undefined): Sample[] {
     phase: p.phase,
     t: (new Date(p.epoch_ts).getTime() - t0) / 1000,
   }));
+  sampleCache.set(points, out);
+  return out;
 }
 
 /** Interpolate aircraft state at elapsed time `t` (pure; reusable per

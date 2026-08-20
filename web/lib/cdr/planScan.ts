@@ -22,7 +22,7 @@ import {
   verticalMinimumFt,
   type CdrConfig,
 } from "./config";
-import { frameFor, mag, sub, toEnu } from "./geo";
+import { frameFor, mag, sub, toEnu, type EnuFrame } from "./geo";
 
 interface Sample extends AircraftState {
   t: number;
@@ -65,15 +65,24 @@ export interface PlanConflict {
   definite: boolean;
 }
 
-/** Minimum horizontal separation (NM) between two flights over their overlapping
- *  airborne window, with the CPA time + vertical gap there. Used by the preview
- *  modal to show the resolved d_CPA live as the user edits a maneuver. Returns
- *  null when they're never airborne together. */
-export function pairSeparation(
-  A: PlanFlight,
-  B: PlanFlight,
-  stepSec = 10,
-): { minHNm: number; tCpaAbsSec: number; vSepAtCpaFt: number } | null {
+/** The closest-point-of-approach walk over a pair's shared airborne window —
+ *  the cheap first pass (pure geometry, no airspace lookups) every scanner here
+ *  starts from. */
+interface PairWalk {
+  /** Overlap bounds on the shared absolute clock, and the step used. */
+  start: number;
+  end: number;
+  step: number;
+  frame: EnuFrame;
+  minH: number;
+  tCpaAbs: number;
+  vAtMinH: number;
+  /** Both aircraft states AT the CPA — where the governing minima are read. */
+  cpaA: AircraftState;
+  cpaB: AircraftState;
+}
+
+function walkCpa(A: PlanFlight, B: PlanFlight, stepSec: number): PairWalk | null {
   const start = Math.max(A.offsetSec, B.offsetSec);
   const end = Math.min(A.offsetSec + A.durationSec, B.offsetSec + B.durationSec);
   // Guard the scan bounds: a non-finite duration (e.g. a corrupt timestamp from
@@ -81,13 +90,19 @@ export function pairSeparation(
   // forever — a synchronous tab freeze. A non-positive step would too.
   if (!Number.isFinite(start) || !Number.isFinite(end) || end - start < 1) return null;
   const step = stepSec > 0 ? stepSec : 10;
+
+  // A local frame near the pair's positions at the overlap start keeps the
+  // planar geometry accurate over the (bounded) encounter.
   const a0 = aircraftAt(A.samples, start - A.offsetSec);
   const b0 = aircraftAt(B.samples, start - B.offsetSec);
   if (!a0 || !b0) return null;
   const frame = frameFor([a0, b0]);
+
   let minH = Infinity;
-  let tCpa = start;
-  let vAt = 0;
+  let tCpaAbs = start;
+  let vAtMinH = 0;
+  let cpaA: AircraftState = a0;
+  let cpaB: AircraftState = b0;
   let guard = 0;
   for (let t = start; t <= end; t += step) {
     if (++guard > MAX_SCAN_STEPS) break; // hard stop — never spin the main thread
@@ -97,11 +112,96 @@ export function pairSeparation(
     const h = mag(sub(toEnu(frame, acB.lat, acB.lon), toEnu(frame, acA.lat, acA.lon)));
     if (h < minH) {
       minH = h;
-      tCpa = t;
-      vAt = Math.abs(acB.altitudeFt - acA.altitudeFt);
+      tCpaAbs = t;
+      vAtMinH = Math.abs(acB.altitudeFt - acA.altitudeFt);
+      cpaA = acA;
+      cpaB = acB;
     }
   }
-  return { minHNm: minH, tCpaAbsSec: tCpa, vSepAtCpaFt: vAt };
+  return { start, end, step, frame, minH, tCpaAbs, vAtMinH, cpaA, cpaB };
+}
+
+/** Minimum horizontal separation (NM) between two flights over their overlapping
+ *  airborne window, with the CPA time + vertical gap there. Used by the preview
+ *  modal to show the resolved d_CPA live as the user edits a maneuver. Returns
+ *  null when they're never airborne together. */
+export function pairSeparation(
+  A: PlanFlight,
+  B: PlanFlight,
+  stepSec = 10,
+): { minHNm: number; tCpaAbsSec: number; vSepAtCpaFt: number } | null {
+  const w = walkCpa(A, B, stepSec);
+  if (!w) return null;
+  return { minHNm: w.minH, tCpaAbsSec: w.tCpaAbs, vSepAtCpaFt: w.vAtMinH };
+}
+
+/** One continuous stretch of the plan where a pair is BELOW the hard minima —
+ *  an actual loss of separation, on the shared absolute clock. */
+export interface LosWindow {
+  /** First and last scanned instant at which minima are breached (s, absolute,
+   *  inclusive). A single-sample breach gives start === end. */
+  startAbsSec: number;
+  endAbsSec: number;
+  /** Tightest horizontal / vertical gap reached inside this window. */
+  minHNm: number;
+  minVFt: number;
+  /** The minima that were breached (governing values at the CPA). */
+  shNm: number;
+  svFt: number;
+}
+
+/**
+ * Every loss-of-separation window between a pair over the whole plan.
+ *
+ * `scanPair` only reports the FIRST instant minima are lost (all the Dashboard
+ * countdown needs); the exported trajectory files want the full extent, so each
+ * sample inside the breach can be flagged with the time it happened. Same
+ * criterion as the scan — hard minima only (no advisory buffer), horizontal
+ * minimum read once at the CPA — so a pair has windows here exactly when
+ * `scanFlightPlanConflicts` calls it `definite`.
+ *
+ * The step defaults to 5 s (finer than the 15 s Dashboard scan) so a window's
+ * edges land close to the exported ~4-5 s track samples.
+ */
+export function losWindows(
+  A: PlanFlight,
+  B: PlanFlight,
+  cfg: CdrConfig,
+  stepSec = 5,
+): LosWindow[] {
+  const w = walkCpa(A, B, stepSec);
+  if (!w) return [];
+  const sh = sepMinNmForPair(
+    cfg,
+    w.cpaA.lat, w.cpaA.lon, w.cpaA.altitudeFt,
+    w.cpaB.lat, w.cpaB.lon, w.cpaB.altitudeFt,
+  );
+
+  const out: LosWindow[] = [];
+  let cur: LosWindow | null = null;
+  let guard = 0;
+  for (let t = w.start; t <= w.end; t += w.step) {
+    if (++guard > MAX_SCAN_STEPS) break;
+    const acA = aircraftAt(A.samples, t - A.offsetSec);
+    const acB = aircraftAt(B.samples, t - B.offsetSec);
+    if (!acA || !acB || acA.altitudeFt == null || acB.altitudeFt == null) continue;
+    const h = mag(sub(toEnu(w.frame, acB.lat, acB.lon), toEnu(w.frame, acA.lat, acA.lon)));
+    const v = Math.abs(acB.altitudeFt - acA.altitudeFt);
+    const sv = verticalMinimumFt(cfg, acA.altitudeFt, acB.altitudeFt);
+    if (h < sh && v < sv) {
+      if (cur == null) {
+        cur = { startAbsSec: t, endAbsSec: t, minHNm: h, minVFt: v, shNm: sh, svFt: sv };
+        out.push(cur);
+      } else {
+        cur.endAbsSec = t;
+        cur.minHNm = Math.min(cur.minHNm, h);
+        cur.minVFt = Math.min(cur.minVFt, v);
+      }
+    } else {
+      cur = null; // separation restored — any further breach is a new window
+    }
+  }
+  return out;
 }
 
 /** 3-D conflict check between two flights over the whole plan (horizontal AND
@@ -124,43 +224,10 @@ function scanPair(
   cfg: CdrConfig,
   stepSec: number,
 ): PlanConflict | null {
-  const start = Math.max(A.offsetSec, B.offsetSec);
-  const end = Math.min(A.offsetSec + A.durationSec, B.offsetSec + B.durationSec);
-  // Guard the scan bounds: a non-finite duration (e.g. a corrupt timestamp from
-  // a maneuvered trajectory) would make `end` Infinity and spin this loop
-  // forever — a synchronous tab freeze. A non-positive step would too.
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end - start < 1) return null;
-  const step = stepSec > 0 ? stepSec : 15;
-
-  // A local frame near the pair's positions at the overlap start keeps the
-  // planar geometry accurate over the (bounded) encounter.
-  const a0 = aircraftAt(A.samples, start - A.offsetSec);
-  const b0 = aircraftAt(B.samples, start - B.offsetSec);
-  if (!a0 || !b0) return null;
-  const frame = frameFor([a0, b0]);
-
-  let minH = Infinity;
-  let tCpaAbs = start;
-  let vAtMinH = 0;
-  let cpaA: AircraftState = a0;
-  let cpaB: AircraftState = b0;
-
   // Pass 1 (cheap — pure geometry, NO airspace lookups): find the CPA.
-  let guard = 0;
-  for (let t = start; t <= end; t += step) {
-    if (++guard > MAX_SCAN_STEPS) break; // hard stop — never spin the main thread
-    const acA = aircraftAt(A.samples, t - A.offsetSec);
-    const acB = aircraftAt(B.samples, t - B.offsetSec);
-    if (!acA || !acB || acA.altitudeFt == null || acB.altitudeFt == null) continue;
-    const h = mag(sub(toEnu(frame, acB.lat, acB.lon), toEnu(frame, acA.lat, acA.lon)));
-    if (h < minH) {
-      minH = h;
-      tCpaAbs = t;
-      vAtMinH = Math.abs(acB.altitudeFt - acA.altitudeFt);
-      cpaA = acA;
-      cpaB = acB;
-    }
-  }
+  const w = walkCpa(A, B, stepSec > 0 ? stepSec : 15);
+  if (!w) return null;
+  const { start, end, step, frame, minH, tCpaAbs, vAtMinH, cpaA, cpaB } = w;
 
   // Position-dependent horizontal minimum, evaluated ONCE at the CPA (where the
   // encounter is tightest — the point the separation standard actually governs).
@@ -178,7 +245,7 @@ function scanPair(
   // minimum (sv stays per-step — it's a plain comparison, not a polygon test).
   let losStart: number | null = null;
   let bufferedBreach = false;
-  guard = 0;
+  let guard = 0;
   for (let t = start; t <= end; t += step) {
     if (++guard > MAX_SCAN_STEPS) break;
     const acA = aircraftAt(A.samples, t - A.offsetSec);

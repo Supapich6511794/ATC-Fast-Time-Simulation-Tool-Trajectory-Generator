@@ -89,9 +89,18 @@ export function resolveRoutePreview(
         const seq = airways[pendingAirway as string];
         const i = idx.get(prevIdent)!;
         const j = idx.get(t)!;
-        const step = i < j ? 1 : -1;
-        for (let k = i + step; k !== j; k += step) {
-          push(seq[k], false);
+        // Real filed routes do join and leave an airway at the SAME fix
+        // ("VAPVU P629 VAPVU" appears in the FTS traffic sample). There is
+        // nothing in between, and the walk below would never reach `j`: it
+        // steps backwards off the front of the array for ever, freezing the
+        // page on import. The index bounds are belt-and-braces on the same
+        // loop. Python's `range()` stops on its own, which is why the
+        // server's `_expand_airways` never had this.
+        if (i !== j) {
+          const step = i < j ? 1 : -1;
+          for (let k = i + step; k !== j && k >= 0 && k < seq.length; k += step) {
+            push(seq[k], false);
+          }
         }
       }
       push(t, true);

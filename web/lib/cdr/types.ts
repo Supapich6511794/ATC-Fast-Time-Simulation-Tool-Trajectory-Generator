@@ -140,6 +140,11 @@ export interface AppliedFix {
   /** The maneuvered parameter as it was before the fix, pre-formatted
    *  ("FL140", "460 kt", "072°"). The "from" half of the hover readout. */
   fromLabel?: string;
+  /** The ATS unit the fix was issued in, captured at apply time — the airspace
+   *  moves on, but who was responsible does not. */
+  sector?: string;
+  /** The pair were with different units, so it needed coordination. */
+  sectorCoordination?: boolean;
 }
 
 /** A candidate resolution maneuver produced by the advisory engine. */

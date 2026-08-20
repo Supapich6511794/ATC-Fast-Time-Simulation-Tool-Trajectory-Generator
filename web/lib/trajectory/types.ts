@@ -122,5 +122,31 @@ export interface TrajectoryResult {
     adep: string;
     ades: string;
     eobtIso: string;
+    /** Resolved terminal selection, echoed by the server — departure as well
+     *  as arrival, since a SID climb-out is a different path from a DCT. */
+    sid?: string;
+    depRwy?: string;
+    star?: string;
+    approach?: string;
+    /** Landing runway and its threshold — what arrival sequencing measures
+     *  spacing against. The client has no runway database of its own. */
+    arrRwy?: string;
+    arrThreshold?: { lat: number; lon: number };
+    /** Does the STAR end in radar vectors? Only then can this arrival be given
+     *  a "maintain heading" resolution (Doc 4444 §8.9.3.6). */
+    starOpen?: boolean;
+    /** The published vector heading in °TRUE — the geometry. */
+    vectorHeadingDeg?: number;
+    /** The same heading in °MAGNETIC, exactly as the chart prints it. This is
+     *  the one that goes into an instruction: a controller says "maintain
+     *  heading 015", never the true course behind it. */
+    vectorHeadingMagDeg?: number;
+    /** Was this trajectory generated ON vectors rather than the procedure? */
+    vectored?: boolean;
+    /** The ATC clearance the arrival was flown under. The VTBS STAR charts
+     *  forbid entering the approach without one, so BOTH flows carry it —
+     *  "DIRECT LETMA, CLEARED R19 APPROACH" or "AFTER ATKIN MAINTAIN HEADING
+     *  015, VECTORS R19". */
+    clearance?: string;
   };
 }

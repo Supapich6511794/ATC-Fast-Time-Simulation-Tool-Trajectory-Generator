@@ -22,6 +22,8 @@
  * speeds KNOTS unless a field name says otherwise.
  */
 
+import { wakeCategoryOf, type WakeCategory } from "./wake";
+
 /** RVSM band: 1000 ft vertical minimum applies between these levels inclusive;
  *  2000 ft applies above the top (Doc 4444 §5.3.2). Below the floor the minimum
  *  is likewise 1000 ft, so only the upper boundary changes the number. */
@@ -38,6 +40,68 @@ export interface HorizontalMinima {
 export interface VerticalMinima {
   belowRvsmTopFt: number; // ≤ FL410
   aboveRvsmTopFt: number; // > FL410
+}
+
+/** Separation between SUCCEEDING aircraft on the same final approach track —
+ *  the arrival-sequencing case, which the pairwise CPA minima above do not
+ *  cover (two aircraft in trail on one centreline fly parallel tracks at
+ *  similar speeds, so they may never generate a closing CPA yet still be
+ *  unlandable). Doc 4444 §8.9.4.3 makes this the controller's responsibility
+ *  and points at §8.7.3 for the numbers. */
+export interface FinalApproachMinima {
+  /** §8.7.3.2 b): the radar minimum may be reduced to 2.5 NM between
+   *  succeeding aircraft ESTABLISHED on the same final approach track within
+   *  `reducedWithinNm` of the threshold. Outside that, the ordinary
+   *  position-dependent radar minimum applies. */
+  reducedNm: number;
+  /** §8.7.3.2 b): 18.5 km (10 NM) of the runway threshold. */
+  reducedWithinNm: number;
+  /** Runway occupancy time (s) — the follower cannot cross the threshold until
+   *  the runway is vacated. NOT a Doc 4444 figure: §8.7.3.2 b) makes the
+   *  reduced minimum conditional on an ANSP-prescribed runway occupancy
+   *  assurance, so the time itself is a local parameter. 60 s is a common
+   *  single-runway planning value. */
+  runwayOccupancySec: number;
+  /** How closely the aircraft's track must point at the threshold (±°) to
+   *  count as "established on the final approach track" for the reduced
+   *  minimum. A geometric stand-in until the vector-to-final path builder
+   *  gives the tool a real final approach track to test against. */
+  establishedToleranceDeg: number;
+  /** Slowest ground speed an arrival may be asked to fly (kt). Speed control
+   *  is the first tool for arrival spacing, but only down to this floor. */
+  minApproachGsKt: number;
+  /** Largest speed reduction (kt) worth issuing as a single instruction. */
+  maxSpeedReductionKt: number;
+  /** How much of the remaining track a sequencing speed control actually acts
+   *  over (NM). Speed control for spacing is a terminal-area instruction; an
+   *  arrival 200 NM out is at cruise Mach, not at approach speed, so costing
+   *  the reduction against its WHOLE remaining distance would credit speed with
+   *  absorbing tens of miles it cannot. Bounding it here is what keeps the
+   *  ranking honest — without it speed looks sufficient for every deficit and a
+   *  vector is never offered. */
+  speedControlRangeNm: number;
+  /** Longest downwind extension (NM of extra distance to touchdown) the tool
+   *  will propose before giving up on vectors and offering a hold. Mirrors the
+   *  engine-side cap in ``trajectory_sim.vectors.MAX_DOWNWIND_NM``, which is
+   *  what actually bounds the geometry. */
+  maxDownwindExtensionNm: number;
+  /** Most racetrack loops the tool will offer at one holding fix. A hold is not
+   *  a last resort — a controller who can see a long bank coming holds the back
+   *  of it early, rather than vectoring everyone into a downwind that runs out.
+   *  So loops are offered as a dial, and this bounds it. Not a Doc 4444 figure:
+   *  real holding is limited by fuel and by the stack above, neither of which
+   *  this tool models. */
+  maxHoldLoops: number;
+}
+
+/** Distance-based wake turbulence separation minima, applied in the approach
+ *  and departure phases (Doc 4444 §8.7.3.4; categories per §4.9.1.1). Indexed
+ *  [preceding aircraft][succeeding aircraft]; a pair with no entry has no wake
+ *  minimum, so the radar minimum governs. */
+export interface WakeTurbulenceMinima {
+  matrixNm: Partial<Record<WakeCategory, Partial<Record<WakeCategory, number>>>>;
+  /** Category assumed for an aircraft type not in the wake table. */
+  unknownTypeCategory: WakeCategory;
 }
 
 /** How much tighter than the hard minima an *advisory* fires (so controllers
@@ -96,6 +160,8 @@ export type ManeuverType =
 export interface CdrConfig {
   horizontal: HorizontalMinima;
   vertical: VerticalMinima;
+  finalApproach: FinalApproachMinima;
+  wake: WakeTurbulenceMinima;
   buffer: DetectionBuffer;
   lookahead: LookaheadHorizons;
   weights: ResolutionWeights;
@@ -132,6 +198,28 @@ export interface CdrConfig {
 export const DEFAULT_CDR_CONFIG: CdrConfig = {
   horizontal: { enrouteNm: 5, terminalNm: 3 }, // Doc 4444 §5.4.1.2
   vertical: { belowRvsmTopFt: 1000, aboveRvsmTopFt: 2000 }, // §5.3.2
+  finalApproach: {
+    reducedNm: 2.5, // §8.7.3.2 b)
+    reducedWithinNm: 10, // §8.7.3.2 b) — 18.5 km
+    runwayOccupancySec: 60, // ANSP parameter, not Doc 4444
+    establishedToleranceDeg: 10,
+    minApproachGsKt: 160,
+    maxSpeedReductionKt: 40,
+    speedControlRangeNm: 40, // roughly the Bangkok TMA
+    maxDownwindExtensionNm: 80, // 40 NM of downwind, at the 2:1 rate
+    maxHoldLoops: 6, // ~24 min at a 4-minute published pattern
+  },
+  wake: {
+    // Doc 4444 §8.7.3.4. Pairs not listed (e.g. MEDIUM behind MEDIUM) carry no
+    // wake minimum, so the radar minimum governs them.
+    matrixNm: {
+      // A380 minima — ICAO's separate A380 provisions, not the §8.7.3.4 table.
+      SUPER: { SUPER: 4.0, HEAVY: 6.0, MEDIUM: 7.0, LIGHT: 8.0 },
+      HEAVY: { HEAVY: 4.0, MEDIUM: 5.0, LIGHT: 6.0 },
+      MEDIUM: { LIGHT: 5.0 },
+    },
+    unknownTypeCategory: "MEDIUM",
+  },
   buffer: { horizontalNm: 1, verticalFt: 300 }, // Ch.8 advisory buffer (ANSP-set)
   // Resolution tier (STCA) ≤ 5 min, Prediction tier (MTCD) ≤ 10 min: the
   // proactive fast-time thresholds — surface a fix by 10 min, escalate to
@@ -165,6 +253,16 @@ export function resolveConfig(overrides?: DeepPartial<CdrConfig>): CdrConfig {
   return {
     horizontal: { ...d.horizontal, ...overrides.horizontal },
     vertical: { ...d.vertical, ...overrides.vertical },
+    finalApproach: { ...d.finalApproach, ...overrides.finalApproach },
+    wake: {
+      ...d.wake,
+      ...overrides.wake,
+      // Replace the matrix wholesale when given — merging per-category rows
+      // would silently keep defaults an operator meant to remove.
+      matrixNm: overrides.wake?.matrixNm
+        ? (overrides.wake.matrixNm as WakeTurbulenceMinima["matrixNm"])
+        : d.wake.matrixNm,
+    },
     buffer: { ...d.buffer, ...overrides.buffer },
     lookahead: { ...d.lookahead, ...overrides.lookahead },
     weights: {
@@ -232,6 +330,20 @@ export function verticalMinimumFt(cfg: CdrConfig, altAFt: number, altBFt: number
   return governing > RVSM_TOP_FT
     ? cfg.vertical.aboveRvsmTopFt
     : cfg.vertical.belowRvsmTopFt;
+}
+
+/** Distance-based wake turbulence minimum (NM) for a leader/follower type pair
+ *  in the approach phase (Doc 4444 §8.7.3.4), or 0 when the pair carries no
+ *  wake minimum — a MEDIUM behind a MEDIUM is separated by the radar minimum
+ *  alone. Unknown types take `cfg.wake.unknownTypeCategory`. */
+export function wakeMinimumNm(
+  cfg: CdrConfig,
+  leaderType: string | null | undefined,
+  followerType: string | null | undefined,
+): number {
+  const lead = wakeCategoryOf(leaderType, cfg.wake.unknownTypeCategory);
+  const follow = wakeCategoryOf(followerType, cfg.wake.unknownTypeCategory);
+  return cfg.wake.matrixNm[lead]?.[follow] ?? 0;
 }
 
 /** A deep-partial helper for `resolveConfig` overrides. */

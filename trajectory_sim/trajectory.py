@@ -23,6 +23,7 @@ the supplied ``eobt`` (which must already be timezone-aware UTC).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional, Sequence
@@ -502,30 +503,108 @@ def build_flight_timeline(
             return "descent"
         return default
 
-    # Along-track distance <-> elapsed time, using the phase-average ground
-    # speeds (inverse of each other, so a sample placed at a waypoint's time
-    # lands exactly on that waypoint).
+    # --- Along-track distance <-> elapsed time ---------------------------
+    # The phase-average ground speeds above set each phase's distance and time
+    # BUDGET. Placing samples with those averages, however, would move the
+    # aircraft at a constant rate through a climb or descent while the speed
+    # reported for it (``target_tas_kt`` at the current altitude) varies by a
+    # factor of two — so a trajectory's positions and its own speed column
+    # disagreed. Anything measuring distance-over-time (arrival spacing, in
+    # particular) then contradicts the speeds in the same file.
+    #
+    # So distance is integrated from the INSTANTANEOUS speed and normalised
+    # back onto each phase's budget. Phase boundaries, phase distances and the
+    # total flight time are unchanged — only the distribution WITHIN a phase
+    # moves. And because ``average_phase_tas_kt`` is by construction the
+    # time-average of ``target_tas_kt`` over the same altitude band, the
+    # normalisation factor is ~1 and the implied speed comes out equal to the
+    # reported one.
+    _INTEG_STEP_S = 1.0
+    #: Passes over the integration. The speed at a sample depends on the SHAPED
+    #: altitude, which depends on along-track distance, which is what we are
+    #: integrating — so it is a fixed point. The coupling is weak (only the
+    #: constrained parts of the terminal area differ), and two refinement passes
+    #: are past the point where the table stops moving.
+    _INTEG_PASSES = 3
+
+    _PHASES = (
+        (0.0, climb_time_s, climb_distance_nm),
+        (climb_time_s, climb_time_s + cruise_time_s, cruise_distance_nm),
+        (climb_time_s + cruise_time_s, total_time_s, descent_distance_nm),
+    )
+
+    def _speed_at(tt: float, dist_guess: "float | None") -> float:
+        """Ground speed (kt) the sample loop will REPORT at this instant."""
+        alt, ph = profile.at(tt)
+        tas = target_tas_kt(aircraft_type, alt, ph)
+        if dist_guess is not None:
+            # Same shaping the emitted sample gets, so the speed we integrate is
+            # the speed that ends up in the file.
+            _alt, tas = _shape(alt, tas, dist_guess)
+        return max(60.0, tas - wind)
+
+    def _build_tables(
+        prev_t: "list[float] | None", prev_d: "list[float] | None"
+    ) -> tuple[list[float], list[float]]:
+        t_tab: list[float] = [0.0]
+        d_tab: list[float] = [0.0]
+        for t0, t1, target_nm in _PHASES:
+            span = max(0.0, t1 - t0)
+            base = d_tab[-1]
+            if span <= 0 or target_nm <= 0:
+                if span > 0:
+                    t_tab.append(t1)
+                    d_tab.append(base + target_nm)
+                continue
+            n = max(1, int(math.ceil(span / _INTEG_STEP_S)))
+            dt = span / n
+            ts = [t0 + i * dt for i in range(n + 1)]
+            raw = [0.0]
+            for i in range(n):
+                mid = ts[i] + dt / 2.0
+                guess = (
+                    _interp(prev_t, prev_d, mid)
+                    if prev_t is not None and prev_d is not None
+                    else None
+                )
+                # Midpoint rule — second-order, and cheap at a 1 s step.
+                raw.append(raw[-1] + _speed_at(mid, guess) * dt / 3600.0)
+            scale = target_nm / raw[-1] if raw[-1] > 1e-9 else 0.0
+            for tt, dd in zip(ts[1:], raw[1:]):
+                t_tab.append(tt)
+                d_tab.append(base + dd * scale)
+        return t_tab, d_tab
+
+    def _interp(xs: list[float], ys: list[float], x: float) -> float:  # noqa: E306
+        if x <= xs[0]:
+            return ys[0]
+        if x >= xs[-1]:
+            return ys[-1]
+        lo, hi = 0, len(xs) - 1
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if xs[mid] <= x:
+                lo = mid
+            else:
+                hi = mid
+        span = xs[hi] - xs[lo]
+        f = 0.0 if span <= 0 else (x - xs[lo]) / span
+        return ys[lo] + (ys[hi] - ys[lo]) * f
+
+    # Run the fixed point: the first pass integrates the unshaped speed, each
+    # later one re-reads the shaped speed at the distances the previous pass
+    # produced.
+    _t_tab, _d_tab = _build_tables(None, None)
+    for _ in range(max(0, _INTEG_PASSES - 1)):
+        _t_tab, _d_tab = _build_tables(_t_tab, _d_tab)
+
+    # Mutual inverses (the table is monotone because speed is always > 0), so a
+    # sample placed at a waypoint's time still lands exactly on that waypoint.
     def _dist_at_time(tt: float) -> float:
-        if tt <= climb_time_s:
-            return climb_gs * tt / 3600.0
-        if tt <= climb_time_s + cruise_time_s:
-            return climb_distance_nm + cruise_gs * (tt - climb_time_s) / 3600.0
-        return (
-            climb_distance_nm
-            + cruise_distance_nm
-            + descent_gs * (tt - climb_time_s - cruise_time_s) / 3600.0
-        )
+        return _interp(_t_tab, _d_tab, tt)
 
     def _time_at_dist(d: float) -> float:
-        if d <= climb_distance_nm:
-            return d * 3600.0 / max(climb_gs, 1e-9)
-        if d <= climb_distance_nm + cruise_distance_nm:
-            return climb_time_s + (d - climb_distance_nm) * 3600.0 / max(cruise_gs, 1e-9)
-        return (
-            climb_time_s
-            + cruise_time_s
-            + (d - climb_distance_nm - cruise_distance_nm) * 3600.0 / max(descent_gs, 1e-9)
-        )
+        return _interp(_d_tab, _t_tab, d)
 
     # Sample every `output_every_s`, PLUS a sample at every route FIX (leg
     # boundary) so the drawn path runs exactly through each one — enroute, SID,

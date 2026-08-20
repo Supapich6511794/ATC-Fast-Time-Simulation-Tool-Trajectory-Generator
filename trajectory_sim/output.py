@@ -72,6 +72,7 @@ def build_trajectory_gdf(
     approach: str | None = None,
     dep_rwy: str | None = None,
     arr_rwy: str | None = None,
+    clearance: str | None = None,
     fix_indices: "list[int] | None" = None,
     route_fixes: "list[tuple[str, float, float]] | None" = None,
 ) -> gpd.GeoDataFrame:
@@ -103,6 +104,7 @@ def build_trajectory_gdf(
     Returns:
         GeoDataFrame, EPSG:4326, with columns: flight_key, callsign,
         aircraft_type, adep, ades, dep_rwy, arr_rwy, sid, star, approach,
+        clearance,
         epoch_ts (UTC), altitude_ft, tas_kt (None until Phase 3), gs_kt,
         track_deg, phase, geometry. The dep_rwy/arr_rwy/sid/star/approach
         columns carry the terminal-procedure selection ("" when none), so the
@@ -130,6 +132,11 @@ def build_trajectory_gdf(
         "sid": (sid or "").strip(),
         "star": (star or "").strip(),
         "approach": (approach or "").strip(),
+        # The ATC clearance the arrival was flown under. An open STAR may not
+        # enter the approach without one (see the VTBS STAR chart note), so the
+        # export records WHICH clearance produced this path — vectors, or a
+        # direct to the IAF.
+        "clearance": (clearance or "").strip(),
     }
 
     # Named route fixes → (ident, lat, lon), for the `waypoint` marker column.
@@ -309,12 +316,45 @@ def write_geopackage(
         conn.close()
 
 
+def _conflict_header_line(span: "dict") -> str:
+    """One ``CONFLICT:`` header line describing an unresolved LOS window."""
+    other = str(span.get("with_callsign") or "").strip() or "traffic"
+    start = str(span.get("start_ts") or "")
+    end = str(span.get("end_ts") or "")
+
+    def _num(key: str, unit: str, nd: int = 1) -> str:
+        v = span.get(key)
+        if v is None:
+            return ""
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return ""
+        s = f"{f:.{nd}f}"
+        if "." in s:  # trim only the fractional zeros — "300" must stay 300
+            s = s.rstrip("0").rstrip(".")
+        return f"{s} {unit}"
+
+    got = " / ".join(x for x in (_num("min_sep_nm", "NM"), _num("min_vert_ft", "ft", 0)) if x)
+    minima = " / ".join(
+        x for x in (_num("sep_min_nm", "NM"), _num("sep_min_ft", "ft", 0)) if x
+    )
+    parts = [f"LOSS OF SEPARATION vs {other}", f"{start} - {end}"]
+    if got:
+        parts.append(f"min {got}")
+    if minima:
+        parts.append(f"minima {minima}")
+    parts.append("UNRESOLVED")
+    return "CONFLICT: " + "  |  ".join(parts)
+
+
 def write_csv(
     gdf: gpd.GeoDataFrame,
     path: str | Path,
     *,
     route_str: str = "",
     rfl: int | None = None,
+    conflicts: "list[dict] | None" = None,
 ) -> None:
     """Write a trajectory GeoDataFrame to the ATC-style trajectory CSV.
 
@@ -326,24 +366,28 @@ def write_csv(
         ACTYPE: <aircraft_type>
         DEP RWY: <dep_rwy>
         ARR RWY: <arr_rwy>
+        CLEARANCE: <clearance>   (only when one was issued)
         SID: <sid>
         STAR: <star>
         APPROACH: <approach>
         FL: F<rfl>
         ATD: YYYY-MM-DD HH:MM:SS
+        CONFLICT: LOSS OF SEPARATION vs <acid>  |  <start> - <end>  |  …
 
         ---
 
-        Timestamp,UTC,Callsign,Lat,Lon,Altitude,Speed,Direction,Phase,Sector,Event
-        <epoch_s>,<iso_utc_Z>,<callsign>,<lat>,<lon>,<alt_ft>,<gs_kt>,<track_deg>,<phase>,<sector>,<toc/tod>
+        Timestamp,UTC,Callsign,Lat,Lon,Altitude,Speed,Direction,Phase,Sector,Event,Waypoint,Conflict
+        <epoch_s>,<iso_utc_Z>,<callsign>,<lat>,<lon>,<alt_ft>,<gs_kt>,<track_deg>,<phase>,<sector>,<toc/tod>,<fix>,<LOS acid>
         ...
 
-    The column header has 11 names that line up 1-to-1 with the 11 fields
-    of each data row, so Excel/pandas open the CSV with every value
-    under the right header. Per row: ``Phase`` is climb/cruise/descent,
+    The column header names line up 1-to-1 with the fields of each data
+    row, so Excel/pandas open the CSV with every value under the right
+    header. Per row: ``Phase`` is climb/cruise/descent,
     ``Sector`` the airspace volume containing the aircraft at that timestamp
     (altitude-aware, e.g. "8S/Bangkok CTR" — a plane above a TMA's ceiling is
-    not in it), and ``Event`` marks the TOC / TOD samples (blank otherwise).
+    not in it), ``Event`` marks the TOC / TOD samples (blank otherwise), and
+    ``Conflict`` marks the samples at which this flight is below separation
+    minima against another one ("LOS <acid>"; blank otherwise).
     The ``Sector`` field is double-quoted when it contains a comma (overlapping
     PDR areas are comma-joined).
 
@@ -355,6 +399,11 @@ def write_csv(
         rfl: Requested Flight Level (hundreds of feet) written into the
             FL header as ``"F<rfl>"``. Optional; the FL line is omitted
             when None.
+        conflicts: Unresolved loss-of-separation windows for this flight
+            (the CD&R scan's output). Each one gets a ``CONFLICT:`` header
+            line naming the other aircraft and the UTC window, so the reader
+            sees WHEN separation is lost without scanning the table. The
+            per-row detail comes from the gdf's ``conflict`` column.
     """
     out_path = Path(path)
 
@@ -410,9 +459,19 @@ def write_csv(
         f.write(f"SID: {sid}\n")
         f.write(f"STAR: {star}\n")
         f.write(f"APPROACH: {approach}\n")
+        # The ATC clearance the arrival was flown under. Only written when one
+        # was issued, so departures and non-terminal flights are unchanged.
+        clearance = _const("clearance")
+        if clearance:
+            f.write(f"CLEARANCE: {clearance}\n")
         if rfl is not None:
             f.write(f"FL: F{rfl}\n")
         f.write(f"ATD: {eobt.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        # Unresolved conflicts — one line per loss-of-separation window, so the
+        # controller reading the strip sees the times up front. Only written
+        # when the flight still has one (a fixed conflict posts no window).
+        for span in conflicts or []:
+            f.write(_conflict_header_line(span) + "\n")
         if cadence_s is not None:
             cs = (
                 int(cadence_s)
@@ -424,11 +483,11 @@ def write_csv(
         # when the file is opened under cp1252/cp874 (Thai Windows
         # default), making "———" render as 'â€"â€"â€"'.
         f.write("\n---\n\n")
-        # `Waypoint` is appended LAST so the leading columns keep their fixed
-        # positions (the re-importer reads Lat/Lon/… by index).
+        # `Waypoint` and `Conflict` are appended LAST so the leading columns
+        # keep their fixed positions (the re-importer reads Lat/Lon/… by index).
         f.write(
             "Timestamp,UTC,Callsign,Lat,Lon,Altitude,Speed,Direction,"
-            "Phase,Sector,Event,Waypoint\n"
+            "Phase,Sector,Event,Waypoint,Conflict\n"
         )
 
         # Per-point enrichment columns — absent on gdfs built before they
@@ -447,6 +506,7 @@ def write_csv(
         sectors = _col("sector")
         events = _col("event")
         waypoints = _col("waypoint")
+        conflict_col = _col("conflict")
 
         for i, (geom, ts, alt, gs, trk) in enumerate(
             zip(
@@ -470,5 +530,6 @@ def write_csv(
                 f"{epoch},{utc_iso},{callsign},"
                 f"{geom.y:.6f},{geom.x:.6f},"
                 f"{alt_val},{gs_val},{trk_val},"
-                f"{phases[i]},{_quote(sectors[i])},{events[i]},{waypoints[i]}\n"
+                f"{phases[i]},{_quote(sectors[i])},{events[i]},{waypoints[i]},"
+                f"{_quote(conflict_col[i])}\n"
             )

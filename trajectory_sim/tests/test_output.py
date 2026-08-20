@@ -222,13 +222,13 @@ def test_gdf_terminal_cols_blank_by_default() -> None:
 
 _DATA_COLS = [
     "timestamp", "utc", "callsign", "lat", "lon", "alt", "speed", "dir",
-    "phase", "sector", "event", "waypoint",
+    "phase", "sector", "event", "waypoint", "conflict",
 ]
 
 
 def _read_csv_data(path: Path) -> pd.DataFrame:
     """Read the data section of the ATC-format CSV (skips the metadata
-    header block; the 12 column names line up 1-to-1 with the 12 fields
+    header block; the 13 column names line up 1-to-1 with the 13 fields
     of each data row)."""
     with path.open() as f:
         lines = f.readlines()
@@ -323,6 +323,54 @@ def test_write_csv_sector_and_event_columns(tmp_path: Path) -> None:
     assert (df["sector"] == "8S/Bangkok CTR/VTR1,VTD16").all()
     assert df["event"].iloc[1] == "TOC"
     assert df["event"].iloc[len(df) - 1] == "TOD"
+
+
+def test_write_csv_conflict_marks_unresolved_los(tmp_path: Path) -> None:
+    """An unresolved loss of separation is reported twice: as a CONFLICT header
+    line naming the other aircraft and the window, and per-sample in the
+    Conflict column so the exact timestamps are readable off the table."""
+    gdf = _build_default_gdf()
+    ts = list(gdf["epoch_ts"])
+    # Mark the 2nd..4th samples as the breach window.
+    start, end = ts[1], ts[3]
+    span = {
+        "with_callsign": "TGW122",
+        "start_ts": start.isoformat().replace("+00:00", "Z"),
+        "end_ts": end.isoformat().replace("+00:00", "Z"),
+        "min_sep_nm": 2.1,
+        "min_vert_ft": 300,
+        "sep_min_nm": 5,
+        "sep_min_ft": 1000,
+    }
+    gdf["conflict"] = [
+        "LOS TGW122" if start <= t <= end else "" for t in ts
+    ]
+    out = tmp_path / "conflict.csv"
+    write_csv(gdf, out, route_str="BKK Y8 PUT", rfl=330, conflicts=[span])
+
+    text = out.read_text()
+    assert "CONFLICT: LOSS OF SEPARATION vs TGW122" in text
+    assert span["start_ts"] in text and span["end_ts"] in text
+    assert "min 2.1 NM / 300 ft" in text
+    assert "UNRESOLVED" in text
+
+    df = _read_csv_data(out)
+    assert len(df) == len(gdf)
+    flagged = df[df["conflict"] == "LOS TGW122"]
+    assert list(flagged.index) == [1, 2, 3]
+    assert df["conflict"].isna().iloc[0]  # blank outside the window
+
+
+def test_write_csv_no_conflict_lines_when_none(tmp_path: Path) -> None:
+    """A flight with no outstanding conflict keeps the column (blank) and gets
+    no CONFLICT header — the file must not imply one."""
+    gdf = _build_default_gdf()
+    out = tmp_path / "clean.csv"
+    write_csv(gdf, out, route_str="BKK Y8 PUT", rfl=330, conflicts=[])
+    text = out.read_text()
+    assert "CONFLICT:" not in text
+    assert "Event,Waypoint,Conflict" in text
+    assert _read_csv_data(out)["conflict"].isna().all()
 
 
 def test_write_csv_fl_line_omitted_when_rfl_none(tmp_path: Path) -> None:

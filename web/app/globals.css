@@ -2191,6 +2191,18 @@ body {
   flex: 1;
 }
 
+/* Small provenance line under a field (e.g. where a runway default came
+   from). `.thin` marks a figure resting on too little traffic to trust. */
+.field-hint {
+  font-size: 10.5px;
+  line-height: 1.3;
+  color: var(--muted);
+  opacity: 0.85;
+}
+.field-hint.thin {
+  color: #fbbf24;
+}
+
 .field select,
 .field input {
   background: #0f172a;
@@ -2929,6 +2941,26 @@ body {
   font-family: ui-monospace, "SFMono-Regular", monospace;
   color: #062a34;
   background: rgba(6, 182, 212, 0.92);
+  border-radius: 3px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  white-space: nowrap;
+}
+
+/* Runway threshold idents — same pill as the gate badge, in the runway grey
+   so a labelled threshold reads as part of the strip. */
+.rwy-badge {
+  background: transparent !important;
+  border: none !important;
+}
+
+.rwy-badge-pill {
+  display: inline-block;
+  padding: 0 3px;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  color: #0f172a;
+  background: rgba(229, 231, 235, 0.92);
   border-radius: 3px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   white-space: nowrap;
@@ -3784,6 +3816,12 @@ body {
   font-size: 13px;
   font-weight: 600;
 }
+/* A checkbox row whose toggle depends on a parent layer being on (e.g. runway
+   labels need the runway strips) — dimmed while that parent is off. */
+.lo-check.lo-check-off {
+  opacity: 0.45;
+}
+
 /* Keep all four procedure tabs (SID/STAR/PBN/ILS) the same card height. SID/STAR
    fill it with the "look up a procedure" form; PBN/ILS reserve the same space so
    the card doesn't shrink between tabs. */
@@ -4760,6 +4798,43 @@ select.fp-input {
 
 .sim-route-menu li {
   list-style: none;
+}
+
+/* Flight search, pinned to the top of the route list: a full traffic day runs
+   to hundreds of rows, so the box has to stay reachable while they scroll
+   under it. The negative margins cancel the menu's own 4px padding so the
+   sticky header spans the full width. */
+.sim-route-menu li.sim-route-search {
+  position: sticky;
+  top: -4px;
+  margin: -4px -4px 4px;
+  padding: 6px;
+  background: var(--panel);
+  border-bottom: 1px solid #33415566;
+  z-index: 1;
+}
+
+.sim-route-menu .sim-route-search input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text);
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 6px;
+}
+
+.sim-route-menu .sim-route-search input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.sim-route-menu li.sim-route-empty {
+  padding: 8px 6px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 /* Route row = the source-select button + an eye toggle for map visibility. */
@@ -5767,6 +5842,172 @@ select.fp-input {
   border-radius: 6px;
   padding: 7px 9px;
   margin: 0 0 12px;
+}
+
+/* --- Departure separation (Doc 4444 §5.6 / §5.8.3 / §7.9.2 / §8.7.3) ------
+   Red, because two FPLs off one runway at one time is not a suggestion to
+   review — as filed, the second aircraft cannot be cleared.
+
+   The LIST lives in the right-hand conflict rail (.dep-panel); what the
+   generator panel keeps is this one line pointing at it. */
+.dep-conf-pointer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  margin: 0 0 12px;
+  padding: 7px 9px;
+  border: 1px solid #b91c1c;
+  border-radius: 6px;
+  background: rgba(185, 28, 28, 0.12);
+  color: #fecaca;
+  font-size: 12px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dep-conf-pointer:hover {
+  background: rgba(185, 28, 28, 0.2);
+}
+.dep-conf-pointer-go {
+  flex: none;
+  color: #fca5a5;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* The panel in the rail. Same frame as the other CD&R panels, but pinned to
+   the RIGHT — it belongs to the plan editor's workflow, and the map keeps its
+   left side for the flown-traffic panels. */
+.dep-panel {
+  left: auto;
+  right: 16px;
+  width: min(420px, calc(100vw - 32px));
+}
+.dep-panel-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  background: rgba(185, 28, 28, 0.18);
+  color: #fca5a5;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.dep-panel-acts {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+.dep-panel-note {
+  margin: 0;
+  padding: 5px 10px 6px;
+  border-bottom: 1px solid #33415566;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.dep-panel-body {
+  overflow-y: auto;
+}
+.dep-conf-row {
+  padding: 7px 9px;
+  border-top: 1px solid rgba(185, 28, 28, 0.35);
+}
+.dep-conf-row:first-of-type {
+  border-top: 0;
+}
+.dep-conf-text {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #fecaca;
+}
+.dep-conf-assumed {
+  color: var(--muted);
+  opacity: 0.9;
+}
+.dep-conf-btns {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.dep-conf-ignore,
+.dep-conf-fix,
+.dep-conf-apply {
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+.dep-conf-ignore {
+  border: 1px solid #475569;
+  background: transparent;
+  color: var(--muted);
+}
+.dep-conf-fix {
+  border: 1px solid #ef4444;
+  background: #ef444422;
+  color: #fca5a5;
+  font-weight: 600;
+}
+.dep-conf-apply {
+  margin-left: 8px;
+  border: 1px solid #ef4444;
+  background: #ef444422;
+  color: #fca5a5;
+}
+/* "Which FPL do you want to fix?" — the two ends of the pair. */
+.dep-conf-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 7px;
+  padding: 6px 8px;
+  border: 1px dashed #7f1d1d;
+  border-radius: 5px;
+}
+.dep-conf-choice-q {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.dep-conf-pick {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  background: #0f172a;
+  color: var(--text);
+  font-size: 11.5px;
+  padding: 4px 8px;
+  cursor: pointer;
+  text-align: left;
+}
+.dep-conf-pick:hover {
+  border-color: #ef4444;
+}
+.dep-conf-pick-t {
+  color: #fca5a5;
+  font-variant-numeric: tabular-nums;
+}
+.dep-conf-more {
+  margin: 0;
+  padding: 5px 9px 7px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+/* The redirect target's own EOBT field. */
+.field-hint.bad {
+  color: #fca5a5;
+  opacity: 1;
+}
+.field input.bad {
+  border-color: #ef4444;
+  background: rgba(185, 28, 28, 0.12);
 }
 
 .fpl-prev {
@@ -8156,12 +8397,70 @@ select.fp-input {
   gap: 6px;
 }
 .cdr-sugg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--muted);
 }
+
+/* "What is the score?" toggle beside the section header. */
+.cdr-sugg-info {
+  background: transparent;
+  border: 1px solid #33415588;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  color: var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cdr-sugg-info:hover {
+  border-color: var(--accent);
+  background: #38bdf814;
+}
+
+/* The score legend — plain prose, so it reads at normal case/size rather than
+   inheriting the header's uppercase tracking. */
+.cdr-sugg-help {
+  border: 1px solid #33415566;
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: #0f172a66;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.cdr-sugg-help p {
+  margin: 0 0 6px;
+}
+.cdr-sugg-help p:last-child {
+  margin-bottom: 0;
+}
+.cdr-sugg-help code {
+  font-family: ui-monospace, "SFMono-Regular", monospace;
+  font-size: 10.5px;
+  background: #1e293b;
+  border-radius: 4px;
+  padding: 1px 4px;
+  white-space: nowrap;
+}
+.cdr-sugg-help-note {
+  color: var(--muted);
+}
+
 .cdr-sugg-card {
+  /* A <button> does not inherit page colour — without this the instruction
+     line renders in the UA's near-black button text on the dark card. */
+  color: var(--text);
   text-align: left;
   border: 1px solid #33415566;
   border-radius: 8px;
@@ -8198,13 +8497,38 @@ select.fp-input {
   justify-content: center;
 }
 .cdr-sugg-card.sel .cdr-sugg-rank { background: #38bdf8; color: #06121f; border-color: #38bdf8; }
-.cdr-sugg-instr { flex: 1; font-size: 13px; min-width: 0; }
+/* The instruction is the line the controller reads out — the brightest text on
+   the card, with the callsign lifted further so the target flight is obvious. */
+.cdr-sugg-instr {
+  flex: 1;
+  font-size: 13px;
+  min-width: 0;
+  color: #f1f5f9;
+}
+.cdr-sugg-instr strong {
+  color: var(--accent);
+  font-weight: 700;
+}
 .cdr-sugg-score {
   flex: 0 0 auto;
   font-size: 13px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: #7dd3fc;
+}
+/* The "/100" denominator says what the number is out of, without competing
+   with it for attention. */
+.cdr-sugg-score small {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--muted);
+}
+/* Top of the list: this one IS the 100 every other score is measured against. */
+.cdr-sugg-score.best {
+  color: #4ade80;
+}
+.cdr-sugg-score.best small {
+  color: #4ade8099;
 }
 .cdr-sugg-meta {
   font-size: 11px;
@@ -8231,3 +8555,343 @@ select.fp-input {
 }
 .cdr-manual > summary:hover { color: var(--text); }
 .cdr-manual .cdr-modal-field { margin-bottom: 8px; }
+
+/* ---------------------------------------------------------------------------
+   Arrival sequence panel — the landing ladder per runway. Reuses the .cdr-panel
+   shell; only the row grid and the shortfall styling are new.
+   --------------------------------------------------------------------------- */
+.arr-panel {
+  width: min(600px, calc(100vw - 32px));
+  overflow-y: auto;
+}
+.arr-summary {
+  margin: 0;
+  padding: 8px 12px 4px;
+  font-size: 12px;
+  color: var(--muted, #94a3b8);
+}
+.arr-summary .ok,
+.arr-gap .ok {
+  color: #4ade80;
+}
+.arr-summary .bad,
+.arr-gap .bad {
+  color: #f87171;
+  font-weight: 600;
+}
+.arr-stream {
+  padding: 0 12px 8px;
+}
+.arr-total {
+  float: right;
+  font-weight: 400;
+  font-size: 11px;
+  color: #fbbf24;
+}
+.arr-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.arr-row {
+  border-top: 1px solid #33415555;
+}
+.arr-row.short {
+  background: #7f1d1d22;
+}
+.arr-row.sel {
+  outline: 1px solid #38bdf8aa;
+  outline-offset: -1px;
+}
+.arr-row-head {
+  display: grid;
+  grid-template-columns: 22px 66px 46px 24px 46px 1fr;
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+  padding: 5px 4px;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.arr-row-head:hover {
+  background: #ffffff0a;
+}
+.arr-seq {
+  color: var(--muted, #94a3b8);
+  text-align: right;
+}
+.arr-cs {
+  font-weight: 600;
+}
+.arr-type,
+.arr-eta {
+  color: var(--muted, #94a3b8);
+  font-variant-numeric: tabular-nums;
+}
+/* Wake category badge — the thing that usually sets the minimum on final. */
+.arr-wake {
+  display: inline-block;
+  width: 18px;
+  text-align: center;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+}
+.arr-wake.w-super { background: #7c3aed; color: #fff; }
+.arr-wake.w-heavy { background: #b45309; color: #fff; }
+.arr-wake.w-medium { background: #334155; color: #cbd5e1; }
+.arr-wake.w-light { background: #1e293b; color: #94a3b8; }
+.arr-gap {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted, #94a3b8);
+}
+.arr-gap-sep {
+  margin: 0 3px;
+  opacity: 0.5;
+}
+.arr-first {
+  font-style: italic;
+  opacity: 0.6;
+}
+.arr-driver {
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #1e293b;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.arr-fix {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 0 4px 6px 28px;
+  font-size: 11px;
+}
+.arr-deficit {
+  color: #f87171;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.arr-inherited {
+  padding: 0 5px;
+  border-radius: 3px;
+  background: #78350f55;
+  color: #fbbf24;
+}
+.arr-instr {
+  flex: 1 1 100%;
+  color: #cbd5e1;
+}
+.arr-instr.k-speed { border-left: 3px solid #38bdf8; padding-left: 6px; }
+.arr-instr.k-vector { border-left: 3px solid #a78bfa; padding-left: 6px; }
+.arr-instr.k-hold { border-left: 3px solid #fb923c; padding-left: 6px; }
+.arr-instr.k-none { border-left: 3px solid #64748b; padding-left: 6px; opacity: 0.7; }
+.arr-foot {
+  margin: 0;
+  padding: 6px 12px 10px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--muted, #94a3b8);
+  opacity: 0.75;
+}
+
+/* City pair + STAR, on the line under the ladder row. Indented to the same
+   28 px gutter as the clearance so the strip's sub-lines all align under the
+   callsign rather than under the sequence number. */
+.arr-od {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 0 4px 3px 28px;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--muted, #94a3b8);
+}
+.arr-od-arrow {
+  opacity: 0.6;
+}
+.arr-star {
+  color: #c4b5fd;
+}
+.arr-star.none {
+  color: var(--muted, #94a3b8);
+  opacity: 0.6;
+  font-style: italic;
+}
+
+.arr-clr {
+  padding: 0 4px 4px 28px;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: #7dd3fc;
+  opacity: 0.85;
+}
+
+.arr-issue {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border: 1px solid #38bdf8aa;
+  border-radius: 4px;
+  background: #0ea5e922;
+  color: #7dd3fc;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+.arr-issue:hover { background: #0ea5e944; }
+.arr-issue.disabled {
+  border-color: #64748b66;
+  background: none;
+  color: #64748b;
+  cursor: default;
+}
+.arr-issued {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #16653455;
+  color: #4ade80;
+  font-size: 10px;
+}
+
+.arr-preview {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border: 1px solid #a78bfa88;
+  border-radius: 4px;
+  background: none;
+  color: #c4b5fd;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+.arr-preview:hover { background: #7c3aed33; }
+.arr-preview.on { background: #7c3aed55; color: #ede9fe; }
+.arr-note {
+  padding: 0 4px 6px 28px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: #c4b5fd;
+  opacity: 0.85;
+}
+
+/* Confirmation on a row whose instruction did the job. The fix block is gone
+   by then, so without this an issued instruction left no trace at all. */
+.arr-done {
+  padding: 0 4px 5px 28px;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: #4ade80;
+}
+
+/* …and the opposite case: issued, flown, still short of minima. Amber, not
+   red — the deficit itself is already red above it; this is the explanation. */
+.arr-residual {
+  flex: 1 1 100%;
+  font-size: 10px;
+  line-height: 1.4;
+  color: #fbbf24;
+  opacity: 0.9;
+}
+
+/* Kind chooser — the planner's ranking is advice; the controller picks. */
+.arr-kinds {
+  display: flex;
+  gap: 4px;
+  padding: 0 4px 4px 28px;
+}
+.arr-kind {
+  padding: 1px 7px;
+  border: 1px solid #33415588;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted, #94a3b8);
+  font: inherit;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.arr-kind:hover { background: #ffffff0f; }
+.arr-kind.on { color: #e2e8f0; border-color: #94a3b8; background: #ffffff14; }
+.arr-kind.k-speed.on { border-color: #38bdf8; }
+.arr-kind.k-vector.on { border-color: #a78bfa; }
+.arr-kind.k-hold.on { border-color: #fb923c; }
+/* Amount stepper — the planner proposes the bare minimum, with no margin. */
+.arr-amount {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+.arr-amount button {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid #33415588;
+  border-radius: 3px;
+  background: none;
+  color: #cbd5e1;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.arr-amount button:hover { background: #ffffff14; }
+.arr-amount > span {
+  min-width: 46px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  color: #e2e8f0;
+}
+.arr-amount > span.short { color: #fbbf24; }
+
+/* Whose conflict is it — the ATS unit that has to work it (Annex 11 §3.5). */
+.cdr-sector-wrap { display: inline-flex; align-items: center; gap: 3px; }
+.cdr-sector {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid #38bdf866;
+  border-radius: 3px;
+  background: #38bdf814;
+  color: #7dd3fc;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+/* A fix that crosses a unit boundary can't be issued unilaterally. */
+.cdr-sector.coord { border-color: #fbbf2466; background: #fbbf2414; color: #fcd34d; }
+.cdr-sector-coord {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #fbbf2422;
+  color: #fcd34d;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+/* A danger/restricted area the conflict sits in — a constraint, not a unit. */
+.cdr-sector-pdr {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #f8717122;
+  color: #fca5a5;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}

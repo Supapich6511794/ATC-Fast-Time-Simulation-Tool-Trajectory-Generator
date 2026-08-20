@@ -19,7 +19,10 @@ import type { ReactNode } from "react";
 
 import { SEVERITY_LABEL, fmtCountdown, fmtNm } from "@/lib/cdr/format";
 import type { TrackedConflict } from "@/lib/cdr/lifecycle";
+import type { ConflictSector } from "@/lib/cdr/sector";
 import type { AppliedFix, Severity } from "@/lib/cdr/types";
+
+import SectorChip from "./SectorChip";
 
 interface Props {
   conflicts: TrackedConflict[];
@@ -33,6 +36,9 @@ interface Props {
   /** Inline resolution cards for the selected conflict (Preview = dashed path on
    *  the main map, Apply = commit) — the same flow as before, no popup. */
   renderAdvisory?: (conflictId: string) => ReactNode;
+  /** The ATS unit responsible for a conflict — shown on the row so it is clear
+   *  whose airspace the fix is in before it is issued. */
+  sectorOf?: (c: TrackedConflict) => ConflictSector | null;
 }
 
 const SEV_SHORT: Record<Severity, string> = { LOS: "LOS", STCA: "STCA", MTCD: "MTCD" };
@@ -46,6 +52,7 @@ export default function NotificationPanel({
   onClose,
   appliedFixes,
   renderAdvisory,
+  sectorOf,
 }: Props) {
   const fixedById = new Map(appliedFixes.map((f) => [f.conflictId, f]));
   const unresolved = conflicts.filter((c) => !fixedById.has(c.id)).length;
@@ -120,6 +127,11 @@ export default function NotificationPanel({
                     ) : (
                       <>
                         CPA {fmtNm(c.dCpa)}
+                        <SectorChip
+                          sector={sectorOf?.(c)}
+                          ids={c}
+                          nameOf={nameOf}
+                        />
                         {c.clearTicks > 0 && <em className="cdr-clearing"> · clearing…</em>}
                       </>
                     )}

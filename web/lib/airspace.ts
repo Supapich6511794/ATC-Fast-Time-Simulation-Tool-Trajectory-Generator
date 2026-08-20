@@ -256,16 +256,31 @@ interface SegPoint {
   epoch_ts: string;
 }
 
+// One route's segments depend only on its points and the sector index, so the
+// result is cached against the point array. A ray-cast per point over every
+// sector is cheap for ONE route and ruinous for a whole traffic day: replacing
+// a single flight (an applied CD&R fix) changes the trajectory ARRAY, and
+// without this cache every one of the other flights was re-walked point by
+// point on each Apply.
+const segmentCache = new WeakMap<
+  object,
+  { index: AirspaceIndex; segs: AirspaceSegment[] }
+>();
+
 /** Walk a whole trajectory and collapse it into contiguous airspace segments.
  *  Membership is altitude-aware (a climb out of a low CTR drops that zone from
  *  both the label and the tint), so a new block starts wherever the set of
- *  containing volumes changes. Cheap enough to run once per route (the same
- *  bbox-reject + ray-cast as the live label, just over every point). */
+ *  containing volumes changes. Memoised per point array (see `segmentCache`) —
+ *  one walk per route, not one per render. */
 export function buildAirspaceSegments(
   index: AirspaceIndex,
   points: ReadonlyArray<SegPoint>,
 ): AirspaceSegment[] {
   if (points.length === 0 || !index.bacc) return [];
+  // Cached against the index too: reloading the sector polygons builds a new
+  // index, and the old segments were resolved against the old volumes.
+  const hit = segmentCache.get(points);
+  if (hit && hit.index === index) return hit.segs;
   const base = new Date(points[0].epoch_ts).getTime();
   let cur: AirspaceSegment | null = null;
   const segs: AirspaceSegment[] = [];
@@ -287,6 +302,7 @@ export function buildAirspaceSegments(
     }
   }
   if (segs.length) segs[0].t0 = 0; // first block anchors at the departure edge
+  segmentCache.set(points, { index, segs });
   return segs;
 }
 

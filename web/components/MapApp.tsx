@@ -54,7 +54,13 @@ import {
   type SectorCollection,
   type SectorKey,
 } from "@/lib/geojson";
-import { fetchProcedure, recacheTrajectory, type ProcedureDto } from "@/lib/api";
+import {
+  extendDownwind,
+  fetchProcedure,
+  recacheTrajectory,
+  setConflictMarks,
+  type ProcedureDto,
+} from "@/lib/api";
 import {
   fetchGates,
   fetchIlsLines,
@@ -111,6 +117,10 @@ import {
   type Holding,
   type HoldingPattern,
 } from "@/lib/holdings";
+import { applyArrivalHold, applySpeedReduction } from "@/lib/cdr/arrivalApply";
+import { conflictSector, type ConflictSector, type SectorPoint } from "@/lib/cdr/sector";
+import type { ArrivalFix } from "@/lib/cdr/arrivalFix";
+import { useArrivals } from "@/lib/cdr/useArrivals";
 import { useCdr } from "@/lib/cdr/useCdr";
 import {
   DEFAULT_CDR_CONFIG,
@@ -128,6 +138,8 @@ import {
   type PlanConflict,
   type PlanFlight,
 } from "@/lib/cdr/planScan";
+import { buildLosMarks } from "@/lib/cdr/losMarks";
+import type { DepartureConflict } from "@/lib/departureSeparation";
 import { restrictedAreasFrom } from "@/lib/cdr/constraints";
 import {
   generatePlanResolutions,
@@ -136,7 +148,9 @@ import {
   type PlanResolution,
 } from "@/lib/cdr/planAdvisory";
 import ToastStack from "@/components/cdr/ToastStack";
+import ArrivalPanel from "@/components/cdr/ArrivalPanel";
 import ConflictPanel from "@/components/cdr/ConflictPanel";
+import DepartureConflictPanel from "@/components/cdr/DepartureConflictPanel";
 import NotificationPanel from "@/components/cdr/NotificationPanel";
 import SuggestionCards from "@/components/cdr/SuggestionCards";
 
@@ -502,6 +516,7 @@ export default function MapApp() {
   const [airportList, setAirportList] = useState<PanelAirport[]>([]);
   const [hiddenAirports, setHiddenAirports] = useState<Set<string>>(new Set());
   const [showRunways, setShowRunways] = useState(false);
+  const [runwayLabels, setRunwayLabels] = useState(true);
   const [runways, setRunways] = useState<RunwayPoint[]>([]);
 
   // Gates layer.
@@ -802,6 +817,20 @@ export default function MapApp() {
   // ~184 polygons per plane is cheap, but there's no reason to redo it every
   // frame; whole-second resolution reads live enough.
   const simSec = Math.round(sim.simT);
+  // …but a SIM second is not a real second. At x200 `simSec` ticks ~200×/s, so
+  // a per-sim-second membership pass over a whole traffic day ran hundreds of
+  // times per real second and ate the main thread. This second gate holds the
+  // airspace pass to ~5 Hz of REAL time while playing; a pause or a scrub
+  // (where simSec moves without the clock running) always lands immediately.
+  const [airspaceSec, setAirspaceSec] = useState(0);
+  const lastAirspaceMsRef = useRef(0);
+  useEffect(() => {
+    const nowMs =
+      typeof performance !== "undefined" ? performance.now() : lastAirspaceMsRef.current;
+    if (sim.playing && nowMs - lastAirspaceMsRef.current < 200) return;
+    lastAirspaceMsRef.current = nowMs;
+    setAirspaceSec(simSec);
+  }, [simSec, sim.playing]);
   // Altitude-aware membership per plane — the volume that actually CONTAINS the
   // aircraft at its current altitude (a plane above a TMA's ceiling is not in
   // it). The one source of truth for the map tag, the Results rows and the
@@ -810,7 +839,7 @@ export default function MapApp() {
     const out: Record<string, AirspaceMembership> = {};
     if (!airspaceIndex.bacc) return out; // polygons not loaded yet
     trajectories.forEach((t, i) => {
-      const localT = localClock(i, simSec, routeOffsets, safePlaybackIdx);
+      const localT = localClock(i, airspaceSec, routeOffsets, safePlaybackIdx);
       if (statusFromLocalT(localT, totalSeconds(t.points)) !== "enroute") return;
       const ac = aircraftAt(samplesByIdx[i], localT);
       if (!ac) return;
@@ -828,21 +857,32 @@ export default function MapApp() {
     airspaceIndex,
     routeOffsets,
     safePlaybackIdx,
-    simSec,
+    airspaceSec,
   ]);
 
   // Whole-route airspace breakdown — every stretch each route spends in the
   // same set of sectors — so the altitude profile can paint colour blocks for
   // the zones it crosses. Independent of the sim clock (a static property of
   // the route), so it's computed once per route, not per frame.
-  const airspaceSegmentsByKey = useMemo(() => {
-    const out: Record<string, AirspaceSegment[]> = {};
-    if (!airspaceIndex.bacc) return out; // polygons not loaded yet
-    for (const t of trajectories) {
-      out[t.meta.flightKey] = buildAirspaceSegments(airspaceIndex, t.points);
-    }
-    return out;
-  }, [trajectories, airspaceIndex]);
+  //
+  // Handed down as a LOOKUP rather than a prebuilt map: only an expanded route
+  // card mounts an altitude chart, so with a whole traffic day loaded this walks
+  // the one or two routes actually on screen instead of all 599 (which is what
+  // made the tab hang the moment a big set finished generating). The walk itself
+  // is memoised per route inside `buildAirspaceSegments`.
+  const trajByKey = useMemo(() => {
+    const m = new Map<string, TrajectoryResult>();
+    for (const t of trajectories) m.set(t.meta.flightKey, t);
+    return m;
+  }, [trajectories]);
+  const airspaceSegmentsFor = useCallback(
+    (flightKey: string): AirspaceSegment[] => {
+      const t = trajByKey.get(flightKey);
+      if (!t || !airspaceIndex.bacc) return [];
+      return buildAirspaceSegments(airspaceIndex, t.points);
+    },
+    [trajByKey, airspaceIndex],
+  );
 
   // --- Conflict Detection & Resolution (CD&R) --------------------------------
   // A read-only consumer of the same trajectories + shared clock the map uses.
@@ -855,7 +895,7 @@ export default function MapApp() {
   // Which CD&R view is open (chosen from the ⚡ CD&R dropdown), and whether the
   // dropdown itself is showing. "notifications" = the realtime alert stack;
   // "dashboard" = the strategic 2-column LoS/Fixed board.
-  const [cdrView, setCdrView] = useState<"notifications" | "dashboard" | null>(
+  const [cdrView, setCdrView] = useState<"notifications" | "dashboard" | "arrivals" | null>(
     null,
   );
   const [cdrMenuOpen, setCdrMenuOpen] = useState(false);
@@ -907,6 +947,32 @@ export default function MapApp() {
     (id: string) => callsignByKey[id] ?? id,
     [callsignByKey],
   );
+
+  // Which ATS unit owns a conflict — the sector the loss of separation would
+  // happen in, plus who is working each aircraft right now. A controller shown
+  // a resolution has to know whether it is theirs to give, and whether it
+  // crosses a boundary (Doc 4444 §10.1 coordination). Resolved from the same
+  // altitude-aware airspace hierarchy the map labels and Results rows use, so
+  // all of them name the same volume.
+  const sectorOfConflict = useCallback(
+    (c: { a: string; b: string }, tCpaAbsSec: number): ConflictSector | null => {
+      if (!airspaceIndex.bacc) return null; // polygons not loaded yet
+      const at = (id: string, absSec: number): SectorPoint | null => {
+        const i = trajectories.findIndex((t) => t.meta.flightKey === id);
+        if (i < 0) return null;
+        const ac = aircraftAt(samplesByIdx[i], absSec - (routeOffsets[i] ?? 0));
+        return ac ? { lat: ac.lat, lon: ac.lon, altFt: ac.altitudeFt } : null;
+      };
+      const now = Math.round(simTRef.current);
+      return conflictSector(
+        c,
+        { a: at(c.a, tCpaAbsSec), b: at(c.b, tCpaAbsSec) },
+        { a: at(c.a, now), b: at(c.b, now) },
+        (lat, lon, altFt) => airspaceAt(airspaceIndex, lon, lat, altFt),
+      );
+    },
+    [airspaceIndex, trajectories, samplesByIdx, routeOffsets],
+  );
   // Hover readouts for the two before/after overlay lines. The new route carries
   // the instruction with its "from" value ("Climb FL160 — from FL140").
   const resolvedRouteLabel = useMemo(() => {
@@ -955,6 +1021,187 @@ export default function MapApp() {
     configOverrides: cdrConfigOverrides,
   });
 
+  // Arrival sequencing runs alongside conflict detection but answers a
+  // different question: in-trail arrivals fly parallel tracks at similar
+  // speeds, so they never trip the CPA detector even when the gap is
+  // unlandable (Doc 4444 §8.9.4.3). Only computed while the panel is open —
+  // it walks every arrival's whole remaining path.
+  // --- Departure conflicts (pre-departure, from the FILED PLANS) -----------
+  // Detected in GeneratorPanel (it owns the plans) but shown here, in the same
+  // right-hand rail as the other conflict panels: one place to look, whether
+  // the problem is on the runway or in the air. It is available BEFORE
+  // anything is generated — that is the whole point of it.
+  const [depConflictState, setDepConflictState] = useState<{
+    conflicts: DepartureConflict[];
+    ignore: (conflictId: string) => void;
+    ignoreAll: (conflictIds: string[]) => void;
+    fix: (conflictId: string, planId: string) => void;
+    autoFixAll: () => void;
+  } | null>(null);
+  const [depPanelOpen, setDepPanelOpen] = useState(false);
+  const [depChoiceFor, setDepChoiceFor] = useState<string | null>(null);
+  const depConflicts = depConflictState?.conflicts ?? [];
+  const openDepPanel = useCallback(() => setDepPanelOpen(true), []);
+  // Nothing left to show → the panel closes itself rather than sitting there
+  // empty (Auto fix all clears the whole list in one click).
+  useEffect(() => {
+    if (depConflicts.length === 0) {
+      setDepPanelOpen(false);
+      setDepChoiceFor(null);
+    }
+  }, [depConflicts.length]);
+
+  // Arrival instructions the controller has issued, by flightKey — so a row
+  // reads as done and is not offered again.
+  const [issuedArrivalFixes, setIssuedArrivalFixes] = useState<Set<string>>(
+    () => new Set(),
+  );
+  // Instructions currently being re-flown by the engine, so the row can show
+  // it is working and the button can't be double-fired.
+  const [busyArrivalFixes, setBusyArrivalFixes] = useState<Set<string>>(
+    () => new Set(),
+  );
+  /** Downwind extension ALREADY issued to each arrival (NM, cumulative).
+   *
+   *  `/api/extend` is absolute, not incremental: it re-flies the flight from the
+   *  originally filed request with `extend_downwind_nm = X`, so sending the
+   *  second instruction's own 2 NM would REPLACE the first 3 NM rather than add
+   *  to it — the aircraft would move back up the approach. A second instruction
+   *  is a real case (the planner proposes the bare minimum, and a stream can
+   *  re-tighten as the aircraft ahead is held), so the running total is what
+   *  gets sent. Preview uses it too, or the drawn path would not be the one
+   *  Issue commits. */
+  const extendIssuedNm = useRef<Map<string, number>>(new Map());
+  const totalExtendNm = useCallback(
+    (flightKey: string, addNm: number) =>
+      (extendIssuedNm.current.get(flightKey) ?? 0) + addNm,
+    [],
+  );
+  /** An arrival fix being PREVIEWED: the path it would fly, held uncommitted so
+   *  the map can draw it against the current one. A vector and a hold both
+   *  change the ground track, so both draw; a speed control keeps it and
+   *  changes only timing, so `points` is null for those and the panel says so
+   *  instead of drawing a line identical to the one already there.
+   *
+   *  The fetched path is kept so Issue can commit it without asking the engine
+   *  a second time. */
+  const [arrivalPreview, setArrivalPreview] = useState<{
+    flightKey: string;
+    points: TrajectoryResult["points"] | null;
+    route: TrajectoryResult["route"] | null;
+    stats: TrajectoryResult["stats"] | null;
+    meta: TrajectoryResult["meta"] | null;
+  } | null>(null);
+
+  const clearArrivalPreview = useCallback(() => setArrivalPreview(null), []);
+
+  /** The previewed path, and the flight's CURRENT one to draw underneath it, so
+   *  the change reads as "was -> would be". Both null when nothing is
+   *  previewed, or when the fix leaves the track untouched. */
+  const arrivalPreviewPts = useMemo(
+    () =>
+      arrivalPreview?.points
+        ? arrivalPreview.points.map((p) => ({ lat: p.lat, lon: p.lon }))
+        : null,
+    [arrivalPreview],
+  );
+  const arrivalOriginalPts = useMemo(() => {
+    if (!arrivalPreview?.points) return null;
+    const cur = trajectories.find(
+      (t) => t.meta.flightKey === arrivalPreview.flightKey,
+    );
+    return cur ? cur.points.map((p) => ({ lat: p.lat, lon: p.lon })) : null;
+  }, [arrivalPreview, trajectories]);
+
+  /** Fetch (or compute) what a fix would do, without committing it. */
+  const handlePreviewArrivalFix = useCallback(
+    (flightKey: string, fix: ArrivalFix) => {
+      if (arrivalPreview?.flightKey === flightKey) {
+        setArrivalPreview(null); // toggle off
+        return;
+      }
+      // A HOLD is traced in the browser from the published pattern, so the
+      // racetrack can be drawn without asking the engine anything.
+      if (fix.kind === "hold" && fix.hold) {
+        const i = trajectories.findIndex((t) => t.meta.flightKey === flightKey);
+        if (i < 0) return;
+        const localT = simTRef.current - (routeOffsets[i] ?? 0);
+        const held = applyArrivalHold(
+          trajectories[i],
+          fix.hold,
+          fix.holdLoops ?? 1,
+          localT,
+        );
+        setArrivalPreview({
+          flightKey,
+          points: held === trajectories[i] ? null : held.points,
+          route: held.route,
+          stats: held.stats,
+          meta: held.meta,
+        });
+        return;
+      }
+      if (fix.kind !== "vector" || !fix.extendNm) {
+        // Nothing to draw: the track is unchanged.
+        setArrivalPreview({
+          flightKey, points: null, route: null, stats: null, meta: null,
+        });
+        return;
+      }
+      setBusyArrivalFixes((prev) => new Set(prev).add(flightKey));
+      void (async () => {
+        try {
+          const { result } = await extendDownwind(
+            flightKey,
+            totalExtendNm(flightKey, fix.extendNm!),
+          );
+          setArrivalPreview({
+            flightKey,
+            points: result.points,
+            route: result.route,
+            stats: result.stats,
+            meta: result.meta,
+          });
+        } catch (e) {
+          setError(
+            e instanceof Error ? e.message : "Could not preview the extension.",
+          );
+        } finally {
+          setBusyArrivalFixes((prev) => {
+            const next = new Set(prev);
+            next.delete(flightKey);
+            return next;
+          });
+        }
+      })();
+    },
+    [arrivalPreview, trajectories, routeOffsets, totalExtendNm],
+  );
+
+  // Published Bangkok-FIR holdings (AIRAC 2607) — loaded once, enables the CD&R
+  // HOLD resolution (fly a racetrack loop at a holding fix on the route to
+  // delay + open spacing) and the same instruction for an arrival stream.
+  const [holdings, setHoldings] = useState<Map<string, Holding>>(new Map());
+  useEffect(() => {
+    let alive = true;
+    void fetchHoldings().then((m) => {
+      if (alive) setHoldings(m);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const arrivals = useArrivals({
+    trajectories,
+    samplesByIdx,
+    offsets: routeOffsets,
+    simSec,
+    enabled: cdrMonitoring && cdrView === "arrivals",
+    configOverrides: cdrConfigOverrides,
+    holdings,
+  });
+
   // Realtime notification list. An APPLIED fix is authoritative: a resolved
   // conflict is shown as "✓ Fixed" only BRIEFLY (a confirmation) and then drops
   // off the live stack — it must not linger as a loss alert even when the
@@ -983,6 +1230,147 @@ export default function MapApp() {
   // without being re-created every animation frame.
   const simTRef = useRef(sim.simT);
   simTRef.current = sim.simT;
+
+  /** Issue an arrival-spacing instruction. Only SPEED is flyable from here: it
+   *  keeps the ground track, so the trajectory is simply re-timed from the
+   *  clock onward (the same client-side path the other CD&R fixes use). A
+   *  vector or a hold re-routes the aircraft and needs the engine's geometry.
+   *
+   *  `sim.simT` is the SHARED timeline clock, not wall time, so it is mapped
+   *  onto this flight's own epoch axis first — otherwise the cut-over would
+   *  land in the wrong place on any flight whose EOBT is offset. */
+  const handleIssueArrivalFix = useCallback(
+    (flightKey: string, fix: ArrivalFix) => {
+      // A DOWNWIND EXTENSION changes the ground track, so the engine re-flies
+      // it: the request that produced the flight is held server-side, keyed by
+      // flight key, and the result is spliced at the hand-over fix so nothing
+      // already flown moves.
+      if (fix.kind === "vector" && fix.extendNm) {
+        // Already previewed? Commit exactly what was shown rather than asking
+        // the engine again — a second call would be wasted, and any drift
+        // between the two would mean the map lied.
+        const total = totalExtendNm(flightKey, fix.extendNm);
+        const shown = arrivalPreview;
+        if (shown?.flightKey === flightKey && shown.points && shown.meta) {
+        // Replacing a trajectory makes useSimPlayback reset the clock to 0 and
+        // pause; hold the current position so issuing an instruction does not
+        // throw the replay back to the start.
+        restorePlaybackRef.current = {
+          t: simTRef.current,
+          playing: playingRef.current,
+        };
+          setTrajectories((prev) =>
+            prev.map((t) =>
+              t.meta.flightKey === flightKey
+                ? { ...t, route: shown.route!, points: shown.points!,
+                    stats: shown.stats!, meta: shown.meta! }
+                : t,
+            ),
+          );
+          void recacheTrajectory(flightKey, shown.points);
+          extendIssuedNm.current.set(flightKey, total);
+          setIssuedArrivalFixes((prev) => new Set(prev).add(flightKey));
+          setArrivalPreview(null);
+          return;
+        }
+        setBusyArrivalFixes((prev) => new Set(prev).add(flightKey));
+        void (async () => {
+          try {
+            const { result } = await extendDownwind(flightKey, total);
+        // Replacing a trajectory makes useSimPlayback reset the clock to 0 and
+        // pause; hold the current position so issuing an instruction does not
+        // throw the replay back to the start.
+        restorePlaybackRef.current = {
+          t: simTRef.current,
+          playing: playingRef.current,
+        };
+            setTrajectories((prev) =>
+              prev.map((t) =>
+                t.meta.flightKey === flightKey
+                  ? { ...t, route: result.route, points: result.points,
+                      stats: result.stats, meta: result.meta }
+                  : t,
+              ),
+            );
+            // Keep the DOWNLOAD in step with what was issued — the extend
+            // endpoint re-flies the flight but leaves the export cache holding
+            // the un-extended baseline it generates alongside the splice.
+            void recacheTrajectory(flightKey, result.points);
+            extendIssuedNm.current.set(flightKey, total);
+            setIssuedArrivalFixes((prev) => new Set(prev).add(flightKey));
+            setArrivalPreview(null);
+          } catch (e) {
+            setError(
+              e instanceof Error
+                ? e.message
+                : "Could not extend the downwind.",
+            );
+          } finally {
+            setBusyArrivalFixes((prev) => {
+              const next = new Set(prev);
+              next.delete(flightKey);
+              return next;
+            });
+          }
+        })();
+        return;
+      }
+      // A HOLD is spliced in at the published fix, client-side — the racetrack
+      // geometry is the same one the conflict-side holds already fly.
+      if (fix.kind === "hold") {
+        if (!fix.hold) return; // advisory only: nowhere to hold
+        restorePlaybackRef.current = {
+          t: simTRef.current,
+          playing: playingRef.current,
+        };
+        setTrajectories((prev) => {
+          const i = prev.findIndex((t) => t.meta.flightKey === flightKey);
+          if (i < 0) return prev;
+          const localT = simTRef.current - (routeOffsets[i] ?? 0);
+          const held = applyArrivalHold(
+            prev[i],
+            fix.hold!,
+            fix.holdLoops ?? 1,
+            localT,
+          );
+          if (held === prev[i]) return prev;
+          // Keep the DOWNLOAD in step with what was issued.
+          void recacheTrajectory(flightKey, held.points);
+          return prev.map((t, k) => (k === i ? held : t));
+        });
+        setIssuedArrivalFixes((prev) => new Set(prev).add(flightKey));
+        setArrivalPreview(null);
+        return;
+      }
+      if (fix.kind !== "speed" || !fix.gsKt) return;
+        // Replacing a trajectory makes useSimPlayback reset the clock to 0 and
+        // pause; hold the current position so issuing an instruction does not
+        // throw the replay back to the start.
+        restorePlaybackRef.current = {
+          t: simTRef.current,
+          playing: playingRef.current,
+        };
+      setTrajectories((prev) => {
+        const i = prev.findIndex((t) => t.meta.flightKey === flightKey);
+        if (i < 0 || prev[i].points.length < 2) return prev;
+        const localT = simTRef.current - (routeOffsets[i] ?? 0);
+        const originSec = new Date(prev[i].points[0].epoch_ts).getTime() / 1000;
+        const points = applySpeedReduction(
+          prev[i].points,
+          originSec + localT,
+          fix.gsKt as number,
+        );
+        if (points === prev[i].points) return prev;
+        // Keep the DOWNLOAD in step with what was issued, as the conflict
+        // fixes do — otherwise the export still serves the pre-fix path.
+        void recacheTrajectory(flightKey, points);
+        return prev.map((t, k) => (k === i ? { ...t, points } : t));
+      });
+      setIssuedArrivalFixes((prev) => new Set(prev).add(flightKey));
+    },
+    [routeOffsets, arrivalPreview, totalExtendNm],
+  );
+
   const playingRef = useRef(sim.playing);
   playingRef.current = sim.playing;
 
@@ -1036,19 +1424,59 @@ export default function MapApp() {
       .sort((a, b) => a.tCpaAbsSec - b.tCpaAbsSec);
   }, [planConflicts, appliedFixes]);
 
-  // Published Bangkok-FIR holdings (AIRAC 2607) — loaded once, enables the CD&R
-  // HOLD resolution (fly a racetrack loop at a holding fix on the route to
-  // delay + open spacing; the realistic fix for an arrival-merge conflict).
-  const [holdings, setHoldings] = useState<Map<string, Holding>>(new Map());
-  useEffect(() => {
-    let alive = true;
-    void fetchHoldings().then((m) => {
-      if (alive) setHoldings(m);
-    });
-    return () => {
-      alive = false;
-    };
-  }, []);
+  // UTC of the shared clock's t=0 — the earliest departure across the set, the
+  // same origin `departureOffsets` measures from. Turns an absolute sim second
+  // back into the real timestamp the exported track rows are keyed by.
+  const timelineOriginMs = useMemo(() => {
+    let origin = Infinity;
+    for (const t of trajectories) {
+      const p = t.points?.[0];
+      if (p) origin = Math.min(origin, new Date(p.epoch_ts).getTime());
+    }
+    return Number.isFinite(origin) ? origin : 0;
+  }, [trajectories]);
+
+  /**
+   * Tell the export which timestamps of a flight are in loss of separation,
+   * for every conflict the controller has NOT resolved. Run just before a
+   * download: detection lives in the browser (only it holds every trajectory),
+   * so the server-rendered files have to be handed the windows.
+   *
+   * Flights with nothing outstanding post an empty list, which clears a mark
+   * left by an earlier export — so a file downloaded after the fix is applied
+   * never still claims a conflict.
+   */
+  const stampConflictMarks = useCallback(
+    async (flightKeys: string[]) => {
+      if (flightKeys.length === 0) return;
+      // Single-route playback leaves the strategic scan off; run it here so a
+      // download is annotated whether or not CD&R monitoring is live.
+      const scanned =
+        cdrMonitoring || planFlights.length < 2
+          ? planConflicts
+          : scanFlightPlanConflicts(planFlights, cdr.config);
+      const fixedIds = new Set(appliedFixes.map((f) => f.conflictId));
+      const unresolved = scanned.filter((c) => c.definite && !fixedIds.has(c.id));
+      await setConflictMarks(
+        buildLosMarks(
+          flightKeys,
+          planFlights,
+          unresolved,
+          cdr.config,
+          timelineOriginMs,
+        ),
+      );
+    },
+    [
+      cdrMonitoring,
+      planConflicts,
+      planFlights,
+      cdr.config,
+      appliedFixes,
+      timelineOriginMs,
+    ],
+  );
+
 
   // Prohibited/Danger/Restricted areas (from the AIP PDR polygons) for the
   // constraint engine's airspace check.
@@ -1247,6 +1675,13 @@ export default function MapApp() {
         planConflicts.find((x) => x.id === selectedConflictId) ??
         cdr.conflicts.find((x) => x.id === selectedConflictId);
       if (c) {
+        // Who issued it. Captured NOW, because the airspace the pair occupies
+        // moves on but the unit that was responsible does not.
+        const cpaAbs =
+          "tCpaAbsSec" in c
+            ? (c as { tCpaAbsSec: number }).tCpaAbsSec
+            : simTRef.current + ((c as { tCpa?: number }).tCpa ?? 0);
+        const unit = sectorOfConflict(c, cpaAbs);
         setAppliedFixes((prev) => [
           {
             conflictId: c.id,
@@ -1255,6 +1690,8 @@ export default function MapApp() {
             target: m.target,
             instruction: m.instruction,
             appliedAtSec: Math.round(simTRef.current),
+            sector: unit?.label || undefined,
+            sectorCoordination: unit?.coordination || undefined,
             maneuverType: m.type,
             targetCallsign: m.targetCallsign,
             reason: m.reason,
@@ -1272,7 +1709,7 @@ export default function MapApp() {
       const dismissId = forConflict?.id ?? selectedConflictId;
       if (dismissId) toasts.dismiss(dismissId);
     },
-    [trajectories, routeOffsets, localManeuverTime, planConflicts, cdr.conflicts, cdr.config, selectedConflictId, toasts],
+    [trajectories, routeOffsets, localManeuverTime, planConflicts, cdr.conflicts, cdr.config, selectedConflictId, toasts, sectorOfConflict],
   );
 
   const handleApply = useCallback(
@@ -1970,6 +2407,8 @@ export default function MapApp() {
             onCurrentPreviewChange={setCurrentPreview}
             onReadyChange={setGenStatus}
             waypointIdents={routeIdents}
+            onDepartureConflicts={setDepConflictState}
+            onOpenDepartureConflicts={openDepPanel}
           />
         </div>
 
@@ -1987,9 +2426,7 @@ export default function MapApp() {
               forceSection={nav.section}
               simT={playSimT(nav.routeIdx)}
               airspace={airspaceByKey[downloads[nav.routeIdx].flightKey]}
-              airspaceSegments={
-                airspaceSegmentsByKey[downloads[nav.routeIdx].flightKey]
-              }
+              airspaceSegmentsFor={airspaceSegmentsFor}
             />
           )}
 
@@ -2078,7 +2515,7 @@ export default function MapApp() {
                 sectionMode={nav.section}
                 simT={playSimT(i)}
                 airspace={airspaceByKey[d.flightKey]}
-                airspaceSegments={airspaceSegmentsByKey[d.flightKey]}
+                airspaceSegmentsFor={airspaceSegmentsFor}
               />
             ))}
 
@@ -2170,6 +2607,25 @@ export default function MapApp() {
                 >
                   ⚲ Filter
                 </button>
+                {/* Departure conflicts come out of the PLANS, so this tab has
+                    to be reachable before anything is generated — it is not
+                    inside the Conflict Detection menu, which needs traffic. */}
+                {depConflicts.length > 0 && (
+                  <button
+                    type="button"
+                    className={`map-filter-btn cdr-toggle alerting${
+                      depPanelOpen ? " active" : ""
+                    }`}
+                    onClick={() => setDepPanelOpen((v) => !v)}
+                    aria-pressed={depPanelOpen}
+                    title={`${depConflicts.length} filed departures cannot be cleared as they stand`}
+                  >
+                    🛫 Departure Conflict
+                    <span className="cdr-badge sev-los">
+                      {depConflicts.length}
+                    </span>
+                  </button>
+                )}
                 {trajectories.length >= 2 && (
                   <div className="cdr-dropdown-wrap">
                     <button
@@ -2237,6 +2693,17 @@ export default function MapApp() {
                         >
                           ⚡ Conflict dashboard
                         </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className={cdrView === "arrivals" ? "active" : ""}
+                          onClick={() => {
+                            setCdrView("arrivals");
+                            setCdrMenuOpen(false);
+                          }}
+                        >
+                          🛬 Arrival sequence
+                        </button>
                         <div className="cdr-menu-sep" role="separator" />
                         <button
                           type="button"
@@ -2289,6 +2756,7 @@ export default function MapApp() {
               onClose={closeDownload}
               results={trajectories}
               downloads={downloads}
+              onBeforeDownload={stampConflictMarks}
             />
             <MapOverlay
               theme={theme}
@@ -2314,6 +2782,8 @@ export default function MapApp() {
               onHideAllAirports={hideAllAirports}
               showRunways={showRunways}
               onShowRunways={setShowRunways}
+              runwayLabels={runwayLabels}
+              onRunwayLabels={setRunwayLabels}
               gatesOn={gatesOn}
               onGatesOn={setGatesOn}
               airwaysOn={showAirways}
@@ -2400,6 +2870,7 @@ export default function MapApp() {
               hiddenAirports={hiddenAirports}
               gates={gatesOn ? gates : null}
               runways={showRunways ? runways : null}
+              runwayLabels={runwayLabels}
               highlightProc={highlightProc}
               onProcedureClick={handleProcedureClick}
               trajectories={trajectories}
@@ -2430,9 +2901,9 @@ export default function MapApp() {
               cdrTraffic={cdrMonitoring ? cdr.traffic : undefined}
               cdrSelectedId={selectedConflictId}
               cdrNameOf={nameOf}
-              cdrPreview={previewPts}
+              cdrPreview={arrivalPreviewPts ?? previewPts}
               cdrResolvedRoute={resolvedRoutePts}
-              cdrOriginalRoute={originalRoutePts}
+              cdrOriginalRoute={arrivalPreviewPts ? arrivalOriginalPts : originalRoutePts}
               cdrResolvedLabel={resolvedRouteLabel}
               cdrOriginalLabel={originalRouteLabel}
             />
@@ -2580,6 +3051,31 @@ export default function MapApp() {
               </div>
             )}
 
+            {/* Departure conflicts — the pre-departure half, off the filed
+                plans rather than the flown paths. Sits in the same rail; its
+                Fix hands back to the generator panel, which owns the tabs. */}
+            {depPanelOpen && depConflictState && (
+              <DepartureConflictPanel
+                conflicts={depConflicts}
+                choiceFor={depChoiceFor}
+                onChoiceFor={setDepChoiceFor}
+                onIgnore={depConflictState.ignore}
+                onIgnoreAll={depConflictState.ignoreAll}
+                onAutoFixAll={depConflictState.autoFixAll}
+                onFix={(conflictId, planId) => {
+                  depConflictState.fix(conflictId, planId);
+                  // Step out of the way: the suggested time is waiting on that
+                  // plan's own EOBT field, over in the generator panel.
+                  setDepChoiceFor(null);
+                  setDepPanelOpen(false);
+                }}
+                onClose={() => {
+                  setDepPanelOpen(false);
+                  setDepChoiceFor(null);
+                }}
+              />
+            )}
+
             {/* Realtime notification stack — the live conflicts within the
                 look-ahead (MTCD → STCA → LOS), appearing/escalating/clearing.
                 Selecting one expands its inline Preview/Apply cards (the Preview
@@ -2595,6 +3091,9 @@ export default function MapApp() {
                   setSelectedConflictId(null);
                 }}
                 appliedFixes={appliedFixes}
+                sectorOf={(c) =>
+                  sectorOfConflict(c, simTRef.current + c.tCpa)
+                }
                 renderAdvisory={(id) =>
                   id === selectedConflictId ? (
                     // SuggestionCards owns the empty state too — that's where
@@ -2620,6 +3119,7 @@ export default function MapApp() {
                 simT={sim.simT}
                 nameOf={nameOf}
                 appliedFixes={appliedFixes}
+                sectorOf={(c) => sectorOfConflict(c, c.tCpaAbsSec)}
                 onClearFixes={() => setAppliedFixes([])}
                 onOpenPreview={(id) => {
                   setSelectedConflictId(id);
@@ -2637,6 +3137,31 @@ export default function MapApp() {
                 onClose={() => {
                   setCdrView(null);
                   setSelectedConflictId(null);
+                }}
+              />
+            )}
+
+            {/* Arrival ladder — landing order + in-trail spacing per runway. */}
+            {cdrView === "arrivals" && cdrMonitoring && (
+              // No per-flight selection state exists in MapApp yet, so rows
+              // are informational; the panel's optional onSelect stays unused.
+              <ArrivalPanel
+                plans={arrivals.plans}
+                onIssue={handleIssueArrivalFix}
+                onPreview={handlePreviewArrivalFix}
+                config={arrivals.config}
+                contextOf={arrivals.contextOf}
+                previewedId={arrivalPreview?.flightKey ?? null}
+                previewHasTrack={!!arrivalPreview?.points}
+                issued={issuedArrivalFixes}
+                busy={busyArrivalFixes}
+                clearanceOf={(id) =>
+                  trajectories.find((t) => t.meta.flightKey === id)?.meta
+                    .clearance
+                }
+                onClose={() => {
+                  clearArrivalPreview();
+                  setCdrView(null);
                 }}
               />
             )}
@@ -2664,6 +3189,7 @@ export default function MapApp() {
                     allFlights={planFlights}
                     restricted={restrictedAreas}
                     holdings={holdings}
+                    sector={sectorOfConflict(c, c.tCpaAbsSec)}
                     onApply={(m) => commitManeuver(m)}
                     onClose={() => setPreviewModalOpen(false)}
                   />

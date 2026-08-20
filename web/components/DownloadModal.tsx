@@ -35,6 +35,12 @@ interface Props {
   onClose: () => void;
   results: TrajectoryResult[];
   downloads: DownloadInfo[];
+  /** Awaited once, with the selected flight keys, before any file is requested.
+   *  Used to stamp the exports with the CURRENT unresolved conflicts (see
+   *  MapApp) — the files are rendered server-side, so anything the browser
+   *  knows has to be pushed first. Failures are non-fatal: the download still
+   *  runs, just without the fresh annotation. */
+  onBeforeDownload?: (flightKeys: string[]) => Promise<void>;
 }
 
 /** Ant Design "question-circle" (twotone) icon, inlined to avoid pulling
@@ -91,6 +97,7 @@ function DownloadModal({
   onClose,
   results,
   downloads,
+  onBeforeDownload,
 }: Props) {
   // Default: all routes + all formats selected.
   const allRouteIdx = useMemo(
@@ -376,6 +383,20 @@ function DownloadModal({
     const rIdx = Array.from(routeSel).sort((a, b) => a - b);
     const fmts = Array.from(fmtSel);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+
+    // Stamp the selected exports with their current conflict state BEFORE any
+    // file is requested — the server renders each file on first download, so a
+    // late push would land after the bytes were already written.
+    if (onBeforeDownload) {
+      const keys = rIdx
+        .map((i) => downloads[i]?.flightKey)
+        .filter((k): k is string => !!k);
+      try {
+        await onBeforeDownload(keys);
+      } catch {
+        // Non-fatal — the trajectory itself is unaffected.
+      }
+    }
 
     // ---- Combined mode: merge every selected route into ONE file per
     // format (server-side). One file per selected format, so the number
