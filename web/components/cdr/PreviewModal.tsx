@@ -62,6 +62,11 @@ interface Props {
   /** Traffic that rejected every candidate, when none survived — names the
    *  aircraft to resolve first instead of leaving a dead end. */
   planBlockers?: Blocker[];
+  /** The blocker's own conflict, when it has one — see SuggestionCards. */
+  blockerConflictOf?: (b: Blocker) => string | null;
+  /** Leave this conflict and go work the blocker instead. Closing the modal is
+   *  the caller's job: it owns which conflict is selected. */
+  onWorkBlocker?: (b: Blocker, conflictId: string | null) => void;
   nameOf: (id: string) => string;
   config: CdrConfig;
   /** Every flight (for the constraint engine's re-check vs ALL traffic). */
@@ -168,6 +173,8 @@ export default function PreviewModal({
   simT,
   planSuggestions,
   planBlockers,
+  blockerConflictOf,
+  onWorkBlocker,
   nameOf,
   config,
   allFlights,
@@ -778,13 +785,34 @@ export default function PreviewModal({
               <div className="cdr-adv-empty">
                 <p>No automatic resolution found — adjust manually below.</p>
                 {planBlockers?.[0] && (
-                  <p className="cdr-adv-blocked">
-                    Every candidate would then conflict with{" "}
-                    <b>{planBlockers[0].callsign}</b>
-                    {Number.isFinite(planBlockers[0].tightestNm) &&
-                      ` (${fmtNm(planBlockers[0].tightestNm)})`}
-                    . Resolve {planBlockers[0].callsign} first, or override below.
-                  </p>
+                  <>
+                    <p className="cdr-adv-blocked">
+                      Every candidate would then conflict with{" "}
+                      <b>{planBlockers[0].callsign}</b>
+                      {Number.isFinite(planBlockers[0].tightestNm) &&
+                        ` (${fmtNm(planBlockers[0].tightestNm)})`}
+                      {planBlockers.length > 1 &&
+                        ` +${planBlockers.length - 1} more`}
+                      . Resolve {planBlockers[0].callsign} first, or override
+                      below.
+                    </p>
+                    {onWorkBlocker && (
+                      <button
+                        type="button"
+                        className="cdr-adv-blocked-btn"
+                        onClick={() =>
+                          onWorkBlocker(
+                            planBlockers[0],
+                            blockerConflictOf?.(planBlockers[0]) ?? null,
+                          )
+                        }
+                      >
+                        {blockerConflictOf?.(planBlockers[0])
+                          ? `Resolve ${planBlockers[0].callsign} first →`
+                          : `Show ${planBlockers[0].callsign} →`}
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             )}

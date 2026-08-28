@@ -1,7 +1,7 @@
 """Tests for PBN instrument-approach (IAP) loading, assembly and splicing.
 
 The approach data is the real Thai AIP PBN export
-(``web/public/data/pbn/pbn_waypoint.geojson``) — the same ARINC-424 "DFD" leg
+(``web/public/data/aixm/pbn_waypoint.geojson``) — the same ARINC-424 "DFD" leg
 schema as SID/STAR. An approach flies its chosen IAF transition into the common
 final segment and, for a landing trajectory, stops at the Missed Approach Point
 (the missed-approach hold is dropped). VTSP RWY09 has two variants (RNP Y =
@@ -23,11 +23,11 @@ from trajectory_sim.navdata import (
 
 _PBN = (
     Path(__file__).resolve().parents[2]
-    / "web" / "public" / "data" / "pbn" / "pbn_waypoint.geojson"
+    / "web" / "public" / "data" / "aixm" / "pbn_waypoint.geojson"
 )
 _STAR = (
     Path(__file__).resolve().parents[2]
-    / "web" / "public" / "data" / "star" / "star_waypoint.geojson"
+    / "web" / "public" / "data" / "aixm" / "star_waypoint.geojson"
 )
 
 pytestmark = pytest.mark.skipif(

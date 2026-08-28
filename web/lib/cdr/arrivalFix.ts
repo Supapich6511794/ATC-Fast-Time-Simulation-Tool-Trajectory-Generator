@@ -3,16 +3,22 @@
  * short, and in what order.
  *
  * This is the decision half of the supervisor's flow. `arrivalSequence.ts`
- * answers "is there enough room?"; this answers "then what?", and it does so in
- * the order real approach control works, which is also the order the engine's
- * own cost weights already encode (Speed < Level < Heading):
+ * answers "is there enough room?"; this answers "then what?".
  *
- *   1. **Speed** — least disruptive. The follower stays on its path and its
- *      level and is simply re-timed. Bounded by an approach-speed floor.
- *   2. **Vector** — the "maintain heading" instruction: hold the published
+ * On an OPEN STAR the vector leads. The procedure itself ends in "expect
+ * vectors": the controller is going to give this aircraft a heading whatever
+ * happens, so lengthening the downwind is not an extra intervention, it is the
+ * instruction already in flight — and it is the one that actually buys the
+ * miles (~2 NM of track per 1 NM of downwind, because the intercept moves out
+ * with it). Speed comes next, and holding last:
+ *
+ *   1. **Vector** — the "maintain heading" instruction: hold the published
  *      downwind past the normal turn-in point and join final further out.
- *      Buys distance at roughly 2 NM per 1 NM of extra downwind, because the
- *      intercept moves out with it.
+ *      Offered first whenever the geometry allows it (see the two gates below);
+ *      where it does not, speed leads instead.
+ *   2. **Speed** — least disruptive of the three, and the answer once the
+ *      downwind is behind the aircraft. The follower stays on its path and its
+ *      level and is simply re-timed. Bounded by an approach-speed floor.
  *   3. **Hold** — one or more racetrack loops at a published holding fix on the
  *      route ahead. Least preferred, but NOT only a last resort: a controller
  *      who can see a long bank coming holds the back of it early rather than
@@ -297,7 +303,7 @@ export function planArrivalFix(
   const deficitNm = pair.deficitNm;
   const fixes: ArrivalFix[] = [];
 
-  // --- 1. Speed ----------------------------------------------------------
+  // --- Speed -------------------------------------------------------------
   // Slowing the follower re-times it without touching its path or its level.
   // The gain is costed over the terminal-area portion of the remaining track,
   // NOT the whole of it: this is an approach-speed reduction, and an arrival
@@ -307,9 +313,8 @@ export function planArrivalFix(
   // The planner proposes the LARGEST reduction available; the controller can
   // dial it back through `speedFix`.
   const speed = speedFix(cfg, f, deficitNm, maxReductionKt(cfg, f));
-  if (speed) fixes.push(speed);
 
-  // --- 2. Vector ---------------------------------------------------------
+  // --- Vector ------------------------------------------------------------
   // Doc 4444 §8.9.4.1: vectoring has already terminated once the aircraft is
   // established on final, so the downwind is no longer available to it.
   let blocked: VectorBlockedReason | undefined;
@@ -322,9 +327,17 @@ export function planArrivalFix(
   }
   // Proposed at exactly the deficit — the bare minimum, no margin. The
   // controller normally adds some, which `vectorFix` allows.
+  //
+  // ORDER: the vector goes in FIRST when it is available, so it is what the
+  // panel proposes and what auto-resolve picks. An open STAR hands the
+  // aircraft over on a heading; extending that heading is the tool for the job,
+  // and speed is the fallback rather than the opening move. With no vector
+  // available (closed STAR, or already established on final) speed leads, which
+  // is the order the list comes out in anyway.
   if (!blocked) fixes.push(vectorFix(cfg, f, ctx, deficitNm, deficitNm));
+  if (speed) fixes.push(speed);
 
-  // --- 3. Hold -----------------------------------------------------------
+  // --- Hold ----------------------------------------------------------------
   // A real, flyable hold is offered WHENEVER there is a published fix still
   // ahead — not only once the other two have failed. Holding is a planning
   // instrument as much as a last resort: faced with a long bank, a controller
@@ -349,8 +362,12 @@ export function planArrivalFix(
     });
   }
 
-  // Sufficient candidates first, then by the Speed < Vector < Hold preference.
-  const rank: Record<ArrivalFixKind, number> = { speed: 0, vector: 1, hold: 2 };
+  // Sufficient candidates first, then by preference: on an open STAR the
+  // VECTOR leads (the aircraft is being vectored anyway — extending the
+  // downwind is the instruction already in flight, and the one that buys the
+  // miles), speed backs it up, and the hold ranks last. Where no vector is
+  // available the ordering is moot: it isn't in the list.
+  const rank: Record<ArrivalFixKind, number> = { vector: 0, speed: 1, hold: 2 };
   fixes.sort((a, b) => {
     if (a.sufficient !== b.sufficient) return a.sufficient ? -1 : 1;
     return rank[a.kind] - rank[b.kind];

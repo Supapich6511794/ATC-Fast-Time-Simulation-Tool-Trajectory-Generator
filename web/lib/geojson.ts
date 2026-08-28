@@ -19,12 +19,15 @@ import type {
 
 const SOURCE_URL = "/data/airway_waypoint.geojson";
 const FIR_URL = "/data/fir.geojson";
-const SID_LINES_URL = "/data/sid/sid_line_thai.geojson";
-const STAR_LINES_URL = "/data/star/star_line.geojson";
-const SID_WPTS_URL = "/data/sid/sid_waypoint_thai.geojson";
-const STAR_WPTS_URL = "/data/star/star_waypoint.geojson";
-const PBN_WPTS_URL = "/data/pbn/pbn_waypoint.geojson";
-const ILS_WPTS_URL = "/data/ils/ils_wp.geojson";
+// Terminal procedures: the AIXM 2608 export converted to the DFD schema by
+// scripts/ingest_aixm_procedures.py (the superseded DFD files remain under
+// /data/{sid,star,pbn,ils}/).
+const SID_LINES_URL = "/data/aixm/sid_line.geojson";
+const STAR_LINES_URL = "/data/aixm/star_line.geojson";
+const SID_WPTS_URL = "/data/aixm/sid_waypoint.geojson";
+const STAR_WPTS_URL = "/data/aixm/star_waypoint.geojson";
+const PBN_WPTS_URL = "/data/aixm/pbn_waypoint.geojson";
+const ILS_WPTS_URL = "/data/aixm/ils_wp.geojson";
 
 // `no-cache` (revalidate), not `force-cache` (serve stale forever): the bundled
 // geojson is edited in place when a procedure is corrected, so a hard-cached

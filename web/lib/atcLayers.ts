@@ -1,8 +1,8 @@
 /**
  * Loaders for the extra ATC map layers re-added under /public/data:
  *   - Gates    (airports/gateway.geojson)
- *   - PBN      (pbn/pbn_leg.geojson + pbn/true pbn wp.geojson)
- *   - ILS      (ils/ils_leg.geojson + ils/ils_wp.geojson)
+ *   - PBN      (aixm/pbn_leg.geojson + aixm/pbn_waypoint.geojson)
+ *   - ILS      (aixm/ils_leg.geojson + aixm/ils_wp.geojson)
  *   - Airports (airports/Airport_with_AP_Main.csv — carries the Main flag)
  *   - Runways  (airports/runway.csv — threshold points)
  *
@@ -76,13 +76,13 @@ export const fetchGates = (): Promise<GateCollection> =>
 /* --- PBN / ILS (same schema as SID/STAR) ---------------------------------- */
 
 export const fetchPbnLines = (): Promise<ProcedureLineCollection> =>
-  fetchJson<ProcedureLineCollection>("/data/pbn/pbn_leg.geojson");
+  fetchJson<ProcedureLineCollection>("/data/aixm/pbn_leg.geojson");
 export const fetchPbnWaypoints = (): Promise<ProcedureWaypointCollection> =>
-  fetchJson<ProcedureWaypointCollection>("/data/pbn/true pbn wp.geojson");
+  fetchJson<ProcedureWaypointCollection>("/data/aixm/pbn_waypoint.geojson");
 export const fetchIlsLines = (): Promise<ProcedureLineCollection> =>
-  fetchJson<ProcedureLineCollection>("/data/ils/ils_leg.geojson");
+  fetchJson<ProcedureLineCollection>("/data/aixm/ils_leg.geojson");
 export const fetchIlsWaypoints = (): Promise<ProcedureWaypointCollection> =>
-  fetchJson<ProcedureWaypointCollection>("/data/ils/ils_wp.geojson");
+  fetchJson<ProcedureWaypointCollection>("/data/aixm/ils_wp.geojson");
 
 /* --- Airports (CSV, with Main flag) --------------------------------------- */
 

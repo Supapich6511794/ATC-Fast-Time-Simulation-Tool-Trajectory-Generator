@@ -78,11 +78,11 @@ OUT_DIR = _ROOT / "dummy_data"
 AIP_PATH = _ROOT / "web" / "public" / "data" / "aip_VT.json"
 ROUTES_PATH = _ROOT / "web" / "public" / "data" / "aip_routes_VT.json"
 PROFILE_PATH = _ROOT / "scripts" / "data" / "thai24h_profile.json"
-_SID_LINE = _ROOT / "web" / "public" / "data" / "sid" / "sid_line_thai.geojson"
-_STAR_LINE = _ROOT / "web" / "public" / "data" / "star" / "star_line.geojson"
-_SID_WPT = _ROOT / "web" / "public" / "data" / "sid" / "sid_waypoint_thai.geojson"
-_STAR_WPT = _ROOT / "web" / "public" / "data" / "star" / "star_waypoint.geojson"
-_PBN_WPTS = _ROOT / "web" / "public" / "data" / "pbn" / "pbn_waypoint.geojson"
+_SID_LINE = _ROOT / "web" / "public" / "data" / "aixm" / "sid_line.geojson"
+_STAR_LINE = _ROOT / "web" / "public" / "data" / "aixm" / "star_line.geojson"
+_SID_WPT = _ROOT / "web" / "public" / "data" / "aixm" / "sid_waypoint.geojson"
+_STAR_WPT = _ROOT / "web" / "public" / "data" / "aixm" / "star_waypoint.geojson"
+_PBN_WPTS = _ROOT / "web" / "public" / "data" / "aixm" / "pbn_waypoint.geojson"
 
 DAY = datetime(2025, 12, 23, tzinfo=timezone.utc)
 SAMPLES_PER_ROUTE = 16      # points written per route table

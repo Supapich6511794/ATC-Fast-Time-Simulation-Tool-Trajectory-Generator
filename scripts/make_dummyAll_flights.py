@@ -79,8 +79,8 @@ def _load_aip() -> tuple[dict, dict, dict]:
 
 WAYPOINTS, AIRWAYS, AIRPORTS = _load_aip()
 
-_SID_LINE = _ROOT / "web" / "public" / "data" / "sid" / "sid_line_thai.geojson"
-_STAR_LINE = _ROOT / "web" / "public" / "data" / "star" / "star_line.geojson"
+_SID_LINE = _ROOT / "web" / "public" / "data" / "aixm" / "sid_line.geojson"
+_STAR_LINE = _ROOT / "web" / "public" / "data" / "aixm" / "star_line.geojson"
 
 
 SIDS, SID_RWY = load_proc_runways(_SID_LINE)

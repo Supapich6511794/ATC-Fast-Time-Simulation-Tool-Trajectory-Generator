@@ -20,6 +20,7 @@ geometry is tested in ``test_vectors``.
 from __future__ import annotations
 
 import math
+from datetime import datetime
 
 import pytest
 
@@ -27,6 +28,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from api.server import app  # noqa: E402
+from trajectory_sim.geodesy import haversine_distance  # noqa: E402
 
 BASE = {
     "source": "fpl",
@@ -637,3 +639,90 @@ class TestTheHeadingIsQuotedAsTheChartPrintsIt:
         )["meta"]
         assert meta["vector_heading_mag_deg"] is None
         assert meta["vector_heading_deg"] is None
+
+
+class TestVectorTurnIsFlyable:
+    """The downwind-to-base turn is a ~150 deg course reversal, and it has to be
+    flown as a turn — a radius, at a bank a jet can hold.
+
+    It used to come out as a spike on the map. Two things did it: the corner-cut
+    cap kept tightening the arc without ever asking whether the result was still
+    a turn (at 150 deg it forces R <= 0.175 NM, an 80 deg bank), and the invented
+    TURN/INTC fixes had no published segment, so they were priced at CRUISE speed
+    — a 6.3 NM radius for a turn flown at 190 kt over the outer marker.
+    """
+
+    #: The hardest a turn may be banked before it stops being one a jet flies.
+    #: The engine's own floor is 35 deg; allow a little slack for the sampled
+    #: track being quantised by the arc step.
+    MAX_BANK_DEG = 40.0
+
+    @staticmethod
+    def _vector_samples(payload: dict, pad_nm: float = 8.0) -> list[dict]:
+        """Just the samples flown around the vectoring pattern.
+
+        The rest of the flight has its own turns — the SID off VTCC is tighter
+        than anything here — and this is a test about the base turn.
+        """
+        route = {w["ident"]: w for w in payload["route"]}
+        turn = route["TURN"]
+        return [
+            p
+            for p in payload["points"]
+            if haversine_distance(turn["lat"], turn["lon"], p["lat"], p["lon"])
+            <= pad_nm
+        ]
+
+    @staticmethod
+    def _worst_bank_deg(points: list[dict], span: int = 6) -> float:
+        """Steepest sustained bank on the flown path.
+
+        Measured over a WINDOW of samples: the reported track steps in whole arc
+        increments, so differentiating adjacent samples reads the discretisation
+        rather than the turn.
+        """
+        worst = 0.0
+        for i in range(len(points) - span):
+            t0 = datetime.fromisoformat(points[i]["epoch_ts"])
+            t1 = datetime.fromisoformat(points[i + span]["epoch_ts"])
+            dt = (t1 - t0).total_seconds()
+            if dt <= 0:
+                continue
+            swept = abs(
+                (points[i + span]["track_deg"] - points[i]["track_deg"] + 180.0)
+                % 360.0
+                - 180.0
+            )
+            rate = swept / dt
+            if rate < 0.05:
+                continue
+            gs = sum(p["gs_kt"] or 0.0 for p in points[i : i + span]) / span
+            radius_nm = gs / (20.0 * math.pi * rate)
+            v = gs * 1852.0 / 3600.0
+            worst = max(
+                worst,
+                math.degrees(math.atan(v * v / (9.80665 * radius_nm * 1852.0))),
+            )
+        return worst
+
+    def test_the_base_turn_is_a_turn_not_a_spike(self, client: TestClient) -> None:
+        payload = _generate(client, vector_to_final=True)
+        idents = [w["ident"] for w in payload["route"]]
+        assert "TURN" in idents and "INTC" in idents
+        samples = self._vector_samples(payload)
+        assert len(samples) > 10  # the pattern really is in there
+        assert self._worst_bank_deg(samples) <= self.MAX_BANK_DEG
+
+    @pytest.mark.parametrize("extend_nm", [0.0, 0.6, 3.0, 8.0])
+    def test_extending_the_downwind_keeps_it_flyable(
+        self, client: TestClient, extend_nm: float
+    ) -> None:
+        """The spacing fix lengthens the downwind, which moves the turn but must
+        never sharpen it — this is the path the arrival panel previews."""
+        payload = _generate(
+            client,
+            vector_to_final=True,
+            tactical_extend=True,
+            extend_downwind_nm=extend_nm,
+        )
+        assert self._worst_bank_deg(self._vector_samples(payload)) <= self.MAX_BANK_DEG

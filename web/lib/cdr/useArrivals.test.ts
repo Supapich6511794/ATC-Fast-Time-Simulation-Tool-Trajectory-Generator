@@ -281,6 +281,59 @@ describe("nextHoldOnRoute — where an arrival can actually be held", () => {
     expect(nextHoldOnRoute(traj, samples, 280, holdings)?.ident).toBe("NEAR");
   });
 
+  it("offers nothing while the aircraft is still climbing out", () => {
+    // Nobody holds a departure. A published fix crossed on the way up is not an
+    // instruction anyone gives, however much spacing is wanted later on.
+    const climbing = {
+      ...traj,
+      points: traj.points.map((p) => ({ ...p, phase: "climb" as const })),
+    };
+    const { samplesByIdx: climbSamples } = tables([climbing]);
+    expect(nextHoldOnRoute(climbing, climbSamples[0], 0, holdings)).toBeNull();
+  });
+
+  it("opens the menu where the STAR does, not at top of descent", () => {
+    // On a real VTCC-VTBS leg top of descent falls ~8 minutes and several
+    // en-route fixes BEFORE the STAR is joined, so TOD alone still offered a
+    // hold out in the cruise. The server names the STAR's first fix; from there
+    // on is the arrival, and that is where holding belongs.
+    const onStar = {
+      ...traj,
+      meta: { ...traj.meta, starEntry: "NEAR" },
+    } as TrajectoryResult;
+    // FAR is the earliest fix ahead and would win on time alone — but it is
+    // en route, and the STAR starts at NEAR.
+    expect(nextHoldOnRoute(onStar, samples, 0, holdings)?.ident).toBe("NEAR");
+  });
+
+  it("falls back to top of descent when no STAR entry is published", () => {
+    // FAR is crossed 300 s in and NEAR at 600 s. With top of descent at 400 s,
+    // FAR belongs to the cruise and only NEAR is an arrival hold.
+    const t0 = Date.parse(traj.points[0].epoch_ts);
+    const withTod = {
+      ...traj,
+      profile: {
+        toc: null,
+        tod: {
+          lat: THR.lat,
+          lon: THR.lon,
+          altitudeFt: 20000,
+          epochTs: new Date(t0 + 400_000).toISOString(),
+        },
+      },
+    } as TrajectoryResult;
+    expect(nextHoldOnRoute(withTod, samples, 0, holdings)?.ident).toBe("NEAR");
+    // …and with it early, the earliest fix ahead is on the menu again.
+    const earlyTod = {
+      ...withTod,
+      profile: {
+        toc: null,
+        tod: { ...withTod.profile.tod!, epochTs: new Date(t0).toISOString() },
+      },
+    } as TrajectoryResult;
+    expect(nextHoldOnRoute(earlyTod, samples, 0, holdings)?.ident).toBe("FAR");
+  });
+
   it("ignores route fixes with no published holding", () => {
     const plain = withRoute(base, [holdingAt("NOHOLD", 50)]);
     expect(nextHoldOnRoute(plain, samples, 0, holdings)).toBeNull();

@@ -89,12 +89,31 @@ describe("planArrivalFix", () => {
     }
   });
 
-  it("ranks speed first when it can absorb the gap on its own", () => {
-    // 30 NM to run at 220 kt: slowing 40 kt buys well over 1 NM.
+  it("leads with the vector on an open STAR, even when speed would do", () => {
+    // The procedure ends in "expect vectors": the aircraft is getting a heading
+    // regardless, so extending it is the instruction already in flight. Speed
+    // is still offered — and here it would be enough on its own — but second.
     const plan = planArrivalFix(cfg, pair(1), OPEN);
+    expect(plan.fixes[0].kind).toBe("vector");
+    expect(plan.fixes.map((f) => f.kind)).toEqual(["vector", "speed"]);
+    const speed = plan.fixes.find((f) => f.kind === "speed")!;
+    expect(speed.sufficient).toBe(true);
+    expect(speed.gsKt).toBe(180);
+  });
+
+  it("leads with speed when the STAR is closed — there is no heading to extend", () => {
+    const plan = planArrivalFix(cfg, pair(1), { openStar: false });
     expect(plan.fixes[0].kind).toBe("speed");
-    expect(plan.fixes[0].sufficient).toBe(true);
-    expect(plan.fixes[0].gsKt).toBe(180);
+    expect(plan.fixes.some((f) => f.kind === "vector")).toBe(false);
+  });
+
+  it("leads with speed once established on final (§8.9.4.1)", () => {
+    const plan = planArrivalFix(
+      cfg,
+      pair(1, { establishedOnFinal: true }),
+      OPEN,
+    );
+    expect(plan.fixes[0].kind).toBe("speed");
   });
 
   it("falls to the vector when speed alone cannot make up the gap", () => {
@@ -136,10 +155,13 @@ describe("planArrivalFix", () => {
     expect(cap(near)).toBeLessThan(10);
   });
 
-  it("hands over to the VECTOR once the deficit outgrows speed control", () => {
+  it("keeps speed on the menu until the deficit outgrows it", () => {
+    // The vector leads either way on an open STAR; what changes with the size
+    // of the gap is whether speed is still an ANSWER or merely an option.
     const small = planArrivalFix(cfg, pair(2), OPEN);
     const large = planArrivalFix(cfg, pair(9), OPEN);
-    expect(small.fixes[0].kind).toBe("speed");
+    expect(small.fixes[0].kind).toBe("vector");
+    expect(small.fixes.find((f) => f.kind === "speed")!.sufficient).toBe(true);
     expect(large.fixes[0].kind).toBe("vector");
     expect(large.fixes.find((f) => f.kind === "speed")!.sufficient).toBe(false);
   });
@@ -270,9 +292,9 @@ describe("holding — offered up front, not only as a last resort", () => {
     const hold = plan.fixes.find((f) => f.kind === "hold");
     expect(hold).toBeDefined();
     expect(hold!.hold?.ident).toBe("LETMA");
-    // ...without disturbing the ranking: speed is still what is proposed.
-    expect(plan.fixes[0].kind).toBe("speed");
-    expect(plan.fixes.map((f) => f.kind)).toEqual(["speed", "vector", "hold"]);
+    // ...without disturbing the ranking: the vector is still what is proposed.
+    expect(plan.fixes[0].kind).toBe("vector");
+    expect(plan.fixes.map((f) => f.kind)).toEqual(["vector", "speed", "hold"]);
   });
 
   it("keeps the hold OUT when there is nowhere to hold and something works", () => {

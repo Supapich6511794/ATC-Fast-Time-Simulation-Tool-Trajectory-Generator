@@ -11,6 +11,13 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 
 import { API_BASE } from "@/lib/api";
+import {
+  progressNote,
+  progressPercent,
+  readBody,
+  startProgress,
+  type Progress,
+} from "@/lib/downloadProgress";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
 
 export interface DownloadInfo {
@@ -122,6 +129,13 @@ function DownloadModal({
   // the button so the user sees progress instead of a frozen dialog.
   const [busy, setBusy] = useState(false);
 
+  // How far the export has got, for the footer's progress bar. An export runs
+  // in two phases and only the second one has a measurable size: while the
+  // server renders the file there is nothing to count (indeterminate), and
+  // once the response starts arriving the received bytes are counted against
+  // Content-Length. See `runDownloadInner`.
+  const [progress, setProgress] = useState<Progress | null>(null);
+
   // Typeahead state for the route picker — open while focused / typing.
   const [routeQuery, setRouteQuery] = useState("");
   const [routeOpen, setRouteOpen] = useState(false);
@@ -139,6 +153,7 @@ function DownloadModal({
       setRouteOpen(false);
       setRouteActive(0);
       setBusy(false);
+      setProgress(null);
     }
   }, [open]);
 
@@ -341,6 +356,7 @@ function DownloadModal({
     endpoint: string,
     body: unknown,
     fallbackName: string,
+    onBytes?: (received: number, total: number | null) => void,
   ): Promise<boolean> => {
     try {
       const res = await fetch(`${API_BASE}${endpoint}`, {
@@ -349,7 +365,7 @@ function DownloadModal({
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const blob = await res.blob();
+      const blob = await readBody(res, onBytes);
       // Cross-origin responses often strip Content-Disposition, so fall
       // back to our own stamped name when the header isn't readable.
       const cd = res.headers.get("content-disposition") ?? "";
@@ -376,8 +392,69 @@ function DownloadModal({
       await runDownloadInner();
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   };
+
+  /** Move the bar to a new phase, resetting the counts it carries. */
+  const startStep = (
+    phase: Progress["phase"],
+    label: string,
+    step: number,
+    steps: number,
+    totalFiles = 0,
+  ) => setProgress(startProgress({ phase, label, step, steps, totalFiles }));
+
+  /** Render the per-route files the coming download will concatenate, in
+   *  batches, so the wait has a real "route N of M" to show. Batched rather
+   *  than one-at-a-time because the server writes a batch concurrently —
+   *  ~10 requests keeps the bar moving without serialising the slow part.
+   *
+   *  Best-effort: a failure here is not fatal, the download endpoint renders
+   *  anything missing itself (just without a progress count). */
+  const prepareFiles = async (
+    files: { flight_key: string; ext: string }[],
+  ): Promise<void> => {
+    const batch = Math.max(1, Math.ceil(files.length / 10));
+    let done = 0;
+    let bytes = 0;
+    for (let i = 0; i < files.length; i += batch) {
+      const slice = files.slice(i, i + batch);
+      try {
+        const res = await fetch(`${API_BASE}/api/export_prepare`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ files: slice }),
+        });
+        if (res.ok) {
+          const data = (await res.json()) as {
+            files?: { bytes?: number }[];
+          };
+          for (const f of data.files ?? []) bytes += Number(f.bytes) || 0;
+        }
+      } catch {
+        // Server too old for this endpoint, or a transient failure — the
+        // download below still renders whatever is missing.
+      }
+      done += slice.length;
+      setProgress((p) =>
+        p === null ? p : { ...p, preparedFiles: done, preparedBytes: bytes },
+      );
+    }
+  };
+
+  /** Byte callback for `downloadFromEndpoint`, folded into the current step. */
+  const onBytes = (received: number, total: number | null) =>
+    setProgress((p) =>
+      p === null
+        ? p
+        : {
+            ...p,
+            phase: "transfer",
+            receivedBytes: received,
+            totalBytes: total,
+          },
+    );
 
   const runDownloadInner = async () => {
     const rIdx = Array.from(routeSel).sort((a, b) => a - b);
@@ -391,6 +468,7 @@ function DownloadModal({
       const keys = rIdx
         .map((i) => downloads[i]?.flightKey)
         .filter((k): k is string => !!k);
+      startStep("stamp", "conflict state", 0, 0);
       try {
         await onBeforeDownload(keys);
       } catch {
@@ -405,11 +483,24 @@ function DownloadModal({
       const flightKeys = rIdx
         .map((i) => downloads[i]?.flightKey)
         .filter((k): k is string => !!k);
-      for (const f of fmts) {
+      for (const [n, f] of fmts.entries()) {
+        // The merge reads each route's own file of that same format, so
+        // rendering them here is exactly the work the request would do.
+        startStep(
+          "prepare",
+          FORMAT_META[f].label,
+          n + 1,
+          fmts.length,
+          flightKeys.length,
+        );
+        await prepareFiles(
+          flightKeys.map((k) => ({ flight_key: k, ext: f })),
+        );
         await downloadFromEndpoint(
           "/api/download_combined",
           { flight_keys: flightKeys, formats: [f] },
           `combined_${stamp}.${f}`,
+          onBytes,
         );
       }
       onClose();
@@ -435,10 +526,13 @@ function DownloadModal({
       return fmts.map((f) => ({ flight_key: d.flightKey, ext: f }));
     });
 
+    startStep("prepare", `zip of ${files.length} files`, 1, 1, files.length);
+    await prepareFiles(files);
     const ok = await downloadFromEndpoint(
       "/api/download_zip",
       { files },
       `trajectories_${stamp}.zip`,
+      onBytes,
     );
     if (!ok) {
       // Network / server failure: fall back to staggered individual
@@ -455,6 +549,12 @@ function DownloadModal({
     }
     onClose();
   };
+
+  // Bar fill, and the line under it. A null percentage means "running, size
+  // unknown" — the server is still rendering, or it sent no Content-Length —
+  // and the bar animates instead of filling.
+  const pct = progress ? progressPercent(progress) : null;
+  const note = progressNote(progress, fileCount);
 
   return (
     <div className="dlm-backdrop" onClick={onClose} role="presentation">
@@ -699,9 +799,23 @@ function DownloadModal({
         </section>
 
         <div className="dlm-foot">
+          {/* Only shown once there is a real percentage to draw — a phase with
+              nothing to count says so in the note instead of animating. */}
+          {busy && pct !== null && (
+            <div
+              className="dlm-progress"
+              role="progressbar"
+              aria-label="Export progress"
+              aria-valuenow={pct}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <div className="dlm-progress-bar" style={{ width: `${pct}%` }} />
+            </div>
+          )}
           <span className="dlm-foot-note">
             {busy
-              ? `Preparing ${fileCount} file${fileCount === 1 ? "" : "s"}… (large file exports can take a few seconds)`
+              ? note
               : !canDownload
                 ? "Pick at least one route and one format"
                 : bundleMode === "combined"
@@ -718,7 +832,9 @@ function DownloadModal({
               disabled={!canDownload || busy}
             >
               {busy
-                ? "⏳ Preparing…"
+                ? pct === null
+                  ? "⏳ Preparing…"
+                  : `⏳ ${pct}%`
                 : `⬇ Download ${canDownload ? `(${fileCount})` : ""}`}
             </button>
           </div>

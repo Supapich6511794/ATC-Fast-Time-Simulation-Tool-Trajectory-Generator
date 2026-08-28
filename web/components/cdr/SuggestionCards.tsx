@@ -27,6 +27,15 @@ interface Props {
    *  dead-end "no resolution" into something actionable: which aircraft is in
    *  the way, so the controller knows what to move first. */
   blockers?: Blocker[];
+  /** The blocker's OWN conflict, when it has one. Naming the aircraft to move
+   *  is only useful if it can be reached: this is what the button opens. Null
+   *  means it is not in conflict itself — there is nothing to resolve, only an
+   *  aircraft to look at. */
+  blockerConflictOf?: (b: Blocker) => string | null;
+  /** Go and work the blocker: open its conflict (`conflictId`), or with null
+   *  put it on the map so it can be re-planned. Omitted = the readout stays
+   *  plain text, as it was before. */
+  onWorkBlocker?: (b: Blocker, conflictId: string | null) => void;
   /** The suggestions came from the wider fallback envelope — the maneuvers are
    *  bigger than the engine would normally propose. */
   widened?: boolean;
@@ -65,6 +74,8 @@ export default function SuggestionCards({
   onPreview,
   onApply,
   blockers,
+  blockerConflictOf,
+  onWorkBlocker,
   widened,
 }: Props) {
   if (suggestions.length === 0) {
@@ -72,17 +83,39 @@ export default function SuggestionCards({
     // the maneuver separates the pair fine, then clips someone else and gets
     // dropped. Name that aircraft — resolving IT usually unblocks this pair.
     const worst = blockers?.[0];
+    // …and let the controller GO there. "Resolve THA574 first" with no way to
+    // reach THA574 is a dead end: its own conflict is somewhere down a stack of
+    // dozens, and an aircraft that is merely in the way has no row at all.
+    const blockerConflict = worst ? blockerConflictOf?.(worst) ?? null : null;
     return (
       <div className="cdr-adv-empty">
         <p>No clear resolution, even with a wider maneuver envelope.</p>
         {worst && (
-          <p className="cdr-adv-blocked">
-            Every candidate would then conflict with{" "}
-            <b>{worst.callsign}</b>
-            {Number.isFinite(worst.tightestNm) && ` (${fmtNm(worst.tightestNm)})`}
-            {blockers && blockers.length > 1 && ` +${blockers.length - 1} more`}.
-            Resolve {worst.callsign} first.
-          </p>
+          <>
+            <p className="cdr-adv-blocked">
+              Every candidate would then conflict with{" "}
+              <b>{worst.callsign}</b>
+              {Number.isFinite(worst.tightestNm) && ` (${fmtNm(worst.tightestNm)})`}
+              {blockers && blockers.length > 1 && ` +${blockers.length - 1} more`}.
+              {!onWorkBlocker && ` Resolve ${worst.callsign} first.`}
+            </p>
+            {onWorkBlocker && (
+              <button
+                type="button"
+                className="cdr-adv-blocked-btn"
+                onClick={() => onWorkBlocker(worst, blockerConflict)}
+                title={
+                  blockerConflict
+                    ? `Open ${worst.callsign}'s own conflict and resolve it — this pair should clear once it moves`
+                    : `${worst.callsign} is not in conflict itself; show it on the map to re-plan it`
+                }
+              >
+                {blockerConflict
+                  ? `Resolve ${worst.callsign} first →`
+                  : `Show ${worst.callsign} →`}
+              </button>
+            )}
+          </>
         )}
       </div>
     );

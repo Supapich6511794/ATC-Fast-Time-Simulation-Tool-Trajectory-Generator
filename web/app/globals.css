@@ -1868,6 +1868,7 @@ body {
 }
 
 .dlm-foot {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1876,6 +1877,27 @@ body {
   border-top: 1px solid #334155;
   background: rgba(15, 23, 42, 0.5);
 }
+
+/* Export progress, drawn along the top edge of the footer. Rendered only when
+   there is a real percentage to fill — a phase with nothing to count shows no
+   bar at all rather than an animation that implies motion it cannot measure. */
+.dlm-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  overflow: hidden;
+  background: rgba(148, 163, 184, 0.22);
+}
+
+.dlm-progress-bar {
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.15s linear;
+}
+
 
 .dlm-foot-note {
   font-size: 11px;
@@ -5634,6 +5656,16 @@ select.fp-input {
   color: var(--muted);
   line-height: 1.5;
 }
+/* A hint the user has to ACT on — a filed procedure that was cleared because
+   it is not coded for the selected runway. Muted grey reads as background
+   information; this one explains why a field went empty on its own. */
+.rt-hint.warn {
+  padding: 6px 8px;
+  border-left: 2px solid #f59e0b;
+  border-radius: 0 6px 6px 0;
+  background: #f59e0b14;
+  color: #fcd9a0;
+}
 
 /* Multi-route queue ("Add route" — fly several routes together). */
 .rt-multi {
@@ -5844,6 +5876,179 @@ select.fp-input {
   margin: 0 0 12px;
 }
 
+/* --- Conflict log: the record of the run ---------------------------------
+   Reads like a report, not an alarm — the open ones are marked, the rest are
+   history and stay legible without shouting. */
+.log-panel {
+  left: auto;
+  right: 16px;
+  width: min(460px, calc(100vw - 32px));
+}
+.log-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid #33415566;
+  font-size: 11.5px;
+  color: var(--muted, #94a3b8);
+}
+.log-bar .ok { color: #4ade80; }
+.log-bar .bad { color: #f87171; }
+.log-copy {
+  flex: none;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted, #94a3b8);
+  font-size: 10.5px;
+  padding: 2px 9px;
+  cursor: pointer;
+}
+.log-copy:hover { border-color: #38bdf8aa; color: #7dd3fc; }
+.log-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* The Download button and the format menu it drops — anchored to the button
+   so the two choices land right under it, above the log rows. */
+.log-dl { position: relative; display: inline-flex; }
+.log-dl-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 232px;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  background: #0f172a;
+  box-shadow: 0 8px 22px #00000066;
+  overflow: hidden;
+}
+.log-dl-menu button {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 10px;
+  border: 0;
+  border-bottom: 1px solid #1e293b;
+  background: transparent;
+  color: #e2e8f0;
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.log-dl-menu button:last-child { border-bottom: 0; }
+.log-dl-menu button:hover { background: #0ea5e922; color: #7dd3fc; }
+.log-dl-menu small { color: var(--muted, #94a3b8); font-size: 10px; }
+.log-filters {
+  display: flex;
+  gap: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #33415566;
+}
+.log-filter {
+  border: 1px solid #334155;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted, #94a3b8);
+  font-size: 10.5px;
+  padding: 1px 10px;
+  cursor: pointer;
+}
+.log-filter.on {
+  border-color: #38bdf8aa;
+  background: #0ea5e922;
+  color: #7dd3fc;
+}
+.log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+.log-row {
+  padding: 7px 10px;
+  border-bottom: 1px solid #1e293b;
+  border-left: 3px solid transparent;
+}
+.log-row.unresolved { border-left-color: #ef4444; }
+.log-row.advisory { border-left-color: #f59e0b; }
+.log-row.resolved { border-left-color: #22c55e; }
+.log-row.cleared { border-left-color: #64748b; }
+.log-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.log-when {
+  color: #7dd3fc;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.log-pair { font-weight: 600; }
+.log-x { color: var(--muted, #94a3b8); }
+.log-tag {
+  margin-left: auto;
+  flex: none;
+  padding: 0 6px;
+  border-radius: 3px;
+  background: #33415566;
+  color: #cbd5e1;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.log-tag.t-head-on { background: #7f1d1d66; color: #fca5a5; }
+.log-tag.t-crossing { background: #78350f66; color: #fbbf24; }
+.log-tag.t-in-trail { background: #1e3a8a66; color: #93c5fd; }
+.log-sep {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-top: 3px;
+  font-size: 11px;
+  color: #cbd5e1;
+}
+.log-sep .bad { color: #f87171; }
+.log-minima, .log-buffer {
+  color: var(--muted, #94a3b8);
+  font-size: 10px;
+}
+.log-buffer { font-style: italic; }
+.log-outcome {
+  padding-top: 3px;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--muted, #94a3b8);
+}
+.log-outcome.resolved { color: #86efac; }
+.log-outcome.unresolved { color: #fca5a5; }
+.log-outcome.advisory { color: #fbbf24; }
+.log-kind, .log-gain, .log-sector {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: #33415566;
+  color: #cbd5e1;
+  font-size: 9.5px;
+}
+
 /* --- Departure separation (Doc 4444 §5.6 / §5.8.3 / §7.9.2 / §8.7.3) ------
    Red, because two FPLs off one runway at one time is not a suggestion to
    review — as filed, the second aircraft cannot be cleared.
@@ -5994,6 +6199,14 @@ select.fp-input {
   color: #fca5a5;
   font-variant-numeric: tabular-nums;
 }
+.cdr-dash-more {
+  margin: 2px 0 0;
+  padding: 6px 10px 8px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
 .dep-conf-more {
   margin: 0;
   padding: 5px 9px 7px;
@@ -7865,6 +8078,28 @@ select.fp-input {
 .cdr-adv-blocked b {
   color: #fbbf24;
 }
+/* …and the way out of the dead end: naming the aircraft that blocks every
+   candidate is only useful if the controller can go and work it. */
+.cdr-adv-blocked-btn {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid #f59e0b66;
+  border-radius: 6px;
+  background: #f59e0b1f;
+  color: #fcd9a0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.cdr-adv-blocked-btn:hover {
+  border-color: #f59e0b;
+  background: #f59e0b33;
+  color: #fde3b4;
+}
 /* Badge on the advisory heading when the results only came from the wider
    fallback envelope — the maneuvers are bigger than the usual proposals. */
 .cdr-adv-wide {
@@ -8207,9 +8442,41 @@ select.fp-input {
   margin: 4px 6px;
   background: #33415566;
 }
-.cdr-auto-toggle.active {
+.cdr-auto-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 10px;
+  color: var(--text);
+  font-size: 13px;
+}
+.cdr-auto-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 12px;
+}
+.cdr-menu .cdr-auto-mode {
+  height: 28px;
+  font-size: 12.5px;
+  color: #cbd5e1;
+}
+.cdr-menu .cdr-auto-mode.active {
   background: #22c55e1f;
   color: #86efac;
+}
+.cdr-auto-radio {
+  width: 12px;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.9;
+}
+.cdr-auto-status {
+  margin: 4px 10px 2px 22px;
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1.35;
 }
 .cdr-auto-pill {
   margin-left: auto;

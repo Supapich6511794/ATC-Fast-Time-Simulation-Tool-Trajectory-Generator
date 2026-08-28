@@ -128,12 +128,13 @@ def test_flyby_is_tangent_to_both_legs() -> None:
     assert haversine_distance(*_FIX, *arc[-1]) == pytest.approx(tangent_nm, abs=0.05)
 
 
-def test_flyby_cut_is_capped_near_the_fix() -> None:
-    """A wide, fast turn is tightened so the arc still hugs the waypoint: a pure
-    fly-by at this radius would bow ~2.5 NM inside the fix, but the corner-cut
-    cap holds the closest approach to ~0.5 NM (the arc reaches the waypoint
-    instead of cutting far short of it)."""
-    from trajectory_sim.turns import _MAX_FLYBY_CUT_NM
+def test_flyby_cut_is_pulled_towards_the_fix_but_not_past_the_bank_floor() -> None:
+    """A wide, fast turn is tightened so the arc hugs the waypoint instead of
+    bowing ~2.5 NM inside it — but only as far as the aircraft can bank. The cut
+    cap on its own would demand a 1.2 NM radius here; the floor keeps the turn
+    at something a jet actually flies, and the arc still comes in much closer
+    than the uncapped one."""
+    from trajectory_sim.turns import _MAX_FLYBY_CUT_NM, _MIN_RADIUS_FRACTION
 
     wide = 6.0  # ~cruise-speed radius
     pure_cut = wide * (1.0 / math.cos(math.radians(45.0)) - 1.0)
@@ -141,7 +142,12 @@ def test_flyby_cut_is_capped_near_the_fix() -> None:
 
     arc = flyby_arc(*_PREV, *_FIX, *_NEXT, radius_nm=wide)
     closest = min(haversine_distance(*_FIX, lat, lon) for lat, lon in arc)
-    assert closest == pytest.approx(_MAX_FLYBY_CUT_NM, abs=0.05)
+    # Pulled in from the uncapped bow, but not to the cap itself — the floor
+    # stops the tightening first.
+    assert closest < pure_cut
+    assert closest > _MAX_FLYBY_CUT_NM
+    floor_cut = wide * _MIN_RADIUS_FRACTION * (1.0 / math.cos(math.radians(45.0)) - 1.0)
+    assert closest == pytest.approx(floor_cut, abs=0.05)
     # Still a real fly-by: tangent to both legs, fix not crossed.
     assert _track(_PREV, arc[0]) == pytest.approx(_track(_PREV, _FIX), abs=0.5)
     assert closest > 0.1
@@ -161,10 +167,26 @@ def test_flyby_turns_the_short_way() -> None:
 def test_flyby_radius_shrinks_rather_than_overrunning_a_short_leg() -> None:
     """A tight corner between short legs is flown at a smaller radius (banked
     harder), so its turn can never eat into the neighbouring fix's."""
-    near = project_point(*_FIX, 180.0, 0.6)  # inbound leg only 0.6 NM long
-    arc = flyby_arc(*near, *_FIX, *_NEXT, radius_nm=5.0)
+    near = project_point(*_FIX, 180.0, 3.0)  # inbound leg 3 NM: nominal won't fit
+    arc = flyby_arc(*near, *_FIX, *_NEXT, radius_nm=2.0)
     assert arc
-    assert haversine_distance(*_FIX, *arc[0]) < 0.6  # stayed on its own leg
+    assert haversine_distance(*_FIX, *arc[0]) < 3.0  # stayed on its own leg
+    # Tighter than asked for, but still a turn: the shrink stopped at the floor.
+    from trajectory_sim.turns import _MIN_RADIUS_FRACTION
+
+    tangent_nm = haversine_distance(*_FIX, *arc[0])
+    radius_nm = tangent_nm / math.tan(math.radians(45.0))
+    assert radius_nm < 2.0
+    assert radius_nm >= 2.0 * _MIN_RADIUS_FRACTION - 0.01
+
+
+def test_flyby_hands_back_a_corner_too_tight_to_bank_into() -> None:
+    """0.6 NM of inbound leg cannot absorb a 90 deg turn at cruise radius: cutting
+    it would need a hairpin no aircraft flies. The fly-by declines, and the
+    caller flies the fix over and captures the next leg instead — which is what
+    used to be drawn as a spike on the map."""
+    near = project_point(*_FIX, 180.0, 0.6)
+    assert flyby_arc(*near, *_FIX, *_NEXT, radius_nm=5.0) == []
 
 
 def test_no_arc_when_the_course_barely_changes() -> None:

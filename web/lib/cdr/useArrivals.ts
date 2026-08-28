@@ -15,7 +15,12 @@
 import { useMemo } from "react";
 
 import { statusFromLocalT } from "@/lib/flightStatus";
-import { holdLegSec, holdLoopSec, type Holding } from "@/lib/holdings";
+import {
+  holdLegSec,
+  holdLoopSec,
+  makeArrivalHoldGate,
+  type Holding,
+} from "@/lib/holdings";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
 import { aircraftAt, totalSeconds, type AircraftState } from "@/lib/useSimPlayback";
 
@@ -55,9 +60,13 @@ export function nextHoldOnRoute(
 ): ArrivalHold | null {
   if (!holdings.size || samples.length < 2) return null;
   const duration = samples[samples.length - 1].t;
+  // A hold belongs to the ARRIVAL, and the arrival is the STAR. Nobody holds a
+  // departure, and a published fix crossed on the way up or in the cruise is
+  // not an instruction to offer — the menu opens where the STAR does.
+  const eligible = makeArrivalHoldGate(traj);
   let best: ArrivalHold | null = null;
 
-  for (const w of traj.route) {
+  for (const [routeIndex, w] of traj.route.entries()) {
     const h = holdings.get(w.ident);
     if (!h) continue;
     // Time the aircraft passes the fix — the sample closest to it, as the
@@ -74,6 +83,7 @@ export function nextHoldOnRoute(
     if (tAt <= localT + HOLD_MIN_LEAD_SEC || tAt >= duration) continue;
     if (best && tAt >= best.tManSec) continue;
     const at = aircraftAt(samples, tAt);
+    if (!eligible(routeIndex, tAt, at?.phase)) continue;
     const gsKt = h.speedKt ?? at?.gsKt ?? 230;
     best = {
       ident: h.ident,

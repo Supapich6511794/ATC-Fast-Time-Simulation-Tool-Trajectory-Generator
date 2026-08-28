@@ -30,6 +30,12 @@ interface Props {
   nameOf: (id: string) => string;
   appliedFixes: AppliedFix[];
   onClearFixes?: () => void;
+  /** Save the RUN's conflict log — every conflict seen, resolved or not, with
+   *  the window it happened in and the instruction that cleared it. Omitted
+   *  when there is nothing logged yet. */
+  onDownloadLog?: () => void;
+  /** How many entries that log holds, for the button's label. */
+  logCount?: number;
   /** Open the before/after preview + fix modal for a conflict. */
   onOpenPreview: (conflictId: string) => void;
   /** Show a ✓ Fixed entry's before/after routes on the map. Omitted = the rows
@@ -42,12 +48,18 @@ interface Props {
   onClose: () => void;
 }
 
+/** Rows drawn at once. The list is a work queue, not a report: what matters
+ *  is what happens next, and each row costs two airspace lookups to label. */
+const MAX_ROWS = 60;
+
 export default function ConflictPanel({
   planConflicts,
   simT,
   nameOf,
   appliedFixes,
   onClearFixes,
+  onDownloadLog,
+  logCount = 0,
   onOpenPreview,
   onSelectFix,
   selectedFixId,
@@ -61,7 +73,9 @@ export default function ConflictPanel({
   // notifications: fix it once, it's fixed everywhere.
   const fixedIds = new Set(appliedFixes.map((f) => f.conflictId));
   const fixedDone = appliedFixes;
-  const definite = planConflicts.filter((c) => c.definite && !fixedIds.has(c.id));
+  const definite = planConflicts
+    .filter((c) => c.definite && !fixedIds.has(c.id))
+    .sort((x, y) => (x.losStartAbsSec ?? x.tCpaAbsSec) - (y.losStartAbsSec ?? y.tCpaAbsSec));
 
   const lossRow = (c: PlanConflict) => {
     const targetAbs = c.losStartAbsSec ?? c.tCpaAbsSec;
@@ -95,9 +109,24 @@ export default function ConflictPanel({
     <div className="cdr-panel cdr-dashboard" role="dialog" aria-label="Conflict dashboard">
       <div className="cdr-panel-head">
         <strong>⚡ Conflict Dashboard</strong>
-        <button type="button" className="cdr-panel-close" onClick={onClose} aria-label="Close">
-          ✕
-        </button>
+        <span className="cdr-head-actions">
+          {/* The panel shows the CURRENT picture; the log is the RUN — every
+              conflict that happened, including the ones already fixed and
+              gone from these lists. */}
+          {onDownloadLog && logCount > 0 && (
+            <button
+              type="button"
+              className="cdr-log-save"
+              onClick={onDownloadLog}
+              title={`Save all ${logCount} conflicts seen this run, resolved or not`}
+            >
+              ⬇ Log ({logCount})
+            </button>
+          )}
+          <button type="button" className="cdr-panel-close" onClick={onClose} aria-label="Close">
+            ✕
+          </button>
+        </span>
       </div>
 
       <div className="cdr-dash-cols">
@@ -107,7 +136,19 @@ export default function ConflictPanel({
           {definite.length === 0 ? (
             <p className="cdr-panel-empty">No losses of separation in the filed plans.</p>
           ) : (
-            <ul className="cdr-list">{definite.map(lossRow)}</ul>
+            <>
+              {/* Soonest first, and only the head of the queue is drawn. A
+                  whole traffic day produces hundreds of these; every row costs
+                  an airspace lookup per aircraft, so drawing them all pinned
+                  the main thread on a list nobody can read anyway. */}
+              <ul className="cdr-list">{definite.slice(0, MAX_ROWS).map(lossRow)}</ul>
+              {definite.length > MAX_ROWS && (
+                <p className="cdr-dash-more">
+                  + {definite.length - MAX_ROWS} more, soonest first. Fix these
+                  and the next ones move up.
+                </p>
+              )}
+            </>
           )}
         </section>
 

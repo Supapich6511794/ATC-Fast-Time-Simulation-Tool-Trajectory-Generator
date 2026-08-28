@@ -5,7 +5,7 @@ ENR 4.4 "significant points", so it MISSES many fixes that real filed routes
 use — notably the VTBD/VTBS arrival IAWP fixes (NAKON, NORTA, SEHNA, TUMGA,
 WEHHA, WILLA, ENDUU, EASTE) and some enroute fixes (SAPUD, NTW, …). Those
 points DO exist in the project's GIS layers (``airway_waypoint.geojson``,
-``star/star_waypoint.geojson``, …), where each carries its own
+``aixm/star_waypoint.geojson``, …), where each carries its own
 ``waypoint_identifier`` + ``waypoint_latitude``/``waypoint_longitude``.
 
 This script merges any ident present in those GeoJSON layers but missing from
@@ -36,7 +36,7 @@ _DATA = _ROOT / "web" / "public" / "data"
 # endpoint (``waypoint_identifier_2``) does NOT match the row's lat/lon.
 _LAYERS = (
     "airway_waypoint.geojson",
-    "star/star_waypoint.geojson",
+    "aixm/star_waypoint.geojson",
     "airways/airways_reporting.geojson",
 )
 

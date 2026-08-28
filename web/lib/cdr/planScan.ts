@@ -168,14 +168,26 @@ export function losWindows(
   B: PlanFlight,
   cfg: CdrConfig,
   stepSec = 5,
+  opts: { buffered?: boolean } = {},
 ): LosWindow[] {
   const w = walkCpa(A, B, stepSec);
   if (!w) return [];
-  const sh = sepMinNmForPair(
-    cfg,
-    w.cpaA.lat, w.cpaA.lon, w.cpaA.altitudeFt,
-    w.cpaB.lat, w.cpaB.lon, w.cpaB.altitudeFt,
-  );
+  // `buffered` widens the test to the ADVISORY thresholds — the same ones
+  // `scanPair` uses to decide a pair is worth showing at all. It answers a
+  // different question: not "when were minima lost" but "when was this pair
+  // close enough to be worth a look", which is the only window a sub-buffer
+  // encounter has. Without it such a pair has no window to report and its
+  // numbers fall back to the CPA, where the horizontal minimum and the
+  // vertical gap need not be from the same instant at all (0.1 NM and 13 000
+  // ft, read together, describes an encounter that never happened).
+  const hPad = opts.buffered ? cfg.buffer.horizontalNm : 0;
+  const vPad = opts.buffered ? cfg.buffer.verticalFt : 0;
+  const sh =
+    sepMinNmForPair(
+      cfg,
+      w.cpaA.lat, w.cpaA.lon, w.cpaA.altitudeFt,
+      w.cpaB.lat, w.cpaB.lon, w.cpaB.altitudeFt,
+    ) + hPad;
 
   const out: LosWindow[] = [];
   let cur: LosWindow | null = null;
@@ -187,7 +199,7 @@ export function losWindows(
     if (!acA || !acB || acA.altitudeFt == null || acB.altitudeFt == null) continue;
     const h = mag(sub(toEnu(w.frame, acB.lat, acB.lon), toEnu(w.frame, acA.lat, acA.lon)));
     const v = Math.abs(acB.altitudeFt - acA.altitudeFt);
-    const sv = verticalMinimumFt(cfg, acA.altitudeFt, acB.altitudeFt);
+    const sv = verticalMinimumFt(cfg, acA.altitudeFt, acB.altitudeFt) + vPad;
     if (h < sh && v < sv) {
       if (cur == null) {
         cur = { startAbsSec: t, endAbsSec: t, minHNm: h, minVFt: v, shNm: sh, svFt: sv };
@@ -217,6 +229,102 @@ export function pairConflict(
   return scanPair(A, B, cfg, stepSec);
 }
 
+/** The box a whole flight stays inside: its path's extent in lat/lon/altitude
+ *  and the window it is airborne. Computed once per flight and cached on the
+ *  object, so the pair loop can reject a pair in a few comparisons instead of
+ *  walking their shared timeline. */
+interface PlanBounds {
+  latMin: number;
+  latMax: number;
+  lonMin: number;
+  lonMax: number;
+  altMin: number;
+  altMax: number;
+  t0: number;
+  t1: number;
+}
+
+/** Keyed on the SAMPLE TABLE, not the PlanFlight: applying a fix rebuilds every
+ *  flight's wrapper object even though only one aircraft moved, and a cache
+ *  keyed on the wrapper would then miss on all of them and re-walk the whole
+ *  day's samples. `toSamples` hands back the same array for an untouched
+ *  flight, so this survives. Only the box is cached — the times come from the
+ *  wrapper, which is where a re-timing shows up. */
+const _boundsCache = new WeakMap<
+  Sample[],
+  Omit<PlanBounds, "t0" | "t1">
+>();
+
+function boundsOf(f: PlanFlight): PlanBounds {
+  const box = _boundsCache.get(f.samples);
+  if (box) {
+    return { ...box, t0: f.offsetSec, t1: f.offsetSec + f.durationSec };
+  }
+  let latMin = Infinity, latMax = -Infinity;
+  let lonMin = Infinity, lonMax = -Infinity;
+  let altMin = Infinity, altMax = -Infinity;
+  for (const s of f.samples) {
+    if (s.lat < latMin) latMin = s.lat;
+    if (s.lat > latMax) latMax = s.lat;
+    if (s.lon < lonMin) lonMin = s.lon;
+    if (s.lon > lonMax) lonMax = s.lon;
+    const a = s.altitudeFt;
+    if (a != null) {
+      if (a < altMin) altMin = a;
+      if (a > altMax) altMax = a;
+    }
+  }
+  const fresh = {
+    latMin, latMax, lonMin, lonMax,
+    altMin: altMin === Infinity ? -Infinity : altMin,
+    altMax: altMax === -Infinity ? Infinity : altMax,
+  };
+  _boundsCache.set(f.samples, fresh);
+  return { ...fresh, t0: f.offsetSec, t1: f.offsetSec + f.durationSec };
+}
+
+/**
+ * Can this pair be dismissed without walking it?
+ *
+ * Two flights that are never airborne together, or whose paths never come
+ * within the minima of each other in ANY of the three dimensions, cannot
+ * conflict — and at 2 000 flights that is almost every pair. Checking it costs
+ * a handful of comparisons; walking their shared window costs hundreds of
+ * interpolations, which is what used to take six seconds and freeze the tab on
+ * a whole day of traffic.
+ *
+ * The boxes are the flown samples' own extent, so this rejects only pairs that
+ * genuinely cannot meet — it never hides a conflict the walk would have found.
+ */
+function cannotMeet(A: PlanFlight, B: PlanFlight, cfg: CdrConfig): boolean {
+  const a = boundsOf(A);
+  const b = boundsOf(B);
+  // Never airborne at the same time.
+  if (a.t1 <= b.t0 || b.t1 <= a.t0) return true;
+
+  // Widest minimum either pair could be held to, plus the advisory buffer.
+  const sepNm =
+    Math.max(cfg.horizontal.enrouteNm, cfg.horizontal.terminalNm) +
+    cfg.buffer.horizontalNm;
+  const svFt =
+    Math.max(cfg.vertical.belowRvsmTopFt, cfg.vertical.aboveRvsmTopFt) +
+    cfg.buffer.verticalFt;
+
+  if (a.altMin - b.altMax > svFt || b.altMin - a.altMax > svFt) return true;
+
+  const dLat = sepNm / 60;
+  if (a.latMin - b.latMax > dLat || b.latMin - a.latMax > dLat) return true;
+  // Longitude degrees shrink with latitude; use the higher-latitude (tighter)
+  // conversion so the margin is never under-stated.
+  const cosLat = Math.cos(
+    (Math.max(Math.abs(a.latMin), Math.abs(b.latMin)) * Math.PI) / 180,
+  );
+  const dLon = sepNm / (60 * Math.max(cosLat, 0.1));
+  if (a.lonMin - b.lonMax > dLon || b.lonMin - a.lonMax > dLon) return true;
+
+  return false;
+}
+
 /** Scan one pair over their overlapping airborne window. */
 function scanPair(
   A: PlanFlight,
@@ -224,6 +332,8 @@ function scanPair(
   cfg: CdrConfig,
   stepSec: number,
 ): PlanConflict | null {
+  // Pairs that cannot meet at all are rejected before any interpolation.
+  if (cannotMeet(A, B, cfg)) return null;
   // Pass 1 (cheap — pure geometry, NO airspace lookups): find the CPA.
   const w = walkCpa(A, B, stepSec > 0 ? stepSec : 15);
   if (!w) return null;
@@ -290,6 +400,64 @@ function scanPair(
   };
 }
 
+/** Worst first: real losses of separation before sub-buffer passes, then by
+ *  whichever happens soonest. */
+function sortConflicts(out: PlanConflict[]): PlanConflict[] {
+  return out.sort((x, y) => {
+    if (x.definite !== y.definite) return x.definite ? -1 : 1;
+    const tx = x.losStartAbsSec ?? x.tCpaAbsSec;
+    const ty = y.losStartAbsSec ?? y.tCpaAbsSec;
+    return tx - ty;
+  });
+}
+
+/**
+ * The scan again after only SOME flights moved.
+ *
+ * Applying a fix re-times exactly one aircraft, but the scan behind it is over
+ * every pair — 1 976 flights is 1.95 million of them, several seconds of
+ * arithmetic, and auto-resolve pays it after every single fix it applies. That
+ * is what makes a long auto-resolve pass look like a hung tab.
+ *
+ * Only pairs that TOUCH a changed flight can have changed, so the rest are kept
+ * as they were and the walk is `changed x all` — O(n) per fix instead of O(n²).
+ * The result is the same list the full scan would have produced.
+ */
+export function rescanFlightPlanConflicts(
+  previous: PlanConflict[],
+  flights: PlanFlight[],
+  changed: ReadonlySet<string>,
+  cfg: CdrConfig,
+  stepSec = 15,
+): PlanConflict[] {
+  if (changed.size === 0) return previous;
+  const byId = new Map(flights.map((f) => [f.id, f]));
+  // Everything the change cannot have touched, minus any flight that has since
+  // left the set entirely.
+  const out = previous.filter(
+    (c) =>
+      !changed.has(c.a) &&
+      !changed.has(c.b) &&
+      byId.has(c.a) &&
+      byId.has(c.b),
+  );
+  // A pair of two changed flights turns up twice in the walk below; scan it once.
+  const scanned = new Set<string>();
+  for (const id of changed) {
+    const A = byId.get(id);
+    if (!A) continue;
+    for (const B of flights) {
+      if (B.id === A.id) continue;
+      const pairId = A.id < B.id ? `${A.id}|${B.id}` : `${B.id}|${A.id}`;
+      if (scanned.has(pairId)) continue;
+      scanned.add(pairId);
+      const c = scanPair(A, B, cfg, stepSec);
+      if (c) out.push(c);
+    }
+  }
+  return sortConflicts(out);
+}
+
 /**
  * Every conflict in the filed plans, sorted so the ones that lose separation
  * soonest come first (definite losses before sub-buffer passes).
@@ -306,11 +474,5 @@ export function scanFlightPlanConflicts(
       if (c) out.push(c);
     }
   }
-  out.sort((x, y) => {
-    if (x.definite !== y.definite) return x.definite ? -1 : 1;
-    const tx = x.losStartAbsSec ?? x.tCpaAbsSec;
-    const ty = y.losStartAbsSec ?? y.tCpaAbsSec;
-    return tx - ty;
-  });
-  return out;
+  return sortConflicts(out);
 }

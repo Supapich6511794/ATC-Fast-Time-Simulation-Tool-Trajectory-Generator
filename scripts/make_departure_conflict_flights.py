@@ -13,15 +13,19 @@ one pair demonstrating it, plus controls that must stay silent:
 
   VTCC  02:00  THA100 / THA200   §7.9.2    runway not yet clear ......  1 min
   VTBS  02:20  UAE300 / AIQ301   §5.8.3.1  MEDIUM behind HEAVY ......   2 min
+  VTBS  02:30  SIA320 / NOK321   A380      MEDIUM behind SUPER ......   3 min
   VTBS  02:40  TGW400 / THA401   §5.6.3    climbs through its level ..  5 min
   VTBS  03:00  SIA500 / JAL501   §5.6.2    leader 50 kt faster ......   2 min
-  VTBS  03:20  KAL600 / BAW601   §5.6.1    tracks 144 deg apart .....   1 min  OK
-  VTBS  03:40  QTR700 / MAS701   different runways ................         OK
+  VTBS  03:40  QTR700 / MAS701   §8.7.3    two runways, one path ....  24 s
+  VTBS  03:20  KAL600 / BAW601   §5.6.1    tracks 162 deg apart .....   1 min  OK
+  VTBS  04:20  SVA900 / EVA901   two runways, diverging ...........         OK
   VTCC  04:00  ANA800 / CPA801   5 minutes apart ..................         OK
 
-The first four pairs are conflicts; the last three are the controls — a bank
+The first six pairs are conflicts; the last three are the controls — a bank
 that only contained violations could not show that the rules also let traffic
-go. §5.8.3.2 (3 minutes off an intersection) has no pair here: the plan editor
+go. The QTR700/MAS701 pair is the interesting one: different runways, so a
+runway-keyed check waves it through, but both are filed via VANKO at FL350 and
+450 kt and they fly in formation. §5.8.3.2 (3 minutes off an intersection) has no pair here: the plan editor
 has no intersection-departure field, so a file cannot express one. The rule is
 implemented and unit-tested.
 
@@ -67,6 +71,12 @@ PLANS = [
     ("UAE300", "B77W", "VTBS", "VTCC", "02:20", 360, 460, "RW19"),
     ("AIQ301", "A320", "VTBS", "VTCP", "02:21", 320, 450, "RW19"),
 
+    # -- A380 provisions: a MEDIUM behind a SUPER waits THREE minutes, a minute
+    #    longer than §5.8.3.1's HEAVY row. Filed 2 apart, so the extra minute is
+    #    exactly what is missing.
+    ("SIA320", "A388", "VTBS", "VTCT", "02:30", 350, 460, "RW19"),
+    ("NOK321", "B738", "VTBS", "VTCP", "02:32", 320, 450, "RW19"),
+
     # -- §5.6.3: same track and the follower is filed 10 000 ft above the
     #    aircraft ahead, so it climbs through its level: 5 min. Filed 2.
     ("TGW400", "A320", "VTBS", "VTCL", "02:40", 260, 450, "RW19"),
@@ -83,9 +93,17 @@ PLANS = [
     ("KAL600", "B738", "VTBS", "VTUD", "03:20", 350, 450, "RW19"),
     ("BAW601", "B738", "VTBS", "VTSP", "03:21", 350, 450, "RW19"),
 
-    # -- CONTROL: same aerodrome, same minute, different runways.
+    # -- §8.7.3 in trail: different runways, but both filed via VANKO at FL350
+    #    and 450 kt — the paths cross, so the runway split buys nothing and
+    #    they need 3 NM between them (24 s). Filed together.
     ("QTR700", "B738", "VTBS", "VTSB", "03:40", 350, 450, "RW19"),
     ("MAS701", "B738", "VTBS", "VTSG", "03:40", 350, 450, "RW01"),
+
+    # -- CONTROL: the same runway split, but this time the tracks really do
+    #    diverge (SELKA 059 deg against VANKO 221 deg), which is the parallel-
+    #    runway case §5.6.1 relieves. Same minute, and legal.
+    ("SVA900", "B738", "VTBS", "VTUD", "04:20", 350, 450, "RW19"),
+    ("EVA901", "B738", "VTBS", "VTSP", "04:20", 350, 450, "RW01"),
 
     # -- CONTROL: comfortably spaced, 5 minutes apart.
     ("ANA800", "B738", "VTCC", "VTBD", "04:00", 320, 450, ""),

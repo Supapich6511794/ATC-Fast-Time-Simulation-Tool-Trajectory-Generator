@@ -27,3 +27,10 @@ web/Data/
 
 # Reference documents kept locally (ICAO PANS-ATM is a copyrighted publication)
 *.pdf
+
+# Source AIXM exports kept locally: Navigraph/Jeppesen-derived commercial data,
+# licensed for internal and demonstration use only, NOT for redistribution. The
+# procedure layers built from it (web/public/data/aixm/) are committed so the
+# app runs from a clean clone; re-running scripts/ingest_aixm_procedures.py
+# needs your own copy of the export.
+aixm_export_*.xml.gz

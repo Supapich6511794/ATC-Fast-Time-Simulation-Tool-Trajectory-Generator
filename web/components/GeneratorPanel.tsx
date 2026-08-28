@@ -64,6 +64,11 @@ import {
 } from "@/lib/cat62";
 import { kBestRoutes, type RouteOption } from "@/lib/routeFinder";
 import {
+  soleApproachFor,
+  soleProcedure,
+  soleRunwayOf,
+} from "@/lib/procedureLink";
+import {
   autoResolveDepartures,
   eobtToMs,
   findDepartureConflicts,
@@ -634,6 +639,9 @@ function GeneratorPanel({
     setRoutes(d.routes);
     setSid(d.sid);
     setStar(d.star);
+    // The "selected automatically" notes belong to the tab being left.
+    setSidAuto(null);
+    setStarAuto(null);
     setDepRwy(d.depRwy ?? "");
     setArrRwy(d.arrRwy ?? "");
     // A draft that already names a runway keeps it: claim its
@@ -643,6 +651,11 @@ function GeneratorPanel({
     const mo = eobtMonth(d.eobt);
     depAutoKey.current = d.depRwy ? `${d.adep.trim().toUpperCase()}|${mo}` : "";
     arrAutoKey.current = d.arrRwy ? `${d.ades.trim().toUpperCase()}|${mo}` : "";
+    // Same for the approach: a draft that names one keeps it, and clearing it
+    // afterwards is a decision, not an invitation to re-pick.
+    approachAutoKey.current = d.approach
+      ? `${d.ades.trim().toUpperCase()}|${(d.arrRwy ?? "").toUpperCase()}`
+      : "";
     setApproach(d.approach ?? "");
     setApproachTransition(d.approachTransition ?? "");
     // Auto-select AIP vs Manual based on whether the route is a filed route.
@@ -1610,24 +1623,137 @@ function GeneratorPanel({
     [approachByRwy, arrRwy],
   );
 
-  // SID/STAR are NEVER auto-selected — they default to "None (direct)" and the
-  // user picks them explicitly. They stay related to the runway: the picker
-  // lists only the chosen RWY's procedures (sidShown/starShown), and changing
-  // ADEP/ADES resets the pair to RWY=Auto + SID/STAR=None (see the ADEP/ADES
-  // change handlers). The best-connecting-procedure engine endpoint still
-  // exists (api.suggestProcedure) if an auto-suggest UX is wanted later.
+  // SID/STAR are picked explicitly, with ONE exception: when the filters have
+  // left a single procedure to choose from, it is selected for the user (see
+  // the auto-pick effects below). Short of that they default to "None
+  // (direct)" and stay related to the runway — the picker lists only the
+  // chosen RWY's procedures (sidShown/starShown), and changing ADEP/ADES
+  // resets the pair to RWY=Auto + SID/STAR=None (see the ADEP/ADES change
+  // handlers). The best-connecting-procedure engine endpoint still exists
+  // (api.suggestProcedure) if a full auto-suggest UX is wanted later.
 
   // When the runway changes, drop a SID/STAR that doesn't serve the new
   // runway (the picker only lists that runway's procedures, so the stale pick
   // must clear to None too).
+  //
+  // Dropping it SILENTLY is what makes an import look broken: a filed plan
+  // arrives with a SID, the field reads "None (direct departure)", and nothing
+  // says why. Remember what was dropped and say so under the pickers.
+  const [sidDropped, setSidDropped] = useState<{ name: string; rwy: string } | null>(
+    null,
+  );
+  const [starDropped, setStarDropped] = useState<{ name: string; rwy: string } | null>(
+    null,
+  );
+  // …and the mirror of it: the procedure that was filled in for the user
+  // because the filters left exactly one (see the auto-pick effects below).
+  // Named under the pickers too, so an auto-pick is never a silent one.
+  const [sidAuto, setSidAuto] = useState<string | null>(null);
+  const [starAuto, setStarAuto] = useState<string | null>(null);
   useEffect(() => {
-    if (sid && !servesRwy(sidProcRwy, sid, depRwy)) setSid("");
+    setSidDropped(null);
+    setSidAuto(null);
+  }, [dep]);
+  useEffect(() => {
+    setStarDropped(null);
+    setStarAuto(null);
+  }, [des]);
+  useEffect(() => {
+    if (sid && !servesRwy(sidProcRwy, sid, depRwy)) {
+      setSidDropped({ name: sid, rwy: depRwy });
+      setSid("");
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [depRwy, sidProcRwy]);
   useEffect(() => {
-    if (star && !servesRwy(starProcRwy, star, arrRwy)) setStar("");
+    if (star && !servesRwy(starProcRwy, star, arrRwy)) {
+      setStarDropped({ name: star, rwy: arrRwy });
+      setStar("");
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [arrRwy, starProcRwy]);
+
+  // --- Auto-pick when the filters leave exactly one procedure --------------
+  // The pickers narrow twice — to the runway's procedures, then to the ones
+  // that connect to the route (sidShown/starShown). When ONE name survives,
+  // the data holds no choice any more, and a field left on "None (direct)"
+  // generates the flight without the procedure it was always going to fly.
+  //
+  // Two guards keep this from taking a decision that is the controller's:
+  //   * a SID/STAR the user already picked is never replaced — only an empty
+  //     field, or one the runway filter is about to clear anyway, is filled;
+  //   * choosing "None" records the context it was declined in, and that exact
+  //     context (aerodrome | runway | procedure) is never offered again.
+  const sidDeclined = useRef(new Set<string>());
+  const starDeclined = useRef(new Set<string>());
+
+  /** The offer currently on the table, `null` when there is nothing to offer
+   *  or the field is already filled. Also the key the decline is recorded
+   *  under: a different runway — or a route leading to a different lone
+   *  procedure — is a new offer, not the one that was turned down. */
+  const sidOffer = useMemo(() => {
+    const only = soleProcedure(sidShown);
+    if (!dep || !only) return null;
+    return { name: only, key: `${dep}|${depRwy}|${only}` };
+  }, [dep, depRwy, sidShown]);
+  const starOffer = useMemo(() => {
+    const only = soleProcedure(starShown);
+    if (!des || !only) return null;
+    return { name: only, key: `${des}|${arrRwy}|${only}` };
+  }, [des, arrRwy, starShown]);
+
+  useEffect(() => {
+    if (!sidOffer || sidDeclined.current.has(sidOffer.key)) return;
+    // A pick that still serves the runway is the user's and stays. One that
+    // does NOT is the stale pick the drop effect above is clearing in this
+    // same pass — this effect is declared after it, so its write lands last
+    // and the lone valid SID replaces it instead of leaving the field empty.
+    if (sid && servesRwy(sidProcRwy, sid, depRwy)) return;
+    setSid(sidOffer.name);
+    setSidAuto(sidOffer.name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidOffer, sid, depRwy, sidProcRwy]);
+
+  useEffect(() => {
+    if (!starOffer || starDeclined.current.has(starOffer.key)) return;
+    if (star && servesRwy(starProcRwy, star, arrRwy)) return;
+    setStar(starOffer.name);
+    setStarAuto(starOffer.name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [starOffer, star, arrRwy, starProcRwy]);
+
+  // --- STAR -> runway -> approach, in that order ---------------------------
+  // The three are one decision, not three independent pickers: a STAR is coded
+  // to the runway it feeds, and a runway's approach is often the only one
+  // published for it (VTCC RW36 has exactly R36). Left unlinked, picking the
+  // STAR still left the approach on "None", and the arrival was generated
+  // without the procedure that belongs to it.
+
+  /** A STAR that serves exactly ONE runway names it. With the runway still on
+   *  Auto the engine would pick the aerodrome's first, which need not be the
+   *  one the chosen procedure is coded for. */
+  useEffect(() => {
+    if (!star || arrRwy) return;
+    const only = soleRunwayOf(starProcRwy, star);
+    if (only) setArrRwy(only);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [star, arrRwy, starProcRwy]);
+
+  /** `${ADES}|${RWY}` whose sole approach has already been offered, so a
+   *  controller who then chooses "None" is not overridden on the next render. */
+  const approachAutoKey = useRef("");
+  useEffect(() => {
+    if (!des || !arrRwy) return;
+    const key = `${des}|${arrRwy}`;
+    if (approachAutoKey.current === key) return;
+    // Only when there is NOTHING to choose between (see `soleApproachFor`).
+    const only = soleApproachFor(approachByRwy, arrRwy);
+    if (!only) return;
+    approachAutoKey.current = key;
+    if (!approach) setApproach(only);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [des, arrRwy, approachByRwy, approach]);
+
   // An approach belongs to one arrival runway; drop it when the runway is
   // cleared or changed to one it doesn't serve. The runway is derived from the
   // approach NAME (R36 → RW36, R09-Z → RW09), NOT from `approachShown`, so an
@@ -2931,7 +3057,14 @@ function GeneratorPanel({
               <span>SID (at {dep || "ADEP"})</span>
               <select
                 value={sid}
-                onChange={(e) => setSid(e.target.value)}
+                onChange={(e) => {
+                  setSidDropped(null);
+                  setSidAuto(null);
+                  // "None" turns the standing offer down for good.
+                  if (!e.target.value && sidOffer)
+                    sidDeclined.current.add(sidOffer.key);
+                  setSid(e.target.value);
+                }}
                 disabled={!dep}
               >
                 <option value="">None (direct departure)</option>
@@ -2949,7 +3082,13 @@ function GeneratorPanel({
               <span>STAR (at {des || "ADES"})</span>
               <select
                 value={star}
-                onChange={(e) => setStar(e.target.value)}
+                onChange={(e) => {
+                  setStarDropped(null);
+                  setStarAuto(null);
+                  if (!e.target.value && starOffer)
+                    starDeclined.current.add(starOffer.key);
+                  setStar(e.target.value);
+                }}
                 disabled={!des}
               >
                 <option value="">None (direct arrival)</option>
@@ -3031,6 +3170,37 @@ function GeneratorPanel({
                 No coded PBN approach for {des} {arrRwy}.
               </p>
             )}
+          {(sidDropped || starDropped || sidAuto || starAuto) && (
+            <p className={`rt-hint${sidDropped || starDropped ? " warn" : ""}`}>
+              {sidDropped &&
+                (sidAuto
+                  ? `${sidDropped.name} is not coded for ${
+                      sidDropped.rwy || "the selected runway"
+                    } — replaced with ${sidAuto}, the only SID coded for it.`
+                  : `${sidDropped.name} is not coded for ${
+                      sidDropped.rwy || "the selected runway"
+                    } — cleared. Pick one of that runway's SIDs, or change the Departure RWY.`)}
+              {!sidDropped &&
+                sidAuto &&
+                `${sidAuto} is the only SID for ${dep}${
+                  depRwy ? ` ${depRwy}` : ""
+                } on this route — selected automatically.`}
+              {(sidDropped || sidAuto) && (starDropped || starAuto) && " "}
+              {starDropped &&
+                (starAuto
+                  ? `${starDropped.name} is not coded for ${
+                      starDropped.rwy || "the selected runway"
+                    } — replaced with ${starAuto}, the only STAR coded for it.`
+                  : `${starDropped.name} is not coded for ${
+                      starDropped.rwy || "the selected runway"
+                    } — cleared. Pick one of that runway's STARs, or change the Arrival RWY.`)}
+              {!starDropped &&
+                starAuto &&
+                `${starAuto} is the only STAR for ${des}${
+                  arrRwy ? ` ${arrRwy}` : ""
+                } on this route — selected automatically.`}
+            </p>
+          )}
           {((dep && sidOptions.length === 0) ||
             (des && starOptions.length === 0)) && (
             <p className="rt-hint">

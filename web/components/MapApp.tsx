@@ -134,14 +134,21 @@ import type { CdrEvent } from "@/lib/cdr/lifecycle";
 import { applyManeuver, maneuverTiming } from "@/lib/cdr/kinematics";
 import type { AppliedFix, Maneuver } from "@/lib/cdr/types";
 import {
+  rescanFlightPlanConflicts,
   scanFlightPlanConflicts,
   type PlanConflict,
   type PlanFlight,
 } from "@/lib/cdr/planScan";
 import { buildLosMarks } from "@/lib/cdr/losMarks";
+import {
+  conflictLogCounts,
+  updateConflictLog,
+  type ConflictLogEntry,
+} from "@/lib/cdr/conflictLog";
 import type { DepartureConflict } from "@/lib/departureSeparation";
 import { restrictedAreasFrom } from "@/lib/cdr/constraints";
 import {
+  type Blocker,
   generatePlanResolutions,
   planResolutions,
   type PlanAdvisoryResult,
@@ -150,6 +157,7 @@ import {
 import ToastStack from "@/components/cdr/ToastStack";
 import ArrivalPanel from "@/components/cdr/ArrivalPanel";
 import ConflictPanel from "@/components/cdr/ConflictPanel";
+import ConflictLogPanel from "@/components/cdr/ConflictLogPanel";
 import DepartureConflictPanel from "@/components/cdr/DepartureConflictPanel";
 import NotificationPanel from "@/components/cdr/NotificationPanel";
 import SuggestionCards from "@/components/cdr/SuggestionCards";
@@ -197,6 +205,48 @@ function fmtSpd(c: { type: string; speed_kt?: number | null }): string {
     default:
       return "";
   }
+}
+
+/**
+ * When the auto-resolver works.
+ *   "off"    — manual only (default).
+ *   "before" — one up-front pass over the whole filed plan, run with the clock
+ *              parked at t=0, so the replay starts already deconflicted.
+ *   "during" — resolve continuously while the replay runs.
+ */
+type AutoResolveMode = "off" | "before" | "during";
+
+/** The auto-resolve choices offered in the CD&R menu, in display order. */
+const AUTO_MODE_OPTIONS: {
+  mode: AutoResolveMode;
+  label: string;
+  hint: string;
+}[] = [
+  {
+    mode: "off",
+    label: "Off",
+    hint: "Resolve conflicts by hand from the notifications or the dashboard",
+  },
+  {
+    mode: "before",
+    label: "Before replay",
+    hint: "Deconflict the whole filed plan up front (clock parked at the start), then replay the result",
+  },
+  {
+    mode: "during",
+    label: "While replaying",
+    hint: "Apply the top validated fix to each conflict as the replay approaches it",
+  },
+];
+
+/** Progress of the up-front ("before replay") auto-resolve pass. */
+interface AutoPassState {
+  /** Conflicts the resolver cleared. */
+  fixed: number;
+  /** Conflicts it looked at but found no validated fix for. */
+  unfixed: number;
+  /** False while the pass is still stepping through the queue. */
+  done: boolean;
 }
 
 export default function MapApp() {
@@ -895,15 +945,25 @@ export default function MapApp() {
   // Which CD&R view is open (chosen from the ⚡ CD&R dropdown), and whether the
   // dropdown itself is showing. "notifications" = the realtime alert stack;
   // "dashboard" = the strategic 2-column LoS/Fixed board.
-  const [cdrView, setCdrView] = useState<"notifications" | "dashboard" | "arrivals" | null>(
+  const [cdrView, setCdrView] = useState<
+    "notifications" | "dashboard" | "arrivals" | "log" | null
+  >(
     null,
   );
   const [cdrMenuOpen, setCdrMenuOpen] = useState(false);
   // Auto-resolve: when on, the top plan-validated fix is applied automatically
   // to every detected conflict (no manual Apply). Off by default — the operator
-  // opts in. Proactive: a conflict is fixed as soon as it's detected (up to the
-  // 10-min prediction horizon), mirroring how ATC clears traffic ahead of time.
-  const [autoResolve, setAutoResolve] = useState(false);
+  // opts in AND picks when the resolver works: up front, before anything is
+  // replayed, or continuously while the replay runs (see `AutoResolveMode`).
+  const [autoResolveMode, setAutoResolveMode] =
+    useState<AutoResolveMode>("off");
+  const autoResolve = autoResolveMode !== "off";
+  // Progress of the up-front pass — drives the status line in the CD&R menu and
+  // the summary toast. Null whenever no up-front pass is running or finished.
+  const [autoPass, setAutoPass] = useState<AutoPassState | null>(null);
+  // Bumped when the user re-picks "Before replay" while it is already selected,
+  // to run the pass again over whatever is still unresolved.
+  const [autoPassNonce, setAutoPassNonce] = useState(0);
   const [selectedConflictId, setSelectedConflictId] = useState<string | null>(
     null,
   );
@@ -954,11 +1014,25 @@ export default function MapApp() {
   // crosses a boundary (Doc 4444 §10.1 coordination). Resolved from the same
   // altitude-aware airspace hierarchy the map labels and Results rows use, so
   // all of them name the same volume.
+  /** flightKey → its position in `trajectories`. Anything that resolves a
+   *  flight by key per row/per frame goes through this rather than scanning the
+   *  list, which is O(traffic) and gets called thousands of times a frame with
+   *  a whole day loaded. */
+  const idxByFlightKey = useMemo(() => {
+    const m = new Map<string, number>();
+    trajectories.forEach((t, i) => m.set(t.meta.flightKey, i));
+    return m;
+  }, [trajectories]);
+
   const sectorOfConflict = useCallback(
     (c: { a: string; b: string }, tCpaAbsSec: number): ConflictSector | null => {
       if (!airspaceIndex.bacc) return null; // polygons not loaded yet
       const at = (id: string, absSec: number): SectorPoint | null => {
-        const i = trajectories.findIndex((t) => t.meta.flightKey === id);
+        // Indexed, not searched: the dashboard asks this for every row it
+        // draws, four times each (both aircraft, at the CPA and now). A linear
+        // findIndex over a whole traffic day made that 852 x 4 x 1976 string
+        // comparisons per frame — the panel froze the tab just by being open.
+        const i = idxByFlightKey.get(id) ?? -1;
         if (i < 0) return null;
         const ac = aircraftAt(samplesByIdx[i], absSec - (routeOffsets[i] ?? 0));
         return ac ? { lat: ac.lat, lon: ac.lon, altFt: ac.altitudeFt } : null;
@@ -971,7 +1045,7 @@ export default function MapApp() {
         (lat, lon, altFt) => airspaceAt(airspaceIndex, lon, lat, altFt),
       );
     },
-    [airspaceIndex, trajectories, samplesByIdx, routeOffsets],
+    [airspaceIndex, idxByFlightKey, samplesByIdx, routeOffsets],
   );
   // Hover readouts for the two before/after overlay lines. The new route carries
   // the instruction with its "from" value ("Climb FL160 — from FL140").
@@ -1408,9 +1482,55 @@ export default function MapApp() {
       })),
     [trajectories, samplesByIdx, routeOffsets],
   );
+  // The scan is O(pairs): a traffic day is ~2 million of them, seconds of work.
+  // Auto-resolve re-times ONE flight per fix, so re-scanning everything after
+  // each one is what makes a long pass look like a hung tab. Keep the last
+  // result and rescan only the pairs that touch a flight whose sample table
+  // actually changed (`toSamples` is cached per point array, so an untouched
+  // flight keeps its identity). Anything else — a new set, a different config —
+  // falls back to the full scan.
+  const planScanRef = useRef<{
+    flights: PlanFlight[];
+    conflicts: PlanConflict[];
+    cfg: CdrConfig;
+  } | null>(null);
   const planConflicts = useMemo<PlanConflict[]>(() => {
-    if (!cdrMonitoring || planFlights.length < 2) return [];
-    return scanFlightPlanConflicts(planFlights, cdr.config);
+    if (!cdrMonitoring || planFlights.length < 2) {
+      planScanRef.current = null;
+      return [];
+    }
+    const prev = planScanRef.current;
+    let next: PlanConflict[] | null = null;
+    if (prev && prev.cfg === cdr.config && prev.flights.length === planFlights.length) {
+      const changed = new Set<string>();
+      let sameSet = true;
+      for (let i = 0; i < planFlights.length; i++) {
+        const a = planFlights[i];
+        const b = prev.flights[i];
+        if (a.id !== b.id) {
+          sameSet = false;
+          break;
+        }
+        if (
+          a.samples !== b.samples ||
+          a.offsetSec !== b.offsetSec ||
+          a.durationSec !== b.durationSec
+        ) {
+          changed.add(a.id);
+        }
+      }
+      if (sameSet) {
+        next = rescanFlightPlanConflicts(
+          prev.conflicts,
+          planFlights,
+          changed,
+          cdr.config,
+        );
+      }
+    }
+    if (next == null) next = scanFlightPlanConflicts(planFlights, cdr.config);
+    planScanRef.current = { flights: planFlights, conflicts: next, cfg: cdr.config };
+    return next;
   }, [cdrMonitoring, planFlights, cdr.config]);
 
   // The auto-resolve work queue: every REAL loss of separation in the filed
@@ -1424,6 +1544,37 @@ export default function MapApp() {
       .sort((a, b) => a.tCpaAbsSec - b.tCpaAbsSec);
   }, [planConflicts, appliedFixes]);
 
+  // --- Conflict log — the record of the run -------------------------------
+  // The dashboard shows what is wrong NOW; a fixed pair vanishes from it. This
+  // keeps every encounter the scan ever found, with the window it happens in,
+  // the geometry, and the instruction that resolved it (or the fact that
+  // nothing did). Folded rather than recomputed: entries are only added or
+  // closed, so the history survives the trajectories changing under it.
+  const [conflictLog, setConflictLog] = useState<ConflictLogEntry[]>([]);
+  const planFlightsById = useMemo(
+    () => new Map(planFlights.map((f) => [f.id, f])),
+    [planFlights],
+  );
+  useEffect(() => {
+    if (!cdrMonitoring) return;
+    setConflictLog((prev) =>
+      updateConflictLog(prev, {
+        conflicts: planConflicts,
+        flights: planFlightsById,
+        appliedFixes,
+        cfg: cdr.config,
+        nowSec: simSec,
+      }),
+    );
+    // `simSec` only stamps what changes, and folding on every tick would be
+    // wasted work — the log moves when the SCAN or the fixes do.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cdrMonitoring, planConflicts, appliedFixes, planFlightsById, cdr.config]);
+  const conflictLogCount = useMemo(
+    () => conflictLogCounts(conflictLog),
+    [conflictLog],
+  );
+
   // UTC of the shared clock's t=0 — the earliest departure across the set, the
   // same origin `departureOffsets` measures from. Turns an absolute sim second
   // back into the real timestamp the exported track rows are keyed by.
@@ -1435,6 +1586,15 @@ export default function MapApp() {
     }
     return Number.isFinite(origin) ? origin : 0;
   }, [trajectories]);
+
+  /** Shared-clock seconds -> the UTC stamp the log is read in. The log is a
+   *  record of real times, not of sim offsets: "02:14:20Z" is what goes in a
+   *  report, and it is the same clock the exported files are keyed by. */
+  const logUtc = useCallback(
+    (sec: number) =>
+      `${new Date(timelineOriginMs + sec * 1000).toISOString().slice(11, 19)}Z`,
+    [timelineOriginMs],
+  );
 
   /**
    * Tell the export which timestamps of a flight are in loss of separation,
@@ -1528,6 +1688,53 @@ export default function MapApp() {
     holdings,
   ]);
   const planSuggestions: PlanResolution[] = planAdvisory.resolutions;
+
+  /** The conflict to open when a resolution is blocked by a third aircraft.
+   *
+   *  "Resolve THA574 first" is only advice until THA574 can be REACHED, and in
+   *  a busy picture its own conflict is somewhere down a stack of dozens. The
+   *  live stack is preferred over the plan scan because that is the list the
+   *  notification panel can actually expand; both are ordered worst-first, so
+   *  the first hit is the one worth working. Null = that aircraft is not in
+   *  conflict itself — it is merely in the way, and nothing can be "resolved". */
+  const blockerConflictOf = useCallback(
+    (b: Blocker): string | null => {
+      const fixed = new Set(appliedFixes.map((f) => f.conflictId));
+      const live = notifConflicts.find(
+        (c) => !fixed.has(c.id) && (c.a === b.id || c.b === b.id),
+      );
+      if (live) return live.id;
+      const planned = planConflicts.find(
+        (c) => c.definite && !fixed.has(c.id) && (c.a === b.id || c.b === b.id),
+      );
+      return planned?.id ?? null;
+    },
+    [notifConflicts, planConflicts, appliedFixes],
+  );
+
+  /** Go and work the blocker. With a conflict of its own, select it — through
+   *  the modal when the live stack has no row for it (a plan-scan conflict that
+   *  has not entered the look-ahead yet, which the notification panel would
+   *  never show). Without one, there is nothing to resolve, so put the aircraft
+   *  on the map instead: the honest answer is "look at it and re-plan it". */
+  const workBlocker = useCallback(
+    (b: Blocker, conflictId: string | null) => {
+      setPreviewIdx(null);
+      if (conflictId) {
+        setSelectedConflictId(conflictId);
+        if (!notifConflicts.some((c) => c.id === conflictId)) {
+          setPreviewModalOpen(true);
+        }
+        return;
+      }
+      const i = idxByFlightKey.get(b.id);
+      if (i != null) {
+        setPreviewModalOpen(false);
+        lockOnFlight(i);
+      }
+    },
+    [notifConflicts, idxByFlightKey, lockOnFlight],
+  );
 
   // Resolutions shown in the INLINE notification cards. These use the SAME
   // plan-validated engine as the Preview modal (full-trajectory what-ifs,
@@ -1756,7 +1963,7 @@ export default function MapApp() {
   );
 
   // Auto-resolve loop. A SELF-SCHEDULING stepper (not a dependency-driven
-  // effect): every AUTO_STEP_MS it handles ONE conflict — apply the top validated
+  // effect): on each tick it handles ONE conflict — apply the top validated
   // fix if one exists, mark the conflict tried (so an unresolvable one is never
   // re-validated), then schedule the next step. Each fix is validated against the
   // already-modified traffic (sequential, self-consistent).
@@ -1793,7 +2000,19 @@ export default function MapApp() {
   // closure, up to 4 tries, instead of one for its whole life. Retrying every
   // tick instead would re-run the ~200 ms plan resolver back-to-back and pin the
   // CPU, which is what this whole timer loop exists to avoid.
-  const AUTO_STEP_MS = 400;
+  //: Longest the loop waits between fixes, and the shortest. The gap used to be
+  //: a flat 400 ms — chosen when a single step could freeze the tab for a
+  //: second, so the wait was cover for the work. With the scan now incremental
+  //: (`rescanFlightPlanConflicts`) a step is a couple of milliseconds, and 400
+  //: ms of idling per conflict is what a long pass is made of: 831 of them is
+  //: 5 minutes of doing nothing. So the loop paces itself instead — it waits as
+  //: long as the step it just ran took, which holds the main thread at roughly
+  //: half duty cycle whatever the fleet size, and never longer than the old
+  //: fixed gap.
+  const AUTO_STEP_MAX_MS = 400;
+  const AUTO_STEP_MIN_MS = 16; // one frame — still lets React paint
+  /** Toast identity of the "before replay" pass summary (not a conflict id). */
+  const AUTO_PASS_TOAST_ID = "auto-resolve-pass";
   const AUTO_RETRY_BUCKET_SEC = 600;
   /** Skip a conflict this close to CPA — nothing can be applied in time. */
   const AUTO_MIN_LEAD_SEC = 30;
@@ -1809,6 +2028,8 @@ export default function MapApp() {
     commitManeuver,
     toasts,
     nameOf,
+    pause: sim.pause,
+    seek: sim.seek,
   });
   autoStateRef.current = {
     unresolvedPlanConflicts,
@@ -1817,11 +2038,50 @@ export default function MapApp() {
     commitManeuver,
     toasts,
     nameOf,
+    pause: sim.pause,
+    seek: sim.seek,
   };
+  /** Running tally of the up-front pass, read by the step without re-rendering. */
+  const autoPassCountsRef = useRef({ fixed: 0, unfixed: 0 });
+  // Identity of the loaded flight SET. Stable across fixes (a maneuver only
+  // rewrites one trajectory's points, never its flightKey), so keying the
+  // up-front pass on this re-runs it for a newly generated set without
+  // restarting it on every fix it applies — which `trajectories` would.
+  const flightSetKey = useMemo(
+    () =>
+      trajectories
+        .map((t) => t.meta.flightKey)
+        .sort()
+        .join("|"),
+    [trajectories],
+  );
+  //
+  // WHEN the loop runs is the operator's choice (`autoResolveMode`):
+  //   "during" — steps against the LIVE clock, so a conflict is handled as the
+  //              replay approaches it (lead time = CPA − current sim time);
+  //   "before" — one batch pass with the clock parked at t=0 and playback
+  //              paused, so every fix is planned with the whole filed timeline
+  //              of lead time available and the replay starts deconflicted. The
+  //              pass ends when the queue drains (with the clock stopped, no new
+  //              conflict can mature into range) and posts a summary.
   useEffect(() => {
-    if (!autoResolve || !cdrMonitoring) {
+    if (autoResolveMode === "off" || !cdrMonitoring) {
       autoTriedRef.current.clear(); // fresh opt-in re-attempts everything
+      setAutoPass(null);
       return;
+    }
+    const upfront = autoResolveMode === "before";
+    autoTriedRef.current.clear();
+    if (upfront) {
+      // Park the clock at the start: `topResolutionFor` plans from `simT`, and
+      // a fix applied to traffic already halfway down the route has far less
+      // room to work with than the same fix planned off-block.
+      autoStateRef.current.pause();
+      autoStateRef.current.seek(0);
+      autoPassCountsRef.current = { fixed: 0, unfixed: 0 };
+      setAutoPass({ fixed: 0, unfixed: 0, done: false });
+    } else {
+      setAutoPass(null);
     }
     let cancelled = false;
     let timer: number | null = null;
@@ -1830,7 +2090,7 @@ export default function MapApp() {
       const t0 = performance.now();
       try {
         const s = autoStateRef.current;
-        const now = simTRef.current;
+        const now = upfront ? 0 : simTRef.current;
         const leadOf = (c: PlanConflict) => c.tCpaAbsSec - now;
         // Soonest CPA first (the queue is pre-sorted), skipping anything already
         // attempted at this lead and anything too close to act on.
@@ -1846,10 +2106,14 @@ export default function MapApp() {
           const dt = Math.round(performance.now() - t0);
           // eslint-disable-next-line no-console
           console.debug(
-            `[auto-resolve] ${pc.id} T−${Math.round(lead / 60)}min → ${m ? m.type + " " + (m.instruction ?? "") : "no fix"} (${dt}ms)`,
+            `[auto-resolve:${autoResolveMode}] ${pc.id} T−${Math.round(lead / 60)}min → ${m ? m.type + " " + (m.instruction ?? "") : "no fix"} (${dt}ms)`,
           );
           if (m) {
             s.commitManeuver(m, { id: pc.id, a: pc.a, b: pc.b });
+            if (upfront) {
+              autoPassCountsRef.current.fixed += 1;
+              setAutoPass({ ...autoPassCountsRef.current, done: false });
+            }
             // Pop a green confirmation of what auto-resolve just did.
             s.toasts.upsert({
               conflictId: pc.id,
@@ -1858,7 +2122,24 @@ export default function MapApp() {
               title: `Auto-resolved · ${s.nameOf(m.target)}`,
               body: m.instruction || "resolution applied",
             });
+          } else if (upfront) {
+            // No validated fix — it stays on the dashboard for manual handling.
+            autoPassCountsRef.current.unfixed += 1;
+            setAutoPass({ ...autoPassCountsRef.current, done: false });
           }
+        } else if (upfront) {
+          // Queue drained: every plan conflict has been fixed or tried once.
+          cancelled = true;
+          const counts = autoPassCountsRef.current;
+          setAutoPass({ ...counts, done: true });
+          s.toasts.upsert({
+            conflictId: AUTO_PASS_TOAST_ID,
+            severity: "MTCD",
+            kind: "auto",
+            title: "Auto-resolve complete · before replay",
+            body: `${counts.fixed} fixed · ${counts.unfixed} left for manual action`,
+          });
+          return;
         }
       } catch (err) {
         // Never let a bad resolution kill the loop or freeze the tab silently.
@@ -1866,14 +2147,23 @@ export default function MapApp() {
         console.error("[auto-resolve] step failed:", err);
       }
       // Keep polling: re-scans surface new conflicts as fixes re-time traffic.
-      if (!cancelled) timer = window.setTimeout(step, AUTO_STEP_MS);
+      // Pace by what this step actually cost (see AUTO_STEP_MAX_MS): a cheap
+      // step comes back next frame, an expensive one leaves the same amount of
+      // time free for the UI before the next.
+      if (!cancelled) {
+        const spentMs = performance.now() - t0;
+        timer = window.setTimeout(
+          step,
+          Math.max(AUTO_STEP_MIN_MS, Math.min(AUTO_STEP_MAX_MS, spentMs)),
+        );
+      }
     };
-    timer = window.setTimeout(step, AUTO_STEP_MS);
+    timer = window.setTimeout(step, AUTO_STEP_MIN_MS);
     return () => {
       cancelled = true;
       if (timer != null) window.clearTimeout(timer);
     };
-  }, [autoResolve, cdrMonitoring]);
+  }, [autoResolveMode, cdrMonitoring, autoPassNonce, flightSetKey]);
 
   // Clear any preview when the open conflict changes, and expire a stale preview
   // after 10 s of sim time (the maneuver geometry it was drawn for has moved on).
@@ -2704,17 +2994,29 @@ export default function MapApp() {
                         >
                           🛬 Arrival sequence
                         </button>
-                        <div className="cdr-menu-sep" role="separator" />
                         <button
                           type="button"
-                          role="menuitemcheckbox"
-                          aria-checked={autoResolve}
-                          className={`cdr-auto-toggle${
-                            autoResolve ? " active" : ""
-                          }`}
-                          onClick={() => setAutoResolve((v) => !v)}
-                          title="Automatically apply the top validated fix to every detected conflict"
+                          role="menuitem"
+                          className={cdrView === "log" ? "active" : ""}
+                          onClick={() => {
+                            setCdrView("log");
+                            setCdrMenuOpen(false);
+                          }}
+                          title="Every encounter of the run: when, who, what kind, and what resolved it"
                         >
+                          🧾 Conflict log
+                          {conflictLogCount.total > 0 && (
+                            <span className="cdr-menu-count">
+                              {conflictLogCount.total}
+                            </span>
+                          )}
+                        </button>
+                        <div className="cdr-menu-sep" role="separator" />
+                        {/* Auto-resolve is a three-way choice, not a switch:
+                            the operator picks WHEN the resolver works — up
+                            front over the whole filed plan, or live as the
+                            replay runs. */}
+                        <div className="cdr-auto-head">
                           <span>🤖 Auto-resolve conflicts</span>
                           <span
                             className={`cdr-auto-pill${
@@ -2723,7 +3025,57 @@ export default function MapApp() {
                           >
                             {autoResolve ? "ON" : "OFF"}
                           </span>
-                        </button>
+                        </div>
+                        <div
+                          className="cdr-auto-modes"
+                          role="group"
+                          aria-label="Auto-resolve conflicts"
+                        >
+                          {AUTO_MODE_OPTIONS.map((o) => (
+                            <button
+                              key={o.mode}
+                              type="button"
+                              role="menuitemradio"
+                              aria-checked={autoResolveMode === o.mode}
+                              className={`cdr-auto-mode${
+                                autoResolveMode === o.mode ? " active" : ""
+                              }`}
+                              onClick={() => {
+                                // Re-picking "Before replay" re-runs the pass
+                                // over whatever is still unresolved.
+                                if (
+                                  o.mode === "before" &&
+                                  autoResolveMode === "before"
+                                ) {
+                                  setAutoPassNonce((n) => n + 1);
+                                } else {
+                                  setAutoResolveMode(o.mode);
+                                }
+                              }}
+                              title={o.hint}
+                            >
+                              <span className="cdr-auto-radio" aria-hidden>
+                                {autoResolveMode === o.mode ? "●" : "○"}
+                              </span>
+                              <span>{o.label}</span>
+                            </button>
+                          ))}
+                        </div>
+                        {autoResolveMode === "before" && autoPass && (
+                          <div
+                            className="cdr-auto-status"
+                            role="status"
+                            aria-live="polite"
+                          >
+                            {autoPass.done
+                              ? `Plan deconflicted · ${autoPass.fixed} fixed${
+                                  autoPass.unfixed > 0
+                                    ? ` · ${autoPass.unfixed} need manual action`
+                                    : ""
+                                } — pick again to re-run`
+                              : `Resolving the filed plan… ${autoPass.fixed} fixed`}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -2972,6 +3324,12 @@ export default function MapApp() {
               toasts={toasts.toasts}
               onDismiss={toasts.dismiss}
               onOpen={(id) => {
+                // The "before replay" pass summary is not a conflict — it
+                // has nothing to open, so clicking it just clears it.
+                if (id === AUTO_PASS_TOAST_ID) {
+                  toasts.dismiss(id);
+                  return;
+                }
                 // An auto-resolve toast → open its "from → to" detail + highlight
                 // the new route on the map. A conflict alert → open the stack.
                 if (appliedFixes.some((f) => f.conflictId === id)) {
@@ -3105,6 +3463,8 @@ export default function MapApp() {
                       onPreview={handlePreview}
                       onApply={handleApply}
                       blockers={planAdvisory.blockers}
+                      blockerConflictOf={blockerConflictOf}
+                      onWorkBlocker={workBlocker}
                       widened={planAdvisory.widened}
                     />
                   ) : null
@@ -3116,7 +3476,11 @@ export default function MapApp() {
             {cdrView === "dashboard" && cdrMonitoring && (
               <ConflictPanel
                 planConflicts={planConflicts}
-                simT={sim.simT}
+                // The THROTTLED clock, not the animation one. Its countdowns
+                // read to the second, but `sim.simT` changes every frame — and
+                // at x100 with a day of traffic loaded that redrew the whole
+                // list, airspace labels and all, 60 times a second.
+                simT={airspaceSec}
                 nameOf={nameOf}
                 appliedFixes={appliedFixes}
                 sectorOf={(c) => sectorOfConflict(c, c.tCpaAbsSec)}
@@ -3166,6 +3530,19 @@ export default function MapApp() {
               />
             )}
 
+            {/* The run's record — every encounter, and what answered it. */}
+            {cdrView === "log" && cdrMonitoring && (
+              <ConflictLogPanel
+                log={conflictLog}
+                utc={logUtc}
+                onSelect={(id) => {
+                  setSelectedConflictId(id);
+                  setCdrView("dashboard");
+                }}
+                onClose={() => setCdrView(null)}
+              />
+            )}
+
             {/* Before/after Preview & fix modal. */}
             {previewModalOpen &&
               (() => {
@@ -3176,6 +3553,10 @@ export default function MapApp() {
                 if (ia < 0 || ib < 0) return null;
                 return (
                   <PreviewModal
+                    // Everything the modal holds — which aircraft to maneuver,
+                    // the manual values — belongs to ONE pair. Re-aiming it at
+                    // a blocker's conflict has to start it fresh.
+                    key={c.id}
                     conflict={c}
                     trajA={trajectories[ia]}
                     trajB={trajectories[ib]}
@@ -3184,6 +3565,21 @@ export default function MapApp() {
                     simT={sim.simT}
                     planSuggestions={planSuggestions}
                     planBlockers={planAdvisory.blockers}
+                    blockerConflictOf={blockerConflictOf}
+                    onWorkBlocker={(b, id) => {
+                      // Already in the screen a conflict is worked from, so
+                      // just re-aim it at the blocker's pair (the `key` below
+                      // remounts it, so none of its manual state carries over).
+                      // With no conflict to open, step aside for the map.
+                      setPreviewIdx(null);
+                      if (id) {
+                        setSelectedConflictId(id);
+                        return;
+                      }
+                      setPreviewModalOpen(false);
+                      const i = idxByFlightKey.get(b.id);
+                      if (i != null) lockOnFlight(i);
+                    }}
                     nameOf={nameOf}
                     config={cdr.config}
                     allFlights={planFlights}

@@ -1,7 +1,7 @@
 /**
  * The departure-conflict sample (dummy_data/departure_conflict_flights.csv) is
  * a fixture with a claim attached: import it and the panel must raise exactly
- * four departure conflicts, one per Doc 4444 rule, and stay silent on the three
+ * six departure conflicts, one per Doc 4444 rule, and stay silent on the three
  * control pairs. A fixture nobody checks drifts away from the engine, so this
  * runs the file through the SAME parser the upload button uses and then through
  * the same rules the panel calls, mapping plans to departures the way
@@ -65,7 +65,7 @@ describe("departure_conflict_flights dummy file", () => {
   it("imports as plans, not as trajectories", () => {
     // The panel must open these as editable tabs and warn — NOT load them
     // as-is, which is what happens when a file carries 4D samples.
-    expect(records).toHaveLength(16);
+    expect(records).toHaveLength(18);
     expect(records.every((r) => r.trajectory == null)).toBe(true);
     for (const r of records) {
       expect(r.callsign).toMatch(/^[A-Z]{3}\d+$/);
@@ -76,9 +76,10 @@ describe("departure_conflict_flights dummy file", () => {
     }
   });
 
-  it("raises exactly the five designed conflicts, worst first", () => {
+  it("raises exactly the six designed conflicts, worst first", () => {
     expect([...byPair.keys()].sort()).toEqual([
       "MAS701|QTR700",
+      "SIA320|NOK321",
       "SIA500|JAL501",
       "TGW400|THA401",
       "THA100|THA200",
@@ -106,6 +107,16 @@ describe("departure_conflict_flights dummy file", () => {
     expect(c.requiredSec).toBe(120);
     expect(c.gapSec).toBe(60);
     expect(c.runway).toBe("RW19");
+  });
+
+  it("A380 provisions — a MEDIUM behind a SUPER needs 3 min, not 2", () => {
+    // A minute longer than the HEAVY row above it, which is the whole reason
+    // the wake table is written out pair by pair rather than derived.
+    const c = byPair.get("SIA320|NOK321")!;
+    expect(c.requiredBy).toBe("wake");
+    expect(c.requiredSec).toBe(180);
+    expect(c.gapSec).toBe(120); // filed 2 min apart: exactly a minute short
+    expect(c.reason).toContain("3 min");
   });
 
   it("§5.6.3 — climbing through the level ahead needs 5 min", () => {

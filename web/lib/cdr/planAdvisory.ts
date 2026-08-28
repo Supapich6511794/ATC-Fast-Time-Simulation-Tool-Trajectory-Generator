@@ -49,7 +49,11 @@ import {
   type PlanFlight,
 } from "./planScan";
 import type { ManeuverResolution } from "./types";
-import { holdLegSec, holdLoopSec, type Holding } from "@/lib/holdings";
+import {
+  holdLegSec,
+  holdLoopSec,
+  type Holding,
+} from "@/lib/holdings";
 
 interface Sample extends AircraftState {
   t: number;
@@ -183,6 +187,9 @@ const APPROACH_PROTECT_SEC = 600;
 /** Traffic that stopped candidates from being offered: how many it blocked and
  *  how close the blocked maneuver would have come to it. */
 export interface Blocker {
+  /** The blocker's flight key. Naming the aircraft is only half an answer —
+   *  the panel has to be able to OPEN it, and a callsign is not a handle. */
+  id: string;
   callsign: string;
   /** Candidates this aircraft rejected. */
   count: number;
@@ -272,6 +279,13 @@ function searchEnvelope(
     const curAlt = stateNow.altitudeFt;
     const curTrkNow = stateNow.track;
     const targetCallsign = traj.meta.callsign;
+    // Only the traffic a maneuvered version of this flight could actually
+    // reach. Every candidate is re-scanned against this list, hundreds of times
+    // per conflict, so with a whole day loaded the unfiltered list turned each
+    // conflict into a second of frozen main thread.
+    // Every other flight. Measured at 2 000 flights this is NOT the hot part
+    // — `pairConflict` rejects a pair that cannot meet in a few comparisons
+    // (see `cannotMeet` in planScan), so the sweep costs tens of microseconds.
     const others = flights.filter((f) => f.id !== targetId);
     const origDur = totalSeconds(traj.points);
 
@@ -313,7 +327,7 @@ function searchEnvelope(
       const afterFlight = flightFrom(targetId, modified, offset);
 
       // 3-D clearance vs EVERY other flight (level changes clear vertically).
-      let offenderCallsign: string | undefined;
+      let offender: PlanFlight | undefined;
       let tightestNm = Infinity;
       let clear = true;
       for (const o of others) {
@@ -322,7 +336,7 @@ function searchEnvelope(
           clear = false;
           if (c.dCpaNm < tightestNm) {
             tightestNm = c.dCpaNm;
-            offenderCallsign = o.callsign;
+            offender = o;
           }
         }
       }
@@ -330,15 +344,16 @@ function searchEnvelope(
       // aircraft is in the way, and the controller can only act on that if we
       // say who. Tally the offender before dropping the candidate.
       if (!clear) {
-        if (offenderCallsign) {
-          const b = blocked.get(offenderCallsign) ?? {
-            callsign: offenderCallsign,
+        if (offender) {
+          const b = blocked.get(offender.id) ?? {
+            id: offender.id,
+            callsign: offender.callsign,
             count: 0,
             tightestNm: Infinity,
           };
           b.count += 1;
           b.tightestNm = Math.min(b.tightestNm, tightestNm);
-          blocked.set(offenderCallsign, b);
+          blocked.set(offender.id, b);
         }
         return null;
       }
@@ -363,7 +378,7 @@ function searchEnvelope(
         trackDeg,
         newGsKt: type === "speed" ? resolution.gsKt : undefined,
         newAltFt: type === "flightlevel" ? resolution.altFt : undefined,
-        recheck: { clear: true, minSepNm: newDCpaNm, offenderCallsign },
+        recheck: { clear: true, minSepNm: newDCpaNm, offenderCallsign: offender?.callsign },
       });
       if (report.verdict === "reject") return null;
 
@@ -506,6 +521,12 @@ function searchEnvelope(
         return bestT;
       };
       const heldIdents = new Set<string>();
+      // NOT gated to the STAR, unlike the arrival ladder's hold
+      // (`makeArrivalHoldGate`). That restriction is about the arrival
+      // SEQUENCE — spacing a landing bank, where the instrument is the STAR and
+      // holding a departure is not a thing anyone does. Here the hold is a
+      // conflict resolution, and the resolver is allowed to reach for any
+      // published fix ahead of the aircraft that opens the CPA.
       for (const w of traj.route) {
         const h = holdings.get(w.ident);
         if (!h || heldIdents.has(w.ident)) continue;

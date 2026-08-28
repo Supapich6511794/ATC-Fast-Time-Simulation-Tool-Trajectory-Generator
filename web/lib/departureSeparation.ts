@@ -39,8 +39,10 @@
  *           visual/operational condition — so it is an ANSP parameter here.
  *
  * SUPER (A380) is not in the 16th edition's §5.8.3, which predates the
- * category; it is treated as "at least HEAVY" for the pairs below, matching
- * how `lib/cdr/config.ts` handles SUPER in the distance-based matrix.
+ * category. It carries ICAO's separate A380 provisions instead — 2 minutes for
+ * a HEAVY behind it, 3 for a MEDIUM or LIGHT — set out in `WAKE_SEC` below,
+ * the same way `lib/cdr/config.ts` gives SUPER its own row in the
+ * distance-based matrix.
  */
 
 import { wakeCategoryOf, type WakeCategory } from "@/lib/cdr/wake";
@@ -131,27 +133,50 @@ export interface DepartureRequirement {
   divergingTracks: boolean;
 }
 
-/** Categories that outrank another for wake purposes, heaviest first. */
-const HEAVIER: Record<WakeCategory, number> = {
-  SUPER: 3,
-  HEAVY: 2,
-  MEDIUM: 1,
-  LIGHT: 0,
+/**
+ * Time-based wake-turbulence minima between two DEPARTURES off the same
+ * runway, by category pair (seconds). Indexed [aircraft ahead][aircraft
+ * behind]; a pair with no entry has no wake minimum at all.
+ *
+ *   SUPER  -> HEAVY            2 min
+ *   SUPER  -> MEDIUM / LIGHT   3 min
+ *   HEAVY  -> MEDIUM / LIGHT   2 min
+ *   MEDIUM -> LIGHT            2 min
+ *   MEDIUM -> MEDIUM           nothing here; the runway and the tracks still
+ *                              have their own minima (§7.9.2, §5.6, §8.7.3)
+ *
+ * Doc 4444 §5.8.3.1 is the 2-minute rule and the 16th edition writes it for
+ * HEAVY and MEDIUM only — the SUPER row comes from ICAO's separate A380
+ * provisions, which give the lighter categories a minute more behind it. The
+ * table is spelled out rather than derived from a "is the follower lighter?"
+ * test precisely because that shortcut gets the SUPER row wrong: it made an
+ * A380 followed by a 737 a 2-minute wait instead of 3.
+ */
+const WAKE_SEC: Partial<
+  Record<WakeCategory, Partial<Record<WakeCategory, number>>>
+> = {
+  SUPER: { HEAVY: 120, MEDIUM: 180, LIGHT: 180 },
+  HEAVY: { MEDIUM: 120, LIGHT: 120 },
+  MEDIUM: { LIGHT: 120 },
 };
 
-/** Wake minimum (s) for a departure pair — §5.8.3.1 / §5.8.3.2. Zero when the
- *  pair is not one the paragraph names (e.g. MEDIUM behind MEDIUM). */
+/** §5.8.3.2: the same pairs, off an intermediate part of the runway, wait
+ *  three minutes. It raises the 2-minute pairs and leaves the 3-minute ones
+ *  where they are — the paragraph predates the SUPER category and there is no
+ *  published figure to raise those to. */
+const INTERSECTION_SEC = 180;
+
+/** Wake minimum (s) for a departure pair — §5.8.3.1 / §5.8.3.2 and the A380
+ *  provisions. Zero when the pair is not one they name (MEDIUM behind MEDIUM,
+ *  or anything behind a lighter aircraft). */
 function wakeSecFor(
   leader: WakeCategory,
   follower: WakeCategory,
   intersection: boolean,
 ): number {
-  // "LIGHT or MEDIUM behind HEAVY" and "LIGHT behind MEDIUM" — i.e. the
-  // follower is lighter than the leader AND the leader is at least MEDIUM.
-  const applies =
-    HEAVIER[follower] < HEAVIER[leader] && HEAVIER[leader] >= HEAVIER.MEDIUM;
-  if (!applies) return 0;
-  return intersection ? 180 : 120;
+  const base = WAKE_SEC[leader]?.[follower] ?? 0;
+  if (base === 0) return 0;
+  return intersection ? Math.max(base, INTERSECTION_SEC) : base;
 }
 
 /** Initial great-circle track (° true) from one point to another. What a PLAN
@@ -256,12 +281,16 @@ export function departureRequirement(
       `runways — laterally separated immediately after take-off (Doc 4444 §5.6.1)`;
   } else if (wakeSec === requiredSec && wakeSec > 0) {
     requiredBy = intersection ? "wake-intersection" : "wake";
+    // The interval is quoted from the rule that produced it, not written into
+    // the sentence: SUPER pairs are 3 minutes where HEAVY pairs are 2.
+    const mins = fmtInterval(wakeSec);
     reason = intersection
       ? `${fCat} behind ${lCat} from an intermediate part of the runway — ` +
-        `3 min (Doc 4444 §5.8.3.2)`
+        `${mins} (Doc 4444 §5.8.3.2)`
       : sameRunwayPair
-        ? `${fCat} behind ${lCat} on the same runway — 2 min (Doc 4444 §5.8.3.1)`
-        : `${fCat} behind ${lCat} and the departure paths cross — 2 min ` +
+        ? `${fCat} behind ${lCat} on the same runway — ${mins} ` +
+          `(Doc 4444 §5.8.3.1)`
+        : `${fCat} behind ${lCat} and the departure paths cross — ${mins} ` +
           `(Doc 4444 §5.8.3.1 c)/d))`;
   } else if (trackSec === requiredSec && trackSec > 0) {
     requiredBy = trackRule;

@@ -36,8 +36,8 @@ from trajectory_sim.vectors import (
 )
 
 _DATA = Path(__file__).resolve().parents[2] / "web" / "public" / "data"
-_STAR_SRC = _DATA / "star" / "star_waypoint.geojson"
-_PBN_SRC = _DATA / "pbn" / "pbn_waypoint.geojson"
+_STAR_SRC = _DATA / "aixm" / "star_waypoint.geojson"
+_PBN_SRC = _DATA / "aixm" / "pbn_waypoint.geojson"
 
 
 @pytest.fixture(scope="module")

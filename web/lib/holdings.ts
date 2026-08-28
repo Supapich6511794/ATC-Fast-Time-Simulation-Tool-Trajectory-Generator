@@ -88,6 +88,63 @@ export function holdLoopSec(h: Holding, gsKt: number): number {
 }
 
 /** One straight-leg duration (s) — half a loop's legs. */
+/**
+ * When a flight may first be offered a HOLD, in seconds on its own clock.
+ *
+ * Holding is an arrival instrument. A departure is not held — the instruction
+ * a controller gives a climbing aircraft is a heading, a level or a speed, not
+ * a racetrack — so a published holding fix the flight happens to cross on the
+ * way up, or in the cruise, is not something to propose. The arrival begins at
+ * top of descent, and that is the gate.
+ *
+ * Returns null when the flight has no descent point at all (no vertical
+ * profile); the caller then falls back to the sample's own phase.
+ */
+/**
+ * May the route fix at `routeIndex` carry an arrival hold?
+ *
+ * "On the arrival" means ON THE STAR. The server names the fix the procedure
+ * starts at (`meta.starEntry`), which is the only way to tell — the route
+ * reaches the client as a flat ident list with nothing marking where the
+ * en-route portion ends. Top of descent is the fallback for a flight with no
+ * STAR (or an older payload that carries no entry fix), and it is a looser
+ * gate: on a 55-minute VTCC-VTBS leg it falls ~8 minutes and several en-route
+ * fixes before the STAR is actually joined. Phase is the last resort, for a
+ * trajectory with no vertical profile at all.
+ */
+export function makeArrivalHoldGate(traj: {
+  points?: { epoch_ts: string }[];
+  route?: { ident: string }[];
+  profile?: { tod?: { epochTs: string } | null } | null;
+  meta?: { starEntry?: string } | null;
+}): (routeIndex: number, tSec: number, phase?: string | null) => boolean {
+  const entry = traj.meta?.starEntry;
+  const starIdx = entry
+    ? (traj.route ?? []).findIndex((w) => w.ident === entry)
+    : -1;
+  if (starIdx >= 0) return (routeIndex) => routeIndex >= starIdx;
+
+  const fromSec = holdEligibleFromSec(traj);
+  if (fromSec != null) return (_routeIndex, tSec) => tSec >= fromSec;
+
+  return (_routeIndex, _tSec, phase) => phase === "descent";
+}
+
+
+export function holdEligibleFromSec(traj: {
+  points?: { epoch_ts: string }[];
+  profile?: { tod?: { epochTs: string } | null } | null;
+}): number | null {
+  const tod = traj.profile?.tod;
+  const first = traj.points?.[0];
+  if (!tod || !first) return null;
+  const t0 = Date.parse(first.epoch_ts);
+  const tTod = Date.parse(tod.epochTs);
+  if (!Number.isFinite(t0) || !Number.isFinite(tTod)) return null;
+  return (tTod - t0) / 1000;
+}
+
+
 export function holdLegSec(h: Holding, gsKt: number): number {
   return h.legLengthNm != null && gsKt > 0
     ? (h.legLengthNm / gsKt) * 3600
@@ -150,8 +207,8 @@ export interface HoldingPattern {
   procedure: string | null;
 }
 
-const ILS_WP_URL = "/data/ils/ils_wp.geojson";
-const PBN_WP_URL = "/data/pbn/true pbn wp.geojson";
+const ILS_WP_URL = "/data/aixm/ils_wp.geojson";
+const PBN_WP_URL = "/data/aixm/pbn_waypoint.geojson";
 
 /** ICAO maximum holding speeds (kt) by altitude band — the fallback when a
  *  hold codes no speed, used to size the leg and the turn radius. */

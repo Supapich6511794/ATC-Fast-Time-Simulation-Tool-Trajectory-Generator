@@ -313,6 +313,27 @@ describe("planResolutions — blocked-by diagnostics", () => {
     expect(shadow.tightestNm).toBeLessThan(5); // it really was a near-miss
   });
 
+  it("hands back a flight key, not just a name to read", () => {
+    // "Resolve SHADOW first" is advice until the panel can OPEN SHADOW, and a
+    // callsign is not a handle: the id is what the conflict lists are keyed by.
+    const { flights, trajById } = headOnWithShadows([
+      { id: "SHADOW", altFt: 37000 },
+    ]);
+    const [conflict] = scanFlightPlanConflicts(flights, cfg);
+    const res = planResolutions({
+      conflict,
+      flights,
+      trajById,
+      simT: 0,
+      cfg,
+      restricted: [],
+    });
+    const shadow = res.blockers.find((b) => b.callsign === "SHADOW")!;
+    expect(shadow.id).toBeTruthy();
+    // …and it resolves back to a real flight in the very list that was scanned.
+    expect(flights.find((f) => f.id === shadow.id)?.callsign).toBe("SHADOW");
+  });
+
   it("keeps the plain generator's output identical (diagnostics are additive)", () => {
     const { flights, trajById } = headOn();
     const [conflict] = scanFlightPlanConflicts(flights, cfg);

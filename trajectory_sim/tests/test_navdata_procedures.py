@@ -262,6 +262,60 @@ def test_runway_both_fallback_does_not_cross_pairs() -> None:
         sel("X", "P", {"RW09B": []}, "RW27L", "runway")
 
 
+def test_runway_named_common_legs_form_a_runway_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A "common" leg that names a runway is a RUNWAY leg.
+
+    The Thai DFD export codes each runway-specific SID variant as ONE
+    route_type "5" group and states the runway only in
+    transition_identifier — VTBD KASN1B is the RW03L variant, KASN3C the
+    RW21L one. Read literally by route_type both are all-common, the
+    procedure has no runway group at all, and a requested runway has nothing
+    to be checked against: KASN1B resolved happily for RW21L, so the
+    suggestion endpoint filed a SID off a runway it is not coded for.
+    """
+    import trajectory_sim.navdata as navdata_mod
+
+    rows = [
+        dict(route_type="5", transition_identifier="RW03L", seqno=10,
+             waypoint_identifier="LIBRA", waypoint_latitude=13.70,
+             waypoint_longitude=100.60, path_termination="TF",
+             altitude_description="", altitude1=None, altitude2=None,
+             speed_limit=0, speed_limit_description="", turn_direction=""),
+    ]
+    sids = _proc_df(rows, "VTBD", "KASN1B")
+
+    def fake_read_file(path: object, layer: str) -> pd.DataFrame:
+        if layer == "waypoints":
+            return _waypoints_gdf()
+        if layer == "sids":
+            return sids.copy()
+        if layer == "stars":
+            return _proc_df([], "VTBD", "NONE")
+        raise ValueError(f"no layer {layer}")
+
+    monkeypatch.setattr(navdata_mod.gpd, "read_file", fake_read_file)
+    nav = NavData("ignored.gpkg")
+
+    # The runway it IS coded for resolves, and says so.
+    proc = nav.lookup_procedure(
+        "VTBD", "KASN1B", proc_type=ProcedureType.SID, runway="RW03L"
+    )
+    assert proc.runway == "RW03L"
+    assert [w.ident for w in proc.waypoints()] == ["LIBRA"]
+    # …and the other end of the field does not.
+    with pytest.raises(ProcedureNotFoundError):
+        nav.lookup_procedure(
+            "VTBD", "KASN1B", proc_type=ProcedureType.SID, runway="RW21L"
+        )
+    # Asked for nothing in particular it still resolves — the reclassification
+    # must not make a single-runway procedure unusable without a runway.
+    assert nav.lookup_procedure(
+        "VTBD", "KASN1B", proc_type=ProcedureType.SID
+    ).runway == "RW03L"
+
+
 def test_unknown_procedure_lists_available(navdata: NavData) -> None:
     with pytest.raises(ProcedureNotFoundError) as exc:
         navdata.lookup_procedure("VTBS", "NOPE9X")

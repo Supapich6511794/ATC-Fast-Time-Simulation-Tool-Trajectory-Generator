@@ -91,6 +91,24 @@ _MAX_LEG_FRACTION = 0.45
 #: left untouched.
 _MAX_FLYBY_CUT_NM = 0.5
 
+#: A fly-by may be tightened by the two caps above, but only so far: past
+#: this fraction of the nominal radius the aircraft would have to bank
+#: harder than it ever does (0.8 x nominal is 25 deg -> 30 deg). A corner
+#: that cannot be cut inside that budget is not a fly-by at all — it is
+#: flown OVER and captured, which is what a 150 deg downwind-to-base turn
+#: really is. Without this floor the caps kept shrinking the radius until
+#: the turn became a hairpin: a 150 deg corner came out at 0.28 NM radius,
+#: an 80 deg bank, drawn as a spike on the map.
+#: The hardest a cap-tightened turn may be banked. PANS-OPS designs to 25
+#: deg and that is what the nominal radius uses; an FMS will bank harder to
+#: make a close fix, but not past this. The floor radius is the nominal
+#: scaled by tan(nominal)/tan(max) — 0.67 x, i.e. a turn half again as
+#: tight, and no tighter.
+MAX_TURN_BANK_DEG = 35.0
+_MIN_RADIUS_FRACTION = math.tan(math.radians(DEFAULT_BANK_DEG)) / math.tan(
+    math.radians(MAX_TURN_BANK_DEG)
+)
+
 
 def signed_turn_deg(from_track_deg: float, to_track_deg: float) -> float:
     """Course change in (-180, 180]: negative = left, positive = right."""
@@ -172,6 +190,7 @@ def flyby_arc(
     next_lon: float,
     radius_nm: float,
     step_deg: float = _ARC_STEP_DEG,
+    min_radius_nm: float | None = None,
 ) -> list[tuple[float, float]]:
     """The corner-cutting arc an aircraft flies *through* an ordinary fix.
 
@@ -201,6 +220,10 @@ def flyby_arc(
     """
     if radius_nm <= 0 or step_deg <= 0:
         return []
+    # The tightest this particular turn may be flown. Everything below
+    # narrows the radius to make the corner fit; this is the floor.
+    if min_radius_nm is None:
+        min_radius_nm = radius_nm * _MIN_RADIUS_FRACTION
 
     inbound_deg = compute_bearing(prev_lat, prev_lon, fix_lat, fix_lon)
     outbound_deg = compute_bearing(fix_lat, fix_lon, next_lat, next_lon)
@@ -231,7 +254,20 @@ def flyby_arc(
     if sec_half > 1.0 and radius_nm * (sec_half - 1.0) > _MAX_FLYBY_CUT_NM:
         radius_nm = _MAX_FLYBY_CUT_NM / (sec_half - 1.0)
         tangent_nm = radius_nm * math.tan(half)
+    # Both caps above shape the arc for the ROUTE's sake — keeping it near
+    # its fix and clear of the neighbouring turn. Neither may override what
+    # the aircraft can physically fly, so the radius comes back up to the
+    # bank floor here. (It is what turned a 150 deg corner into a 0.28 NM
+    # hairpin at 80 deg of bank: the cut cap alone forces R <= 0.175 NM at
+    # that angle, and nothing was checking the result was still a turn.)
+    radius_nm = max(radius_nm, min_radius_nm)
+    tangent_nm = radius_nm * math.tan(half)
     if radius_nm <= 0:
+        return []
+    # …and if the corner cannot absorb even that, it is not a fly-by at all:
+    # hand it back so the caller flies OVER the fix and captures the next leg,
+    # which is how a near-reversal is really flown.
+    if tangent_nm > max_tangent_nm:
         return []
 
     # Roll in `tangent_nm` short of the fix, with the centre abeam.
@@ -309,6 +345,12 @@ def turn_arc(
     if cos_psi > 0:
         # Stay clear of the tangent-less limit, or the roll-out point sits at the
         # very edge and the geometry is numerically fragile.
+        #
+        # No bank floor here, unlike the fly-by. A capture is already the last
+        # resort — the fly-by has handed the corner over — and its alternative
+        # is not a wider turn, it is no turn at all: the raw corner, pivoted on
+        # the spot. VTSP's ANPU1D turns 94 deg at BARON onto a fix 1.7 NM away,
+        # and a hard turn there is closer to the truth than an instant one.
         radius_nm = min(radius_nm, 0.9 * to_target_nm / (2.0 * cos_psi))
     if radius_nm <= 0:
         return []

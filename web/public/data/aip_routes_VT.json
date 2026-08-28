@@ -1,6 +1,6 @@
 {
   "_comment": "Predefined AIP flight-planning routes (ENR 1.10), scraped by scripts/ingest_aip_routes.py. route = published fixes/airways only (no ADEP/ADES ICAO); directional; rnav split; conditional options carry a 'condition' note. Entries with a 'via' field are overfly-mix routes — synthesized for a pair with no direct filed route by joining its two halves at the named overfly hub fix (e.g. VTCC->VTSP = PANTA Y7 BKK Y8 SAVSA, via BKK).",
-  "airac": "2026-06-11",
+  "airac": "2026-08-06",
   "routes": [
     {
       "adep": "VTBD",

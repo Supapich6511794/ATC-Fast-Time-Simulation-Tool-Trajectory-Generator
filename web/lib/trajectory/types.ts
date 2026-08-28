@@ -127,6 +127,10 @@ export interface TrajectoryResult {
     sid?: string;
     depRwy?: string;
     star?: string;
+    /** Ident of the STAR's first fix on this route — where the arrival begins.
+     *  The route is a flat ident list, so this is the only way to tell which of
+     *  its fixes the arrival procedure contributed. */
+    starEntry?: string;
     approach?: string;
     /** Landing runway and its threshold — what arrival sequencing measures
      *  spacing against. The client has no runway database of its own. */

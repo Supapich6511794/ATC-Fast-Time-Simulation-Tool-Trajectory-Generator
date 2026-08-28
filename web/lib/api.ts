@@ -90,6 +90,7 @@ interface ApiPayload {
     sid?: string | null;
     dep_rwy?: string | null;
     star?: string | null;
+    star_entry?: string | null;
     approach?: string | null;
     arr_rwy?: string | null;
     arr_threshold?: { lat: number; lon: number } | null;
@@ -318,6 +319,7 @@ function mapPayload(p: ApiPayload): GenerateResponse {
       sid: p.meta.sid ?? undefined,
       depRwy: p.meta.dep_rwy ?? undefined,
       star: p.meta.star ?? undefined,
+      starEntry: p.meta.star_entry ?? undefined,
       approach: p.meta.approach ?? undefined,
       arrRwy: p.meta.arr_rwy ?? undefined,
       arrThreshold: p.meta.arr_threshold ?? undefined,

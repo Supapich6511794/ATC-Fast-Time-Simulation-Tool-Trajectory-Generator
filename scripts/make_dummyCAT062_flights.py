@@ -69,9 +69,9 @@ AIP_PATH = _ROOT / "web" / "public" / "data" / "aip_VT.json"
 ROUTES_PATH = _ROOT / "web" / "public" / "data" / "aip_routes_VT.json"
 CAT062_PATH = _ROOT / "web" / "Data" / "cat062_20251223.csv"
 
-_SID_LINE = _ROOT / "web" / "public" / "data" / "sid" / "sid_line_thai.geojson"
-_STAR_LINE = _ROOT / "web" / "public" / "data" / "star" / "star_line.geojson"
-_PBN_WPTS = _ROOT / "web" / "public" / "data" / "pbn" / "pbn_waypoint.geojson"
+_SID_LINE = _ROOT / "web" / "public" / "data" / "aixm" / "sid_line.geojson"
+_STAR_LINE = _ROOT / "web" / "public" / "data" / "aixm" / "star_line.geojson"
+_PBN_WPTS = _ROOT / "web" / "public" / "data" / "aixm" / "pbn_waypoint.geojson"
 
 
 def _load_aip() -> tuple[dict, dict, dict]:

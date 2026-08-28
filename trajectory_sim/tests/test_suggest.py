@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[2]
-_SID = _ROOT / "web" / "public" / "data" / "sid" / "sid_waypoint_thai.geojson"
+_SID = _ROOT / "web" / "public" / "data" / "aixm" / "sid_waypoint.geojson"
 _AIP = _ROOT / "web" / "public" / "data" / "aip_VT.json"
 
 pytestmark = pytest.mark.skipif(

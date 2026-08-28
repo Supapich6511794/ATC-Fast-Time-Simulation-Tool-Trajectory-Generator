@@ -64,13 +64,46 @@ describe("departureRequirement", () => {
     expect(r.reason).toContain("§5.8.3.2");
   });
 
-  it("treats SUPER as at least HEAVY for the pair test", () => {
+  it("gives a HEAVY 2 min behind a SUPER", () => {
     const r = departureRequirement(
       dep({ actype: "A388" }),
       dep({ id: "p2", actype: "B77W" }),
     );
     expect(r.requiredSec).toBe(120);
     expect(r.requiredBy).toBe("wake");
+  });
+
+  it("gives a MEDIUM or LIGHT 3 min behind a SUPER, not 2", () => {
+    // The A380 provisions are a minute longer than §5.8.3.1's HEAVY row, and a
+    // "is the follower lighter?" shortcut cannot express that: an A380 ahead of
+    // a 737 is 3 minutes.
+    for (const actype of ["B738", "C172"]) {
+      const r = departureRequirement(
+        dep({ actype: "A388" }),
+        dep({ id: "p2", actype }),
+      );
+      expect(r.requiredSec).toBe(180);
+      expect(r.requiredBy).toBe("wake");
+      expect(r.reason).toContain("3 min");
+    }
+  });
+
+  it("reads the whole published table, pair by pair", () => {
+    const secs = (lead: string, follow: string) =>
+      departureRequirement(dep({ actype: lead }), dep({ id: "p2", actype: follow }))
+        .minima.wakeSec;
+    // SUPER A388 · HEAVY B77W · MEDIUM A320/B738 · LIGHT C172
+    expect(secs("A388", "B77W")).toBe(120);
+    expect(secs("A388", "A320")).toBe(180);
+    expect(secs("A388", "C172")).toBe(180);
+    expect(secs("B77W", "A320")).toBe(120);
+    expect(secs("B77W", "C172")).toBe(120);
+    expect(secs("A320", "C172")).toBe(120);
+    // No wake minimum for these — the runway and the tracks still have theirs.
+    expect(secs("A320", "B738")).toBe(0);
+    expect(secs("B77W", "A388")).toBe(0);
+    expect(secs("C172", "A388")).toBe(0);
+    expect(secs("A388", "A388")).toBe(0);
   });
 
   it("carries no wake minimum when the follower is not lighter", () => {

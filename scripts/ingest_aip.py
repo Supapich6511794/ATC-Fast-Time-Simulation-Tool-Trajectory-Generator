@@ -119,8 +119,18 @@ _AD_LON_RE = re.compile(
 # span and gets mis-read as the elevation value.
 _SDPARAMS_RE = re.compile(r'<span class="sdParams"[^>]*>.*?</span>', re.S)
 _TAG_RE = re.compile(r"<[^>]+>")
-# First "<number> <ft|m>" pair inside the (cleaned) elevation cell.
-_ELEV_NUM_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*(ft|m)\b")
+# The elevation cell, in the three shapes the AD 2 pages actually use:
+#   VTBS  "8 ft (2 m) / 32.3 C"   feet first, lower case
+#   VTBK  "32 FT / 28.2 C"        feet only, upper case
+#   VTPN  "34 M (113 FT) / 33 C"  METRES first, feet in brackets
+#   VTUN  "222 M (729) / 35 C"    metres first, feet with no unit at all
+# So the unit match has to be case-insensitive (a case-sensitive one silently
+# dropped 11 of 47 aerodromes this cycle), and FEET has to win when the cell
+# publishes both — reading VTPN's leading 34 M as feet puts Nakhon Sawan 79 ft
+# below its own runway.
+_ELEV_LABEL = "Elevation/Reference temperature"
+_ELEV_FT_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*ft\b", re.I)
+_ELEV_M_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*m\b", re.I)
 
 
 def _ssl_ctx() -> ssl.SSLContext:
@@ -268,16 +278,23 @@ def parse_aerodrome_page(html: str) -> dict[str, float] | None:
         return None
 
     elev_ft: float | None = None
-    label = html.find("Elevation/Reference temperature")
+    label = html.find(_ELEV_LABEL)
     if label != -1:
-        cell = _SDPARAMS_RE.sub(" ", html[label : label + 600])
+        start = label + len(_ELEV_LABEL)
+        cell = _SDPARAMS_RE.sub(" ", html[start : start + 600])
         window = _TAG_RE.sub(" ", cell)
-        num = _ELEV_NUM_RE.search(window)
-        if num:
-            value = float(num.group(1))
-            if num.group(2) == "m":
-                value *= _M_TO_FT
-            elev_ft = round(value, 1)
+        # The cell reads "<elevation> / <reference temperature>". Cut at that
+        # separator — the search starts AFTER the label, whose own slash would
+        # otherwise cut the window to nothing — so the row below it (geoid
+        # undulation, also in feet) can never be read as the elevation.
+        cut = window.find("/")
+        value_txt = window[:cut] if 0 < cut < 200 else window
+        ft = _ELEV_FT_RE.search(value_txt)
+        metres = _ELEV_M_RE.search(value_txt)
+        if ft:
+            elev_ft = round(float(ft.group(1)), 1)
+        elif metres:
+            elev_ft = round(float(metres.group(1)) * _M_TO_FT, 1)
 
     out: dict[str, float] = {"lat": lat, "lon": lon}
     if elev_ft is not None:

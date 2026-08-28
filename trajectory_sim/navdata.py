@@ -1345,25 +1345,46 @@ def _truncate_at_mapt(common: list[_RawLeg]) -> list[_RawLeg]:
 def _segment_of(proc_type: ProcedureType, raw: _RawLeg) -> str:
     """Classify a leg into 'runway' | 'common' | 'transition'."""
     rt = raw.route_type.upper()
+    seg: str | None = None
     if proc_type is ProcedureType.SID:
         if rt in _SID_RUNWAY_TYPES:
-            return "runway"
-        if rt in _SID_TRANS_TYPES:
-            return "transition"
-        if rt in _SID_COMMON_TYPES:
-            return "common"
+            seg = "runway"
+        elif rt in _SID_TRANS_TYPES:
+            seg = "transition"
+        elif rt in _SID_COMMON_TYPES:
+            seg = "common"
     elif proc_type is ProcedureType.APPROACH:
         if rt in _APPROACH_TRANS_TYPES:
-            return "transition"
-        if rt in _APPROACH_COMMON_TYPES:
-            return "common"
+            seg = "transition"
+        elif rt in _APPROACH_COMMON_TYPES:
+            seg = "common"
     else:
         if rt in _STAR_RUNWAY_TYPES:
-            return "runway"
-        if rt in _STAR_TRANS_TYPES:
-            return "transition"
-        if rt in _STAR_COMMON_TYPES:
-            return "common"
+            seg = "runway"
+        elif rt in _STAR_TRANS_TYPES:
+            seg = "transition"
+        elif rt in _STAR_COMMON_TYPES:
+            seg = "common"
+    # A "common" leg that names a RUNWAY in its transition_identifier is not
+    # common at all. The Thai DFD export codes each runway-specific SID/STAR
+    # variant as a single route_type 5 group and states the runway only in
+    # transition_identifier — so the procedure ends up with no runway group,
+    # and a requested runway has nothing to be checked against: VTBD KASN1B is
+    # coded RW03L, yet resolved happily for RW21L, and the runway-filtered
+    # picker and the suggestion endpoint both answered with a SID the aircraft
+    # cannot fly off that runway. The transition_identifier is what the source
+    # actually states about this leg; trust it over the route_type bucket.
+    # (APPROACH is exempt: its runway is baked into the name, and its final
+    # segment legitimately runs through RWnn as a *waypoint*, not a group.)
+    if (
+        seg == "common"
+        and proc_type is not ProcedureType.APPROACH
+        and raw.transition
+        and _is_runway_transition(raw.transition)
+    ):
+        return "runway"
+    if seg is not None:
+        return seg
     # Unknown route_type code: infer from the transition_identifier shape.
     tr = raw.transition
     if not tr or tr.upper() == "ALL":

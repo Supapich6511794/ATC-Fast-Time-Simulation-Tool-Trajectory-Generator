@@ -34,7 +34,7 @@ from typing import NamedTuple
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from trajectory_sim.fpl import FlightPlan, parse_eobt, parse_route
@@ -87,6 +87,7 @@ from trajectory_sim.performance import (
 from trajectory_sim.trajectory import RouteConstraint, build_flight_timeline
 from trajectory_sim.turns import (
     MAX_FLYBY_DEG,
+    MIN_TURN_DEG,
     bank_angle_deg,
     flyby_arc,
     signed_turn_deg,
@@ -630,14 +631,16 @@ def cat62_reference() -> dict[str, object]:
 
 
 # --- SID/STAR procedures ----------------------------------------------------
-# Coded terminal procedures come from the DFD GeoJSON exports under
-# web/public/data/{sid,star}/. NavData reads + indexes them on first use.
-_SID_SOURCE = _DATA / "sid" / "sid_waypoint_thai.geojson"
-_STAR_SOURCE = _DATA / "star" / "star_waypoint.geojson"
-_APPROACH_SOURCE = _DATA / "pbn" / "pbn_waypoint.geojson"
+# Coded terminal procedures come from the AIXM 5.1.1 export (AIRAC 2608),
+# converted to the DFD GeoJSON schema by scripts/ingest_aixm_procedures.py.
+# NavData reads + indexes them on first use. The superseded DFD exports are
+# still under web/public/data/{sid,star,pbn,ils}/ for comparison.
+_SID_SOURCE = _DATA / "aixm" / "sid_waypoint.geojson"
+_STAR_SOURCE = _DATA / "aixm" / "star_waypoint.geojson"
+_APPROACH_SOURCE = _DATA / "aixm" / "pbn_waypoint.geojson"
 # ILS / conventional approaches — a fallback so aerodromes with no PBN approach
 # (e.g. VTUN → ILS "I24") are still landable. Merged into the approach layer.
-_ILS_SOURCE = _DATA / "ils" / "ils_wp.geojson"
+_ILS_SOURCE = _DATA / "aixm" / "ils_wp.geojson"
 
 
 @lru_cache(maxsize=1)
@@ -1296,15 +1299,37 @@ def _smooth_turns(
         # just keeps the walk below from indexing off the end of it.
         return list(route_pts), {p[0].upper(): 0.0 for p in route_pts if p[0]}
 
-    def _radius_nm(ident: str, speed_from: str) -> float:
-        """PANS-OPS turn radius at ``ident``: the speed the aircraft is really
-        holding there, banked as far as its segment of operation allows."""
+    def _segment_fix(i: int) -> "_TurnFix | None":
+        """The segment of operation the fix at route index ``i`` is flown in.
+
+        A fix the procedures never described is not an en-route fix at cruise
+        just because nothing was published for it — it is flown where its
+        NEIGHBOURS are. The radar-vector points this module invents (TURN,
+        INTC) are exactly that case: they sit between the STAR's last fix and
+        the approach, at circuit height and approach speed, and taking them for
+        cruise gave them a 6.3 NM turn radius at FL350 — a turn far too wide to
+        fit the 1.3 NM downwind, so no arc could be drawn at all and the map
+        showed the corner raw.
+        """
+        ident = (route_pts[i][0] or "").upper()
         fix = fixes.get(ident)
+        if fix is not None:
+            return fix
+        for j in range(i - 1, -1, -1):
+            back = fixes.get((route_pts[j][0] or "").upper())
+            if back is not None:
+                return back
+        return None
+
+    def _radius_nm(i: int, speed_from: int) -> float:
+        """PANS-OPS turn radius at route index ``i``: the speed the aircraft is
+        really holding there, banked as far as its segment of operation allows."""
+        fix = _segment_fix(i)
         phase = fix.phase if fix else "cruise"
         alt_ft = (fix.alt_ft if fix else None) or (
             rfl_ft if phase == "cruise" else _DEFAULT_TURN_ALT_FT
         )
-        cap = fixes.get(speed_from)
+        cap = _segment_fix(speed_from)
         return turn_radius_nm(
             _turn_speed_kt(actype, alt_ft, cap.speed_kt if cap else None, phase),
             bank_deg=fix.bank_deg if fix else bank_angle_deg("enroute"),
@@ -1335,7 +1360,7 @@ def _smooth_turns(
         # the one on the leg being turned onto; a fly-by straddles the fix and
         # flies its own.
         must_cross = direction is not None or (fix is not None and fix.flyover)
-        radius_nm = _radius_nm(ident, next_ident if must_cross else ident)
+        radius_nm = _radius_nm(i, i + 1 if must_cross else i)
 
         if not must_cross:
             arc = flyby_arc(
@@ -1348,10 +1373,13 @@ def _smooth_turns(
                 anchor.append((ident, len(path) + len(arc) // 2))
                 path.extend(("", lat, lon) for lat, lon in arc)
                 continue
-            # No corner to cut. If it is a near-reversal the fly-by geometry
-            # can't express it — cross the fix and capture the next one instead.
-            # Anything else is already straight: leave the fix where it is.
-            must_cross = abs(corner_deg) > MAX_FLYBY_DEG
+            # The fly-by declined it. Either there is no corner (a couple
+            # of degrees of course-keeping — leave the fix alone), or the
+            # corner is one a fly-by cannot express: a near-reversal, or a
+            # turn so tight the cut would need a bank no aircraft holds.
+            # Those are flown OVER the fix and captured — which is what a
+            # 150 deg downwind-to-base vector turn actually is.
+            must_cross = abs(corner_deg) >= MIN_TURN_DEG
 
         anchor.append((ident, len(path)))
         path.append(route_pts[i])
@@ -1898,6 +1926,17 @@ def _splice_terminal_procedures(
     terminal = {
         "sid": sid_name or None,
         "star": star_name or None,
+        # Where the arrival actually begins: the STAR's first fix. Holding is an
+        # arrival instrument, and "on the arrival" means ON THE STAR — not
+        # merely past top of descent, which on a 55-minute leg falls a good 8
+        # minutes and several en-route fixes before the STAR is joined. The
+        # client has the route as a flat ident list and no way to tell which of
+        # them the procedure contributed, so it is named here.
+        "star_entry": (
+            star_proc.waypoints()[0].ident
+            if star_proc is not None and star_proc.waypoints()
+            else None
+        ),
         "approach": approach_name or None,
         "dep_rwy": _rwy(req.sid_runway, sid_proc),
         "arr_rwy": arr_rwy,
@@ -2635,18 +2674,13 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
             "coordinates": [[lon, lat] for _, lat, lon in route_pts],
         },
     }
-    # Per-point export enrichment — so every download format records, for each
-    # timestamp, the altitude-aware airspace sector the aircraft is in
-    # (`sector`) and the TOC/TOD events. GPKG/GeoJSON pick the columns up
-    # automatically; write_csv adds them to the table.
-    gdf["sector"] = sector_columns(
-        [float(g.x) for g in gdf.geometry],
-        [float(g.y) for g in gdf.geometry],
-        [
-            None if a is None or pd.isna(a) else float(a)
-            for a in gdf["altitude_ft"]
-        ],
-    )
+    # Per-point export enrichment. The TOC/TOD events are free (the indices are
+    # already known), so they go on now. The airspace `sector` does NOT: it is
+    # export-only — the JSON response never carries it — and it is the single
+    # most expensive step in a build (an STRtree query per airspace layer, ~60%
+    # of the time one flight takes). A 2000-flight import would pay that 2000
+    # times over for files almost none of which are ever written, so it is
+    # computed on DOWNLOAD instead (see `_ensure_sector_column`).
     _events = [""] * len(gdf)
     if toc is not None:
         _events[toc_i] = "TOC"
@@ -2683,6 +2717,7 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
             "sid": terminal.get("sid"),
             "dep_rwy": terminal.get("dep_rwy"),
             "star": terminal.get("star"),
+            "star_entry": terminal.get("star_entry"),
             "approach": terminal.get("approach"),
             "arr_rwy": terminal.get("arr_rwy"),
             "arr_threshold": _threshold_json(ades, terminal.get("arr_rwy")),
@@ -2878,7 +2913,7 @@ def _materialise(flight_key: str, ext: str) -> "Path | None":
     bundle = _EXPORT_CACHE.get(flight_key)
     if bundle is None:
         return None
-    gdf = bundle["gdf"]
+    gdf = _ensure_sector_column(bundle["gdf"])
     # Unresolved losses of separation (posted by the client's CD&R scan) become
     # a per-sample `conflict` column, so every format says at WHICH timestamps
     # this flight is below minima and against whom.
@@ -2920,6 +2955,27 @@ def _materialise(flight_key: str, ext: str) -> "Path | None":
         fc["route"] = bundle["route_str"]  # foreign member; handy on re-import
         path.write_text(json.dumps(fc), encoding="utf-8")
     return path
+
+
+def _ensure_sector_column(gdf: object) -> object:
+    """Add the altitude-aware airspace `sector` column, once, on first download.
+
+    Kept off the generate path deliberately: nothing in the API response uses
+    it, and computing it costs more than the rest of the build put together.
+    The column is written back onto the cached GeoDataFrame, so the second and
+    third format of the same flight reuse it.
+    """
+    if "sector" in gdf.columns:  # type: ignore[union-attr]
+        return gdf
+    gdf["sector"] = sector_columns(  # type: ignore[index]
+        [float(g.x) for g in gdf.geometry],  # type: ignore[union-attr]
+        [float(g.y) for g in gdf.geometry],  # type: ignore[union-attr]
+        [
+            None if a is None or pd.isna(a) else float(a)
+            for a in gdf["altitude_ft"]  # type: ignore[index]
+        ],
+    )
+    return gdf
 
 
 def _conflict_labels(
@@ -3046,13 +3102,8 @@ def _points_to_gdf(
         )
     gdf = gpd.GeoDataFrame(records, crs="EPSG:4326", geometry="geometry")
 
-    # Re-derive the same per-point enrichment the generate path adds, so the
-    # download still records the airspace sector + TOC/TOD events.
-    gdf["sector"] = sector_columns(
-        [float(g.x) for g in gdf.geometry],
-        [float(g.y) for g in gdf.geometry],
-        [None if a is None or pd.isna(a) else float(a) for a in gdf["altitude_ft"]],
-    )
+    # Re-derive the same per-point enrichment the generate path adds. The
+    # sector column is added on download, as it is there.
     events = [""] * len(gdf)
     prev = None
     for i, cur in enumerate(list(gdf["phase"])):
@@ -3291,8 +3342,56 @@ class ZipRequest(BaseModel):
     files: list[_ZipFileSpec] = Field(default_factory=list)
 
 
+class PrepareRequest(BaseModel):
+    """POST body for ``/api/export_prepare`` — the same file specs as
+    ``/api/download_zip``, rendered but not sent."""
+
+    files: list[_ZipFileSpec] = Field(default_factory=list)
+
+
+@app.post("/api/export_prepare")
+def export_prepare(req: PrepareRequest) -> dict[str, object]:
+    """Render the requested export files to disk WITHOUT returning them.
+
+    Writing a route's file is the slow half of a download (GDAL writing the
+    GeoPackage), and it happens inside the download request — where the client
+    can only sit on a spinner, because no bytes flow until the whole export is
+    finished. The download dialog therefore renders the routes through here in
+    batches first, which gives it something real to count ("route 8 of 20"),
+    and reports the size each one came to. The download that follows only has
+    to concatenate and ship files that already exist.
+
+    Idempotent: :func:`_materialise` returns an existing file untouched, so
+    preparing then downloading does the work exactly once.
+    """
+    out: list[dict[str, object]] = []
+    valid: list[tuple[str, str]] = []
+    for spec in req.files:
+        ext = spec.ext.lower()
+        if ext in _MEDIA and _safe_key(spec.flight_key):
+            valid.append((spec.flight_key, ext))
+
+    # Same concurrency as the zip endpoint: GDAL/pyogrio release the GIL, so
+    # the per-file writes overlap instead of running strictly back-to-back.
+    with ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 2) + 2)) as ex:
+        materialised = list(
+            ex.map(lambda fe: (fe, _materialise(fe[0], fe[1])), valid)
+        )
+
+    for (flight_key, ext), path in materialised:
+        out.append(
+            {
+                "flight_key": flight_key,
+                "ext": ext,
+                "ready": path is not None,
+                "bytes": path.stat().st_size if path is not None else 0,
+            }
+        )
+    return {"files": out}
+
+
 @app.post("/api/download_zip")
-def download_zip(req: ZipRequest) -> StreamingResponse:
+def download_zip(req: ZipRequest) -> Response:
     if not req.files:
         raise HTTPException(400, "No files requested.")
 
@@ -3337,11 +3436,15 @@ def download_zip(req: ZipRequest) -> StreamingResponse:
     if added == 0:
         raise HTTPException(404, "None of the requested files were found.")
 
-    buf.seek(0)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     archive_name = f"trajectories_{stamp}.zip"
-    return StreamingResponse(
-        iter([buf.getvalue()]),
+    # A plain Response, not StreamingResponse: the archive is already fully in
+    # memory, and Starlette only sets Content-Length for a known-length body.
+    # Without that header the browser cannot show a download percentage (it is
+    # the one download header that IS CORS-safelisted, so the web app can read
+    # it cross-origin).
+    return Response(
+        content=buf.getvalue(),
         media_type="application/zip",
         headers={
             "Content-Disposition": f'attachment; filename="{archive_name}"'
@@ -3480,7 +3583,7 @@ def _combined_geojson_from_files(flight_keys: list[str]) -> bytes:
 
 
 @app.post("/api/download_combined")
-def download_combined(req: CombineRequest) -> StreamingResponse:
+def download_combined(req: CombineRequest) -> Response:
     flight_keys = [fk for fk in req.flight_keys if _safe_key(fk)]
     formats = [f.lower() for f in req.formats if f.lower() in _MEDIA]
     if not flight_keys:
@@ -3508,10 +3611,11 @@ def download_combined(req: CombineRequest) -> StreamingResponse:
 
     # Single format → return that combined file directly. Multiple
     # formats → zip the combined files together.
+    # Plain Responses so each carries a Content-Length — see download_zip.
     if len(formats) == 1:
         ext = formats[0]
-        return StreamingResponse(
-            iter([bytes_for(ext)]),
+        return Response(
+            content=bytes_for(ext),
             media_type=_MEDIA[ext],
             headers={
                 "Content-Disposition": (
@@ -3524,9 +3628,8 @@ def download_combined(req: CombineRequest) -> StreamingResponse:
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for ext in formats:
             zf.writestr(f"combined_{stamp}.{ext}", bytes_for(ext))
-    buf.seek(0)
-    return StreamingResponse(
-        iter([buf.getvalue()]),
+    return Response(
+        content=buf.getvalue(),
         media_type="application/zip",
         headers={
             "Content-Disposition": (

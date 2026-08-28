@@ -526,6 +526,10 @@ def build_flight_timeline(
     #: constrained parts of the terminal area differ), and two refinement passes
     #: are past the point where the table stops moving.
     _INTEG_PASSES = 3
+    #: Distance the along-track table may still move between passes and count
+    #: as converged (NM). 0.005 NM is 9 m — a hundredth of the spacing between
+    #: two output samples, and far below anything the trajectory is read at.
+    _INTEG_TOL_NM = 0.005
 
     _PHASES = (
         (0.0, climb_time_s, climb_distance_nm),
@@ -594,9 +598,19 @@ def build_flight_timeline(
     # Run the fixed point: the first pass integrates the unshaped speed, each
     # later one re-reads the shaped speed at the distances the previous pass
     # produced.
+    #
+    # It is a fixed point, so it is run until it STOPS MOVING rather than a set
+    # number of times: on a normal profile the second pass already lands within
+    # a few metres of the first and the third only repeats it. `_INTEG_PASSES`
+    # stays as the ceiling, for the terminal-area shapes that are still moving.
     _t_tab, _d_tab = _build_tables(None, None)
     for _ in range(max(0, _INTEG_PASSES - 1)):
+        prev_d = _d_tab
         _t_tab, _d_tab = _build_tables(_t_tab, _d_tab)
+        if len(prev_d) == len(_d_tab) and all(
+            abs(a - b) <= _INTEG_TOL_NM for a, b in zip(prev_d, _d_tab)
+        ):
+            break
 
     # Mutual inverses (the table is monotone because speed is always > 0), so a
     # sample placed at a waypoint's time still lands exactly on that waypoint.
