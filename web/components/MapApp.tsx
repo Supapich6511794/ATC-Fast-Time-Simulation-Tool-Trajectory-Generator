@@ -161,6 +161,12 @@ import ConflictLogPanel from "@/components/cdr/ConflictLogPanel";
 import DepartureConflictPanel from "@/components/cdr/DepartureConflictPanel";
 import NotificationPanel from "@/components/cdr/NotificationPanel";
 import SuggestionCards from "@/components/cdr/SuggestionCards";
+import PdrPanel from "@/components/pdr/PdrPanel";
+import {
+  pathFromTrajectory,
+  usePdrCheck,
+  type PdrFlight,
+} from "@/lib/pdr/usePdrCheck";
 
 const LeafletMap = dynamic(() => import("@/components/LeafletMap"), {
   ssr: false,
@@ -946,7 +952,7 @@ export default function MapApp() {
   // dropdown itself is showing. "notifications" = the realtime alert stack;
   // "dashboard" = the strategic 2-column LoS/Fixed board.
   const [cdrView, setCdrView] = useState<
-    "notifications" | "dashboard" | "arrivals" | "log" | null
+    "notifications" | "dashboard" | "arrivals" | "log" | "pdr" | null
   >(
     null,
   );
@@ -1644,6 +1650,78 @@ export default function MapApp() {
     () => restrictedAreasFrom(sectorData.pdr ?? null),
     [sectorData.pdr],
   );
+  // --- PDR route check ------------------------------------------------------
+  // Prohibited/Danger/Restricted areas ARE already tested by the CD&R
+  // constraint engine above, but only as "is this polygon in the way" — it has
+  // no activity times, so it treats every area as permanently hot. This runs
+  // the plan-level check instead: the AIXM timetable says whether each area is
+  // actually active when the flight gets there, and ENR 1.10 says whether the
+  // filed routing is even a published one for the pair. Advisory only; the
+  // suggestion is staged into the generator, never flown automatically.
+  const [pdrSelected, setPdrSelected] = useState<string | null>(null);
+  const [routeHandoff, setRouteHandoff] = useState<{
+    callsign: string;
+    adep: string;
+    ades: string;
+    route: string;
+    nonce: number;
+  } | null>(null);
+
+  const pdrFlights = useMemo<PdrFlight[]>(() => {
+    return trajectories.map((t, i) => {
+      const path = pathFromTrajectory(t.points);
+      const hours = t.stats.timeMinutes / 60;
+      return {
+        flightKey: t.meta.flightKey,
+        callsign: t.meta.callsign,
+        adep: t.meta.adep,
+        ades: t.meta.ades,
+        actype: t.meta.aircraftType,
+        // The route string as filed for THIS combination (a plan can queue
+        // several), which is what the download row carries.
+        filedRoute: downloads[i]?.route ?? "",
+        // The first emitted sample is already an absolute UTC instant, so it
+        // anchors the schedule lookup without re-parsing the EOBT string.
+        eobtMs: path[0]?.timeMs ?? Date.parse(t.meta.eobtIso),
+        rflFt: t.stats.rflFt,
+        gsKt: hours > 0 ? t.stats.distanceNm / hours : 450,
+        path,
+      };
+    });
+  }, [trajectories, downloads]);
+
+  // Enabled whenever there are flights, not just while the panel is open, so
+  // the ⚡ menu can carry the count without the operator opening it first.
+  const pdr = usePdrCheck(pdrFlights, trajectories.length > 0);
+
+  const pdrActionable = useMemo(
+    () =>
+      [...pdr.reports.values()].filter((r) =>
+        r.findings.some((f) => f.severity !== "info"),
+      ).length,
+    [pdr.reports],
+  );
+
+  /** Stage a suggested route on its flight's plan. Deliberately does NOT
+   *  regenerate: the controller reviews the routing in the generator and
+   *  presses Generate themselves. */
+  const handleUseSuggestedRoute = useCallback(
+    (flightKey: string, route: string) => {
+      const t = trajectories.find((x) => x.meta.flightKey === flightKey);
+      if (!t) return;
+      setRouteHandoff({
+        callsign: t.meta.callsign,
+        adep: t.meta.adep,
+        ades: t.meta.ades,
+        route,
+        nonce: Date.now(),
+      });
+      setNav({ kind: "generator" });
+      setCdrView(null);
+    },
+    [trajectories],
+  );
+
   // flightKey → its trajectory + EOBT offset, for building/validating maneuvers.
   const trajById = useMemo(() => {
     const m = new Map<string, { traj: TrajectoryResult; offset: number }>();
@@ -2699,6 +2777,7 @@ export default function MapApp() {
             waypointIdents={routeIdents}
             onDepartureConflicts={setDepConflictState}
             onOpenDepartureConflicts={openDepPanel}
+            routeHandoff={routeHandoff}
           />
         </div>
 
@@ -2827,9 +2906,30 @@ export default function MapApp() {
       )}
 
       <main className="map-area">
-        {error && <div className="status error">⚠ {error}</div>}
+        {/* A failed ACTION (e.g. a rejected downwind extension) must not take
+            the map down with it: once the base data is in, the error shows as
+            a dismissible banner over a still-live map. Only a failure that
+            leaves us with no airways at all keeps the full-area message —
+            there is nothing to draw in that case anyway. */}
+        {error &&
+          (airways ? (
+            <div className="map-error" role="alert">
+              <span>⚠ {error}</span>
+              <button
+                type="button"
+                className="map-error-x"
+                onClick={() => setError(null)}
+                aria-label="Dismiss error"
+                title="Dismiss"
+              >
+                ×
+              </button>
+            </div>
+          ) : (
+            <div className="status error">⚠ {error}</div>
+          ))}
         {isLoading && <div className="status">Loading airway data…</div>}
-        {!error && airways && (
+        {airways && (
           <>
             <NavToolbar
               nav={nav}
@@ -3009,6 +3109,21 @@ export default function MapApp() {
                             <span className="cdr-menu-count">
                               {conflictLogCount.total}
                             </span>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className={cdrView === "pdr" ? "active" : ""}
+                          onClick={() => {
+                            setCdrView("pdr");
+                            setCdrMenuOpen(false);
+                          }}
+                          title="Check each filed route against the prohibited/danger/restricted areas and the published ENR 1.10 routes"
+                        >
+                          🚫 PDR route check
+                          {pdrActionable > 0 && (
+                            <span className="cdr-menu-count">{pdrActionable}</span>
                           )}
                         </button>
                         <div className="cdr-menu-sep" role="separator" />
@@ -3539,6 +3654,33 @@ export default function MapApp() {
                   setSelectedConflictId(id);
                   setCdrView("dashboard");
                 }}
+                onClose={() => setCdrView(null)}
+              />
+            )}
+
+            {/* PDR route check — restricted airspace + published-route rules.
+                Not gated on cdrMonitoring: this reads the FILED PLANS against
+                the AIRAC, so it is answerable the moment a flight exists and
+                has nothing to do with whether live traffic monitoring is on. */}
+            {cdrView === "pdr" && (
+              <PdrPanel
+                flights={pdrFlights.map((f) => ({
+                  flightKey: f.flightKey,
+                  callsign: f.callsign,
+                  adep: f.adep,
+                  ades: f.ades,
+                }))}
+                reports={pdr.reports}
+                loading={pdr.loading}
+                error={pdr.error}
+                validFrom={pdr.validFrom}
+                validTo={pdr.validTo}
+                selectedKey={pdrSelected}
+                onSelect={setPdrSelected}
+                onUseRoute={handleUseSuggestedRoute}
+                // onFocusArea is deliberately not passed: MapApp has no
+                // imperative map-centring seam today, and the panel hides the
+                // locate button when it is absent.
                 onClose={() => setCdrView(null)}
               />
             )}

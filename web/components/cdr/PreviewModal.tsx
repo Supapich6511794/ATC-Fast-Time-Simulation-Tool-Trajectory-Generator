@@ -618,7 +618,14 @@ export default function PreviewModal({
               preferCanvas
               style={{ height: "100%", width: "100%" }}
             >
-              <TileLayer attribution={tiles.attribution} url={tiles.url} />
+              <TileLayer
+                attribution={tiles.attribution}
+                url={tiles.url}
+                className={tiles.className}
+              />
+              {tiles.labelUrl && (
+                <TileLayer url={tiles.labelUrl} className={tiles.labelClassName} />
+              )}
               {/* Before: intruder (magenta) + target (cyan), dim. */}
               <Polyline positions={intrPath} pathOptions={{ color: "#f472b6", weight: 2, opacity: 0.55 }} />
               <Polyline positions={beforeTargetPath} pathOptions={{ color: "#22d3ee", weight: 2, opacity: 0.55 }} />

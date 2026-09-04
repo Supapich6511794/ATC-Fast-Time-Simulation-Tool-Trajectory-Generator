@@ -3192,8 +3192,16 @@ def recache(req: RecacheRequest) -> dict[str, object]:
             if isinstance(wp, str) and wp:
                 fixes.append((wp, float(g.y), float(g.x)))
     gdf = _points_to_gdf(req.flight_key, const, req.points, fixes)
+    # Carry the ORIGINATING request across. Only the flown points change here;
+    # the flight is still the one that request generated, and dropping it would
+    # make every later tactical re-fly of this flight (`/api/extend`) fail with
+    # "not generated with a retained request" — which is exactly what happens
+    # to an arrival that has already had one instruction issued, since issuing
+    # recaches.
     _cache_export(
-        req.flight_key, gdf, bundle["route_str"], bundle["rfl"], bundle["route_feature"]
+        req.flight_key, gdf, bundle["route_str"], bundle["rfl"],
+        bundle["route_feature"],
+        request=bundle.get("request"),  # type: ignore[arg-type]
     )
     return {"ok": True, "flight_key": req.flight_key, "points": len(req.points)}
 

@@ -9162,3 +9162,306 @@ select.fp-input {
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
+
+/* Transient action error (a rejected extend, a layer that failed to load).
+   Unlike `.status`, this floats at the top of the map instead of covering it,
+   never swallows clicks meant for the map, and can be dismissed. */
+.map-error {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(680px, calc(100% - 32px));
+  padding: 8px 10px 8px 12px;
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  border-radius: 8px;
+  background: rgba(30, 12, 16, 0.95);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  color: #fca5a5;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.map-error-x {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 4px;
+  opacity: 0.75;
+}
+
+.map-error-x:hover {
+  opacity: 1;
+}
+
+/* ==========================================================================
+   PDR route check — restricted-airspace + published-route findings.
+   Reuses the .cdr-panel shell (head, close button, empty state) and adds a
+   two-column body: the flight list on the left, the selected flight's
+   findings and suggested routes on the right.
+   ========================================================================== */
+.pdr-panel {
+  width: min(680px, calc(100vw - 32px));
+}
+.pdr-cols {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+.pdr-list {
+  width: 200px;
+  flex: 0 0 auto;
+  border-right: 1px solid #33415566;
+  overflow-y: auto;
+  padding-bottom: 8px;
+}
+.pdr-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.pdr-detail {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding-bottom: 12px;
+}
+
+/* --- flight rows ---------------------------------------------------------- */
+.pdr-flight {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 6px;
+  padding: 7px 10px;
+  border: none;
+  border-left: 3px solid transparent;
+  background: none;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.pdr-flight:hover { background: #33415533; }
+.pdr-flight.active { background: #33415555; }
+.pdr-flight.sev-violation { border-left-color: var(--cdr-los); }
+.pdr-flight.sev-caution { border-left-color: #f59e0b; }
+.pdr-flight.sev-info { border-left-color: #64748b; }
+.pdr-flight-cs { font-weight: 600; }
+.pdr-flight-pair {
+  grid-column: 1;
+  color: var(--muted);
+  font-size: 11px;
+}
+.pdr-flight-state {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+.pdr-ok { color: #22c55e; font-size: 11px; }
+
+/* --- severity chips ------------------------------------------------------- */
+.pdr-chip {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.pdr-chip.sev-violation { background: #7f1d1d; color: #fecaca; }
+.pdr-chip.sev-caution { background: #78350f; color: #fde68a; }
+.pdr-chip.sev-info { background: #334155; color: #cbd5e1; }
+
+/* --- findings ------------------------------------------------------------- */
+.pdr-findings {
+  list-style: none;
+  margin: 0;
+  padding: 0 12px;
+}
+.pdr-finding {
+  padding: 8px 0;
+  border-bottom: 1px solid #33415544;
+}
+.pdr-finding-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pdr-finding-title {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.pdr-finding-locate {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+}
+.pdr-finding-locate:hover { color: var(--text); }
+.pdr-finding-reason {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.pdr-finding-src {
+  margin: 3px 0 0;
+  font-size: 10.5px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* --- suggested routes ----------------------------------------------------- */
+.pdr-sugg-note {
+  margin: 0;
+  padding: 0 12px 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.pdr-sugg {
+  margin: 0 12px 8px;
+  padding: 8px 10px;
+  border: 1px solid #33415588;
+  border-radius: 8px;
+  background: #0f172a44;
+}
+.pdr-sugg-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.pdr-sugg-route {
+  font-size: 12px;
+  font-weight: 600;
+  word-break: break-word;
+}
+.pdr-sugg-tag {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.pdr-sugg-why {
+  margin: 5px 0 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text);
+}
+.pdr-sugg-cond {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.pdr-sugg-cond.state-met { color: #4ade80; }
+.pdr-sugg-cond.state-unknown { color: #fbbf24; }
+.pdr-sugg-cond.state-unmet { color: #f87171; }
+.pdr-sugg-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.pdr-sugg-meta .warn { color: #fbbf24; }
+.pdr-sugg-apply {
+  margin-top: 7px;
+  padding: 4px 10px;
+  border: 1px solid #38bdf888;
+  border-radius: 6px;
+  background: #0ea5e922;
+  color: #7dd3fc;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.pdr-sugg-apply:hover { background: #0ea5e944; }
+
+/* --- data-provenance notes ------------------------------------------------ */
+.pdr-stale {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #fbbf24;
+  background: #78350f33;
+  border-bottom: 1px solid #33415566;
+}
+.pdr-error { color: #f87171; }
+.pdr-src-note {
+  margin: 10px 12px 0;
+  font-size: 10.5px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+@media (max-width: 720px) {
+  .pdr-cols { flex-direction: column; }
+  .pdr-list {
+    width: auto;
+    max-height: 160px;
+    border-right: none;
+    border-bottom: 1px solid #33415566;
+  }
+}
+
+/* ==========================================================================
+   Dark basemap colour grading.
+
+   CARTO moved Dark Matter behind an API key, so without NEXT_PUBLIC_CARTO_API_KEY
+   the map falls back to Esri's Dark Gray Canvas, which is far lighter than the
+   tone the airspace overlays were designed against. Measured over Thailand:
+
+                          land fill      water fill
+     CARTO dark_all       #090909 (9)    #262626 (38)
+     Esri Dark Gray       #414143 (66)   #222327 (36)
+
+   Note the two providers order land and water OPPOSITELY: CARTO paints water
+   lighter than land, Esri paints it darker. No brightness/contrast curve is
+   both monotonic and able to match both fills, so this grading matches the
+   overall darkness and accepts that water stays the darker of the two. (An
+   invert-based curve does match both exactly at overview zoom, but Esri's
+   canvas brightens as it zooms in and the inversion crushed 88% of a Bangkok
+   z13 tile to pure black — unusable for terminal work.) For a true Dark Matter
+   match, set NEXT_PUBLIC_CARTO_API_KEY and the real tiles load ungraded.
+
+   brightness(0.35) puts land at #171717 and water at #0c0c0c, and leaves a
+   Bangkok z13 tile averaging 27.6 against CARTO's 16.4 — dark, with the road
+   and coastline structure still legible. Plain brightness is monotonic and
+   clips nothing at any zoom. To taste: 0.25 is closer to CARTO's overall
+   darkness, 0.16 matches its land fill exactly but reads as a black hole,
+   0.45 is easier on the eye.
+
+   Only the tile containers are filtered — the aircraft, routes and airspace
+   polygons live in Leaflet's overlay/marker panes and keep their full
+   intensity. `.basemap-dark-labels` is Esri's reference layer, which carries
+   the country/coastline boundaries as well as the place names.
+   ========================================================================== */
+.leaflet-tile-pane .basemap-dark-base {
+  filter: brightness(0.35) saturate(0.7);
+}
+/* The reference layer carries BOTH the place names and the country/coastline
+   boundaries, in two clearly separated inks: boundary lines around lum 85, label
+   text around 185. Straight brightness cannot lift the boundaries without
+   blowing the labels to solid white (at brightness(1.3), 86% of label pixels
+   clip). Pulling contrast BELOW 1 compresses the two toward each other first,
+   so the boundaries come up much further than the labels go down:
+
+     boundary ink  #3b -> #87   (more than tripled, reads white against the base)
+     label ink     #a8 -> #f6   (crisp white, nothing clipped)
+
+   grayscale(1) first so both stay neutral, the way CARTO draws them. */
+.leaflet-tile-pane .basemap-dark-labels {
+  filter: grayscale(1) contrast(0.6) brightness(1.45);
+}

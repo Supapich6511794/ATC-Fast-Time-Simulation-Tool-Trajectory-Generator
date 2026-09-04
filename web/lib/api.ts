@@ -222,7 +222,14 @@ export async function extendDownwind(
     throw new Error(`Cannot reach the Python API at ${API_BASE}.`);
   }
   if (!res.ok) {
-    const detail = await res.text().catch(() => "");
+    // FastAPI errors are `{"detail": "…"}`; show the sentence, not the JSON.
+    let detail = "";
+    try {
+      const j = await res.json();
+      if (j?.detail) detail = String(j.detail);
+    } catch {
+      /* not JSON — fall back to the status line below */
+    }
     throw new Error(
       detail || `Could not extend the downwind (HTTP ${res.status}).`,
     );

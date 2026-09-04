@@ -29,9 +29,16 @@ need its URL for the Vercel step.
    | Name | Value |
    |------|-------|
    | `NEXT_PUBLIC_API_BASE` | `https://trajectory-api.onrender.com` (your Render URL, no trailing slash) |
+   | `NEXT_PUBLIC_CARTO_API_KEY` | *(optional)* your CARTO API key, for the dark basemap — see below |
 
    This must be set **before** the build — `NEXT_PUBLIC_*` is inlined at
    build time.
+
+   **Dark basemap.** CARTO now requires an API key for
+   `basemaps.cartocdn.com`; without one they serve tiles stamped "API KEY
+   REQUIRED". Set `NEXT_PUBLIC_CARTO_API_KEY` to use CARTO Dark Matter. With
+   the variable unset the map falls back to Esri Dark Gray Canvas, which needs
+   no key — so the app works either way, it just looks slightly different.
 4. Deploy. Vercel runs the `vercel-build` script (`next build`).
 
 ## 3. Wire CORS back (if you use a custom domain)

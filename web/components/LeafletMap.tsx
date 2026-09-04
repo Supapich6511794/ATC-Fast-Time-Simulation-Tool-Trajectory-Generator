@@ -1850,7 +1850,21 @@ export default function LeafletMap({
       zoomControl={false}
       style={{ height: "100%", width: "100%" }}
     >
-      <TileLayer key={basemap} attribution={tiles.attribution} url={tiles.url} />
+      <TileLayer
+        key={basemap}
+        attribution={tiles.attribution}
+        url={tiles.url}
+        className={tiles.className}
+      />
+      {/* Esri's canvas basemaps keep place names in a separate reference
+          layer, so the dark map draws it over the base. */}
+      {tiles.labelUrl && (
+        <TileLayer
+          key={basemap + "-labels"}
+          url={tiles.labelUrl}
+          className={tiles.labelClassName}
+        />
+      )}
       {onMapReady && <MapRefBridge onReady={onMapReady} />}
       <ZoomWatcher onZoom={setZoom} />
 

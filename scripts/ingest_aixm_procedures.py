@@ -3,7 +3,7 @@
 The terminal procedures used to come from a one-off ARINC 424 "DFD" GeoJSON
 export (``sid_waypoint_thai.geojson`` and friends) that cannot be refreshed
 from the AIP URL. This reads the SWIM AIXM subset instead
-(``aixm_export_2608_VT_.xml.gz``) and writes the SAME DFD-schema files, so the
+(``aixm_export_2608_VT_v5.1.1.xml``) and writes the SAME DFD-schema files, so the
 navdata loader, the map layers and the holdings reader all keep working
 unchanged -- only the AIRAC behind them moves.
 
@@ -46,7 +46,7 @@ from typing import Any, Iterator
 from xml.etree import ElementTree as ET
 
 _ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_INPUT = _ROOT / "aixm_export_2608_VT_.xml.gz"
+_DEFAULT_INPUT = _ROOT / "aixm_export_2608_VT_v5.1.1.xml"
 _DEFAULT_OUT = _ROOT / "web" / "public" / "data" / "aixm"
 
 _XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
@@ -167,6 +167,24 @@ def _num(elem: ET.Element | None, name: str) -> float | None:
         return None
 
 
+def _alt_ft(elem: ET.Element | None, name: str) -> float | None:
+    """Altitude in feet, honouring the ``uom`` the export tags the value with.
+
+    The 2608 v5.1.1 subset states the higher procedure limits in flight levels
+    (``uom="FL"``), so the raw number has to be scaled or FL130 lands as 130 ft.
+    """
+    if elem is None:
+        return None
+    node = _find(elem, name)
+    if node is None or node.text is None:
+        return None
+    try:
+        value = float(node.text.strip())
+    except ValueError:
+        return None
+    return value * 100.0 if node.get("uom", "").upper() == "FL" else value
+
+
 def _uuid(href: str | None) -> str | None:
     """'urn:uuid:abc' -> 'abc'."""
     return href.rsplit(":", 1)[-1] if href else None
@@ -206,7 +224,8 @@ def _position(elem: ET.Element | None) -> tuple[float, float] | None:
 
 def iter_features(path: Path) -> Iterator[ET.Element]:
     """Stream the AIXM features, clearing each once it has been handed over."""
-    with gzip.open(path, "rb") as fh:
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rb") as fh:
         for _event, elem in ET.iterparse(fh, events=("end",)):
             if _local(elem.tag) != "hasMember":
                 continue
@@ -271,8 +290,8 @@ class AixmIndex:
             "fly_over": fly_over,
             "course": _num(ts, "course"),
             "course_type": _text(ts, "courseType"),
-            "lower_alt": _num(ts, "lowerLimitAltitude"),
-            "upper_alt": _num(ts, "upperLimitAltitude"),
+            "lower_alt": _alt_ft(ts, "lowerLimitAltitude"),
+            "upper_alt": _alt_ft(ts, "upperLimitAltitude"),
             "alt_interpretation": _text(ts, "altitudeInterpretation"),
             "speed_limit": _num(ts, "speedLimit"),
             "speed_interpretation": _text(ts, "speedInterpretation"),

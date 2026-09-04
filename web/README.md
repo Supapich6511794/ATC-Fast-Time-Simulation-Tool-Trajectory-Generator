@@ -37,6 +37,16 @@ npm run dev
 Open the printed URL (http://localhost:3000, or :3001 if 3000 is busy).
 If the API runs somewhere else, set `NEXT_PUBLIC_API_BASE` before `npm run dev`.
 
+The dark basemap uses CARTO Dark Matter when `NEXT_PUBLIC_CARTO_API_KEY` is
+set (free key from [carto.com](https://carto.com); CARTO watermarks tiles
+served without one) and falls back to the keyless Esri Dark Gray Canvas when it
+is not. Both are inlined at build time, so set them before starting the dev
+server:
+
+```bash
+NEXT_PUBLIC_CARTO_API_KEY=your_key_here npm run dev
+```
+
 ## Architecture
 
 ```

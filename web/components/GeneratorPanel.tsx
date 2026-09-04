@@ -381,6 +381,20 @@ interface Props {
   }) => void;
   /** Open that rail — the panel's own "N departure conflicts →" line calls it. */
   onOpenDepartureConflicts?: () => void;
+  /** A route the PDR check has staged for review.
+   *
+   *  It fills the matching plan's Item-15 route field and stops there: the
+   *  flight is NOT regenerated, so the controller reads the routing and presses
+   *  Generate themselves. Matched on callsign + city pair, which is what
+   *  identifies a plan here (`flightKey` only exists once a plan has been
+   *  flown). `nonce` makes a repeat handoff of the same route a new event. */
+  routeHandoff?: {
+    callsign: string;
+    adep: string;
+    ades: string;
+    route: string;
+    nonce: number;
+  } | null;
 }
 
 /** Selectable aircraft types. Each maps to a real BADA 3.16 climb/descent
@@ -484,6 +498,7 @@ function GeneratorPanel({
   waypointIdents,
   onDepartureConflicts,
   onOpenDepartureConflicts,
+  routeHandoff,
 }: Props) {
   const [routeMode, setRouteMode] = useState<RouteMode>("fpl");
 
@@ -988,6 +1003,41 @@ function GeneratorPanel({
   allDraftsRef.current = allDrafts;
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
+
+  // A route staged by the PDR check.
+  //
+  // The tab on screen holds its inputs in their own state and only writes them
+  // back to `plans` when it is left, so the match is made against the LIVE
+  // fields first and the stored drafts second — otherwise a flight whose
+  // callsign was just typed would not be found. Nothing is generated: the
+  // routing is put in the Item-15 box and the Generate press stays the
+  // controller's.
+  const handoffNonce = useRef<number | null>(null);
+  useEffect(() => {
+    if (!routeHandoff || handoffNonce.current === routeHandoff.nonce) return;
+    const up = (v: string) => v.trim().toUpperCase();
+    const wanted =
+      up(routeHandoff.callsign) + "|" + up(routeHandoff.adep) + "|" + up(routeHandoff.ades);
+
+    if (up(callsign) + "|" + up(adep) + "|" + up(ades) === wanted) {
+      handoffNonce.current = routeHandoff.nonce;
+      setRouteMode("fpl");
+      setRouteStr(routeHandoff.route);
+      return;
+    }
+    const target = plans.find(
+      (p) => up(p.callsign) + "|" + up(p.adep) + "|" + up(p.ades) === wanted,
+    );
+    if (!target) return; // the plan was removed; leave the handoff unconsumed
+    handoffNonce.current = routeHandoff.nonce;
+    setPlans((prev) =>
+      prev.map((p) =>
+        p.id === target.id
+          ? { ...p, routeStr: routeHandoff.route, routeMode: "fpl" as RouteMode }
+          : p,
+      ),
+    );
+  }, [routeHandoff, plans, callsign, adep, ades]);
   const toDepartureFlightsRef = useRef(toDepartureFlights);
   toDepartureFlightsRef.current = toDepartureFlights;
   const ignoredDepRef = useRef(ignoredDepConflicts);

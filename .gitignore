@@ -33,4 +33,6 @@ web/Data/
 # procedure layers built from it (web/public/data/aixm/) are committed so the
 # app runs from a clean clone; re-running scripts/ingest_aixm_procedures.py
 # needs your own copy of the export.
+# (matches both the gzipped export and the plain-XML one.)
+aixm_export_*.xml
 aixm_export_*.xml.gz
