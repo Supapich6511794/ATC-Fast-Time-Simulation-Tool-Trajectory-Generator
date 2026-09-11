@@ -20,6 +20,28 @@ import {
 } from "@/lib/downloadProgress";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
 
+/** Which run-level report to build. Shared with MapApp, which does the
+ *  building — the modal only names them. */
+export type ReportKind = "events" | "sectors" | "dynamic";
+
+const REPORTS: { kind: ReportKind; label: string; sub: string }[] = [
+  {
+    kind: "events",
+    label: "Flight events (.csv)",
+    sub: "takeoff · waypoints · TOC/TOD · sector in/out · landing · + .xlsx: same table, plus a Chart tab of the trajectories",
+  },
+  {
+    kind: "sectors",
+    label: "Sector hours (.csv)",
+    sub: "per sector per hour: entries, present, conflicts, resolved · + .xlsx: same table, plus a Chart tab of standard vs merged",
+  },
+  {
+    kind: "dynamic",
+    label: "Dynamic sectorization (.csv)",
+    sub: "which sectors could be band-boxed and when they split back · + .xlsx: same table, plus a Chart tab of conflicts by sector",
+  },
+];
+
 export interface DownloadInfo {
   callsign: string;
   flightKey: string;
@@ -40,6 +62,15 @@ const FORMAT_META: Record<Format, { label: string; sub: string }> = {
 interface Props {
   open: boolean;
   onClose: () => void;
+  /** Save one of the run-level report CSVs. These are built in the browser from
+   *  the generated trajectories, the airspace polygons and the conflict log —
+   *  unlike the per-route exports above, which the Python engine writes. */
+  onDownloadReport?: (kind: ReportKind) => void;
+  /** Which run report is building and how far along, null when idle. Reports
+   *  are built in the browser over every flight in the sample, so a big traffic
+   *  day takes seconds — without this the button looked dead. The kind is part
+   *  of it so the progress shows on the button that was actually pressed. */
+  reportProgress?: { kind: ReportKind; percent: number } | null;
   results: TrajectoryResult[];
   downloads: DownloadInfo[];
   /** Awaited once, with the selected flight keys, before any file is requested.
@@ -102,6 +133,8 @@ function fireDownload(url: string): void {
 function DownloadModal({
   open,
   onClose,
+  onDownloadReport,
+  reportProgress,
   results,
   downloads,
   onBeforeDownload,
@@ -797,6 +830,40 @@ function DownloadModal({
             })}
           </div>
         </section>
+
+        {/* Run-level reports. Separate from the route exports because they are
+            about the WHOLE traffic sample rather than one flight, and because
+            they are written here in the browser rather than by the API. */}
+        {onDownloadReport && (
+          <div className="dlm-reports">
+            <p className="dlm-reports-h">Run reports</p>
+            {REPORTS.map((r) => (
+              <button
+                key={r.kind}
+                type="button"
+                className="dlm-report-btn"
+                onClick={() => onDownloadReport(r.kind)}
+                disabled={busy || results.length === 0 || reportProgress != null}
+                title={
+                  results.length === 0
+                    ? "Generate some flights first"
+                    : "Save " + r.label
+                }
+              >
+                <span className="dlm-report-label">
+                  {reportProgress?.kind === r.kind
+                    ? "⏳ " + reportProgress.percent + "%"
+                    : "⬇ " + r.label}
+                </span>
+                <span className="dlm-report-sub">
+                  {reportProgress?.kind === r.kind
+                    ? "Building over every flight…"
+                    : r.sub}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="dlm-foot">
           {/* Only shown once there is a real percentage to draw — a phase with

@@ -76,11 +76,36 @@ function asPhase(raw: unknown): TrajectoryPoint["phase"] {
 }
 
 /** Normalise an EOBT to the datetime-local input format. */
+/** Trailing UTC designator or numeric offset: "Z", "+07:00", "-0530". */
+const EOBT_OFFSET_RE = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+
+/**
+ * An imported EOBT, normalised to the `datetime-local` shape the field holds.
+ *
+ * The app's rule is that a bare "YYYY-MM-DDTHH:mm" is UTC — the field is
+ * labelled "EOBT (UTC)" and `eobtToMs` parses it with `Date.UTC`. So a value
+ * that arrives with an EXPLICIT offset has to be converted before the offset is
+ * dropped, not simply truncated away.
+ *
+ * This used to take the first HH:mm after the date and discard the rest, which
+ * silently turned "2026-07-08T20:05:00+07:00" — 13:05Z — into "20:05", read
+ * downstream as 20:05Z. Every derived time was then seven hours late for a
+ * Thai-local file: sector crossings, P/D/R activity lookups, departure
+ * separation. A morning EOBT came out looking like the evening, which is how it
+ * surfaced as an AM/PM complaint.
+ */
 function normEobt(raw: unknown): string | undefined {
   if (raw == null) return undefined;
   const s = String(raw).trim();
   if (!s) return undefined;
-  // "2026-05-19T08:15:00Z" / "...Z" / "...:15" → "2026-05-19T08:15"
+
+  if (EOBT_OFFSET_RE.test(s)) {
+    // Unambiguous: let Date parse it against its stated offset, then express
+    // the same instant in UTC.
+    const ms = Date.parse(s.replace(" ", "T"));
+    if (Number.isFinite(ms)) return new Date(ms).toISOString().slice(0, 16);
+  }
+  // Naive value — already UTC by the project rule, so only reshape it.
   const m = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
   return m ? `${m[1]}T${m[2]}` : s.replace(/Z$/i, "");
 }

@@ -67,7 +67,10 @@ export function parseAltFt(v: unknown, isFL = false): number {
   if (typeof v === "number") return isFL ? v * 100 : v;
   const s = String(v).trim().toUpperCase();
   if (!s) return NaN;
-  if (s === "GND" || s === "SFC" || s === "MSL") return 0;
+  // "SURFACE" is spelled out on some PDR features (VTD74) where the rest use
+  // GND. It used to fall through to the digit search, return NaN, and be
+  // rescued only by the caller's fallback — right by luck, not by reading.
+  if (s === "GND" || s === "SFC" || s === "MSL" || s === "SURFACE") return 0;
   if (s.startsWith("UNL")) return Infinity;
   const fl = s.match(/FL\s*(\d+)/);
   if (fl) return Number(fl[1]) * 100;
@@ -117,7 +120,11 @@ function layerLabel(props: Record<string, unknown>, key: SectorKey): string {
 
 // --- prebuilt index (bbox + normalized MultiPolygon per feature) -----------
 
-interface IndexEntry {
+/** One indexed airspace volume: its published name, vertical band, bbox and
+ *  normalised geometry. Exported because callers that reason about the SHAPE of
+ *  the airspace — sector adjacency, say — must read the same volumes the
+ *  membership test uses, or they end up describing a different airspace. */
+export interface IndexEntry {
   label: string;
   band: Band;
   bbox: [number, number, number, number]; // minLon, minLat, maxLon, maxLat
@@ -349,6 +356,21 @@ function titleZone(name: string): string {
  *  something a controller says. */
 function sectorLabel(code: string): string {
   return code.replace(/_(lower|upper)$/i, "");
+}
+
+/**
+ * The name a sector event carries for one indexed volume.
+ *
+ * `IndexEntry.label` is the raw published name; the events and the report rows
+ * carry the DISPLAY name that `formatAirspace` produces. Anything joining the
+ * two — the adjacency graph behind dynamic sectorization — has to cross that
+ * gap with the same rules, or "3S_upper" and "3S" become two sectors that never
+ * meet.
+ */
+export function sectorDisplayName(layer: SectorKey, label: string): string {
+  if (layer === "pdr") return label;
+  if (layer === "ctr" || layer === "tma") return titleZone(label);
+  return sectorLabel(label);
 }
 
 /** Airspace hierarchy — an aircraft is in exactly ONE airspace at a time, so a

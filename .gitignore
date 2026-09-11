@@ -36,3 +36,8 @@ web/Data/
 # (matches both the gzipped export and the plain-XML one.)
 aixm_export_*.xml
 aixm_export_*.xml.gz
+
+# Report charting (scripts/plot_reports.py): downloaded CSVs in, PNGs out.
+# Both hold run output, not source.
+/csv/
+/graphs/

@@ -199,6 +199,17 @@ interface Props {
    *  drive zoom buttons rendered outside MapContainer (e.g. the +/− on
    *  the floating top-right toolbar). */
   onMapReady?: (map: L.Map | null) => void;
+  /** A single Prohibited / Danger / Restricted area to pick out in red, from
+   *  the route & area check's "Show area" button. Drawn above the sector
+   *  overlays so it reads even with those layers on, and independent of them —
+   *  the area is shown whether or not the PDR layer is switched on. */
+  highlightAreas?: {
+    ident: string;
+    name: string;
+    kind: "P" | "D" | "R";
+    /** GeoJSON MultiPolygon rings, [lon, lat]. */
+    mp: [number, number][][][] | number[][][][];
+  }[];
   /** CD&R overlay: active conflicts + the traffic snapshot they were computed
    *  from, the selected conflict (drawn with full predicted tracks + CPA), and
    *  a flightKey→callsign resolver for labels. Undefined when CD&R is off. */
@@ -849,6 +860,7 @@ export default function LeafletMap({
   onAircraftClick,
   onAircraftHover,
   onMapReady,
+  highlightAreas,
   cdrConflicts,
   cdrTraffic,
   cdrSelectedId,
@@ -1864,6 +1876,30 @@ export default function LeafletMap({
           url={tiles.labelUrl}
           className={tiles.labelClassName}
         />
+      )}
+      {/* The picked-out P/D/R area, above every sector overlay. */}
+      {(highlightAreas ?? []).map((area) =>
+        (area.mp as number[][][][]).map((poly, pi) => (
+          <Polygon
+            key={"pdr-hl-" + area.ident + "-" + pi}
+            // Leaflet wants [lat, lon]; GeoJSON stores [lon, lat].
+            positions={poly.map((ring) =>
+              ring.map((c) => [c[1], c[0]] as [number, number]),
+            )}
+            pathOptions={{
+              color: "#f87171",
+              weight: 3,
+              opacity: 1,
+              fillColor: "#ef4444",
+              fillOpacity: 0.28,
+            }}
+            // No tooltip: it would need an interactive layer, and a hover
+            // handler over a 13 000-vertex ring (VTR62) on the shared canvas
+            // costs far more than it is worth. The chip above the map names
+            // what is highlighted.
+            interactive={false}
+          />
+        )),
       )}
       {onMapReady && <MapRefBridge onReady={onMapReady} />}
       <ZoomWatcher onZoom={setZoom} />

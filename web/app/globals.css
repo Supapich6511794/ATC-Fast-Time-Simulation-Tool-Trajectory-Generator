@@ -7803,12 +7803,129 @@ select.fp-input {
   border-bottom: 1px solid #33415566;
   font-size: 14px;
 }
+/* Panel header actions. Both of these were unstyled and fell back to the
+   browser's default button chrome — a flat grey box that read as neither a
+   control nor a download. */
+.cdr-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .cdr-panel-close {
   border: none;
   background: none;
   color: var(--muted);
   cursor: pointer;
   font-size: 14px;
+  line-height: 1;
+  padding: 2px 2px;
+  border-radius: 6px;
+}
+.cdr-panel-close:hover { color: var(--text); background: #ffffff12; }
+
+/* Download buttons. One shape, two sizes: a pill in a panel header, and a
+   full-width block where the download is the section's own action. */
+.si-dl,
+.cdr-log-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text);
+  background: linear-gradient(180deg, #ffffff14, #ffffff08);
+  border: 1px solid var(--line, #334155);
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.si-dl:hover:not(:disabled),
+.cdr-log-save:hover:not(:disabled) {
+  color: #e0f2fe;
+  background: linear-gradient(180deg, #38bdf82e, #38bdf814);
+  border-color: #38bdf8aa;
+}
+.si-dl:active:not(:disabled),
+.cdr-log-save:active:not(:disabled) { background: #38bdf83a; }
+.si-dl:focus-visible,
+.cdr-log-save:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: 2px;
+}
+.si-dl:disabled,
+.cdr-log-save:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.si-dl-ico { flex: none; }
+/* The format, set apart from the label so the button says WHAT it hands over
+   without the label having to carry a file extension. */
+.si-dl-ext {
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  background: #ffffff10;
+  border-radius: 4px;
+}
+.si-dl:hover:not(:disabled) .si-dl-ext { color: #bae6fd; background: #38bdf826; }
+
+.si-dl-wide {
+  display: flex;
+  width: 100%;
+  gap: 9px;
+  margin-top: 10px;
+  padding: 8px 11px;
+  border-radius: 8px;
+  text-align: left;
+}
+.si-dl-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.si-dl-text b { font-size: 11.5px; font-weight: 600; }
+.si-dl-text em {
+  font-size: 10px;
+  font-weight: 400;
+  font-style: normal;
+  color: var(--muted);
+}
+.si-dl-wide:hover .si-dl-text em { color: #bae6fd; }
+/* The chart's own save button: same pill, sized to sit on a heading line. */
+.si-dl-mini {
+  padding: 2px 7px;
+  font-size: 10px;
+}
+.si-dl-mini .si-dl-ext { font-size: 8.5px; padding: 0 4px; }
+
+/* Aircraft-per-hour chart. */
+.si-chart {
+  margin: 14px 12px 0;
+  padding: 10px 10px 4px;
+  border: 1px solid var(--line, #334155);
+  border-radius: 8px;
+  background: #0f172a66;
+}
+.si-chart-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.si-chart-head .pdr-group-h { margin: 0; }
+.si-chart-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
 }
 .cdr-panel-close:hover { color: var(--text); }
 .cdr-panel-empty {
@@ -9301,15 +9418,26 @@ select.fp-input {
   font-size: 12.5px;
   font-weight: 600;
 }
+/* "Show area" — draws this P/D/R area on the map in red. Styled as a real
+   button: it was previously muted grey text at the end of the header row and
+   read as a label rather than something to press. */
 .pdr-finding-locate {
   margin-left: auto;
-  border: none;
-  background: none;
-  color: var(--muted);
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  border: 1px solid #f87171aa;
+  border-radius: 6px;
+  background: #7f1d1d66;
+  color: #fecaca;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
   cursor: pointer;
-  font-size: 13px;
 }
-.pdr-finding-locate:hover { color: var(--text); }
+.pdr-finding-locate:hover {
+  background: #b91c1c88;
+  color: #fff;
+}
 .pdr-finding-reason {
   margin: 4px 0 0;
   font-size: 12px;
@@ -9464,4 +9592,522 @@ select.fp-input {
    grayscale(1) first so both stay neutral, the way CARTO draws them. */
 .leaflet-tile-pane .basemap-dark-labels {
   filter: grayscale(1) contrast(0.6) brightness(1.45);
+}
+
+/* PDR pre-generation pointer — same shape as .dep-conf-pointer, amber rather
+   than red: a route through a restricted area is a planning problem to look at,
+   not a separation breach. */
+.pdr-conf-pointer {
+  border-color: #f59e0b66;
+  background: #78350f33;
+  color: #fcd34d;
+}
+.pdr-conf-pointer:hover {
+  background: #78350f55;
+}
+/* Which picture the PDR panel is showing: filed plans (estimated profile) or
+   generated trajectories (real ones). */
+.pdr-source-note {
+  margin: 0;
+  padding: 7px 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+  border-bottom: 1px solid #33415566;
+}
+
+/* "Edit route in plan" — the way out of the PDR panel when the AIP publishes no
+   alternative: jump to that flight's tab in the generator and re-route by hand. */
+.pdr-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pdr-detail-head .cdr-dash-h {
+  flex: 1;
+  min-width: 0;
+}
+.pdr-edit-plan {
+  flex: 0 0 auto;
+  margin-right: 12px;
+  padding: 3px 9px;
+  border: 1px solid #a78bfa66;
+  border-radius: 6px;
+  background: #7c3aed22;
+  color: #c4b5fd;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.pdr-edit-plan:hover { background: #7c3aed44; }
+.pdr-edit-plan.wide {
+  display: block;
+  width: calc(100% - 24px);
+  margin: 0 12px;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  text-align: center;
+}
+.pdr-no-alt p {
+  margin: 0 0 8px;
+  padding: 0 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* P / D / R stage headings. "PDR" is Predetermined Route; P, D and R are the
+   three stages of the check (applicability, detection, recommendation), not the
+   prohibited/danger/restricted airspace classes. */
+.pdr-legend {
+  margin: 0;
+  padding: 8px 12px;
+  list-style: none;
+  border-bottom: 1px solid #33415566;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.pdr-legend b {
+  display: inline-block;
+  width: 15px;
+  height: 15px;
+  margin-right: 5px;
+  border-radius: 3px;
+  background: #334155;
+  color: #e2e8f0;
+  font-size: 9.5px;
+  text-align: center;
+  line-height: 15px;
+}
+.pdr-stage {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0 5px;
+  padding: 0 12px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pdr-stage-tag {
+  display: inline-block;
+  width: 17px;
+  height: 17px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-align: center;
+  line-height: 17px;
+  color: #0f172a;
+}
+.pdr-stage-tag.p { background: #38bdf8; }
+.pdr-stage-tag.d { background: #fbbf24; }
+.pdr-stage-tag.r { background: #4ade80; }
+
+/* P — the applicability statement and the candidate PDRs. */
+.pdr-applic {
+  margin: 0 0 6px;
+  padding: 0 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.pdr-applic.state-applicable { color: var(--text); }
+.pdr-applic.state-off-pdr,
+.pdr-applic.state-filed-is-reverse { color: #fbbf24; }
+.pdr-applic.state-none-published { color: var(--muted); }
+.pdr-candidates {
+  margin: 0;
+  padding: 0 12px;
+  list-style: none;
+}
+.pdr-candidates li {
+  padding: 4px 0 4px 8px;
+  border-left: 2px solid #33415588;
+  margin-bottom: 4px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.pdr-candidates li.filed { border-left-color: #38bdf8; }
+.pdr-candidates li.closed { opacity: 0.55; }
+.pdr-candidates code {
+  display: block;
+  color: var(--text);
+  word-break: break-word;
+}
+.pdr-cand-tag { color: var(--muted); }
+.pdr-cand-cond { display: block; margin-top: 2px; }
+.pdr-cand-cond.state-met { color: #4ade80; }
+.pdr-cand-cond.state-unknown { color: #fbbf24; }
+.pdr-cand-cond.state-unmet { color: #f87171; }
+
+/* Finding groups: P/D/R AREA conflicts (airspace) are shown apart from the
+   ROUTE checks (PDR / ENR 1.10) — different questions, different remedies. */
+.pdr-group-h {
+  margin: 10px 12px 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+/* Which class of area, since P, D and R are governed by different rules. */
+.pdr-area-class {
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.pdr-area-class.cls-P { background: #7f1d1d; color: #fecaca; }
+.pdr-area-class.cls-D { background: #78350f; color: #fde68a; }
+.pdr-area-class.cls-R { background: #1e3a8a; color: #bfdbfe; }
+/* What the controller has to do about it. */
+.pdr-finding-action {
+  margin: 4px 0 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #7dd3fc;
+}
+.pdr-finding-action strong { color: #38bdf8; }
+
+/* The route & area pointer when the AIP data could not be loaded: this is a
+   failure, not a clean result, so it must not look like the amber "conflicts"
+   state and must not disappear. */
+.pdr-conf-pointer.failed {
+  border-color: #f8717166;
+  background: #7f1d1d33;
+  color: #fca5a5;
+}
+.pdr-conf-pointer.failed:hover { background: #7f1d1d55; }
+
+/* Run reports in the download modal — whole-sample CSVs (flight events, sector
+   hours), built in the browser rather than by the API, so they sit apart from
+   the per-route format pickers above. */
+.dlm-reports {
+  padding: 10px 14px;
+  border-top: 1px solid #33415566;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dlm-reports-h {
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.dlm-report-btn {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 10px;
+  border: 1px solid #33415588;
+  border-radius: 8px;
+  background: #0f172a44;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.dlm-report-btn:hover:not(:disabled) { background: #33415544; }
+.dlm-report-btn:disabled { opacity: 0.5; cursor: default; }
+.dlm-report-label { font-size: 12.5px; font-weight: 600; }
+.dlm-report-sub { font-size: 11px; color: var(--muted); }
+
+/* The area highlighted on the map by "Show area", and the way back. Sits above
+   the map, clear of the left-hand panel rail. */
+.pdr-focus-chip {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  top: 96px;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 10px;
+  border: 1px solid #f8717166;
+  border-radius: 999px;
+  background: #1e293bee;
+  box-shadow: 0 6px 18px #0009;
+  font-size: 12px;
+}
+.pdr-focus-name { font-weight: 600; color: #fecaca; }
+.pdr-focus-back,
+.pdr-focus-clear {
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11.5px;
+  padding: 2px 4px;
+}
+.pdr-focus-back:hover,
+.pdr-focus-clear:hover { color: var(--text); }
+
+/* A suggested route that still breaks a published rule (a level below the
+   airway's band, say). Shown on the card so it cannot be accepted blind. */
+.pdr-sugg-issue {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #fbbf24;
+}
+
+/* Rank badge on a suggested route. The list is ordered best-first; with one
+   card that ordering is invisible, so the position is stated. */
+.pdr-sugg-rank {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #334155;
+  color: #cbd5e1;
+  font-size: 10px;
+  font-weight: 700;
+}
+.pdr-sugg-rank.best { background: #14532d; color: #86efac; }
+.pdr-sugg-rankwhy {
+  margin: 5px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Shown when no published alternative removes the finding — the honest answer
+   when every route for a pair carries the same problem. */
+.pdr-sugg-nogain {
+  margin: 0 12px 8px;
+  padding: 6px 9px;
+  border-left: 3px solid #f59e0b;
+  background: #78350f22;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #fcd34d;
+}
+
+/* Recommended actions — the ways out, independent of any published route.
+   Ranked: climb over it, re-route, then the area's own entry conditions. */
+.pdr-remedies {
+  list-style: none;
+  margin: 0;
+  padding: 0 12px;
+  counter-reset: remedy;
+}
+.pdr-remedy {
+  display: flex;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid #33415533;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.pdr-remedy-kind {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  font-weight: 700;
+  background: #334155;
+  color: #cbd5e1;
+}
+.pdr-remedy.k-level .pdr-remedy-kind { background: #0e7490; color: #cffafe; }
+.pdr-remedy.k-route .pdr-remedy-kind { background: #4338ca; color: #ddd6fe; }
+.pdr-remedy.k-authorization .pdr-remedy-kind { background: #1e3a8a; color: #bfdbfe; }
+.pdr-remedy.k-notam .pdr-remedy-kind { background: #78350f; color: #fde68a; }
+.pdr-remedy-text { color: var(--text); }
+
+/* A candidate that needs a different navigation specification. */
+.pdr-sugg-cap {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #93c5fd;
+}
+/* Accepting a route that does not clear the finding is a review step, not a
+   fix, and must not look like the green-lit action. */
+.pdr-sugg-apply.unresolved {
+  border-color: #f59e0b88;
+  background: #78350f33;
+  color: #fcd34d;
+}
+.pdr-sugg-apply.unresolved:hover { background: #78350f66; }
+
+/* Several highlighted areas at once — each removable, plus a clear-all. */
+.pdr-focus-one {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 4px 2px 6px;
+  border-radius: 999px;
+  background: #0f172a99;
+}
+
+/* ==========================================================================
+   Sector information — what one ATC sector had to deal with in one hour.
+   Three dropdowns narrow to a cell of the sector-hour table; the stats below
+   are that cell.
+   ========================================================================== */
+.sector-info { width: min(430px, calc(100vw - 32px)); }
+.si-picks {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #33415566;
+}
+.si-pick {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.si-pick select {
+  padding: 5px 7px;
+  border: 1px solid #33415588;
+  border-radius: 6px;
+  background: #0f172a88;
+  color: var(--text);
+  font-size: 12px;
+}
+.si-body { padding: 10px 0 12px; overflow-y: auto; }
+.si-head {
+  margin: 0 12px 10px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.si-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding: 0 12px;
+}
+.si-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px;
+  border: 1px solid #33415588;
+  border-radius: 8px;
+  background: #0f172a55;
+  text-align: center;
+}
+.si-stat.resolved { border-color: #22c55e55; background: #14532d22; }
+.si-num { font-size: 20px; font-weight: 700; line-height: 1.1; }
+.si-stat.resolved .si-num { color: #4ade80; }
+.si-lbl { font-size: 10.5px; color: var(--text); }
+.si-sub { font-size: 9.5px; color: var(--muted); }
+.si-list {
+  margin: 0 12px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text);
+  word-break: break-word;
+}
+.si-list.warn { color: #fcd34d; }
+/* The crossing minute rides alongside the callsign, dimmed: the callsign is
+   what is being scanned for, the time is what is read once it is found. */
+.si-entry { white-space: nowrap; }
+.si-at {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.si-note {
+  margin: 10px 12px 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+/* Dynamic sectorization. Set off by a rule and a tinted ground because it is
+   the one block on this panel that is a PROPOSAL rather than a measurement —
+   it must not read as another row of recorded numbers. */
+.si-dyn {
+  margin: 14px 12px 0;
+  padding: 10px 10px 12px;
+  border: 1px solid var(--line, #334155);
+  border-radius: 8px;
+  background: rgba(56, 189, 248, 0.06);
+}
+.si-dyn .pdr-group-h { margin: 0 0 8px; }
+.si-dyn-cfg {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.si-num {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.si-num-lbl {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.si-num-hint {
+  font-size: 9.5px;
+  line-height: 1.2;
+  color: var(--muted);
+  opacity: 0.8;
+}
+.si-num input {
+  width: 100%;
+  padding: 5px 7px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--panel-2, #0f172a);
+  border: 1px solid var(--line, #334155);
+  border-radius: 6px;
+}
+.si-num input:focus {
+  outline: none;
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 2px #38bdf833;
+}
+.si-dyn-head {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.si-dyn-merge {
+  margin: 3px 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #7dd3fc;
+}
+.si-dyn-split {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #fcd34d;
+}
+.si-dyn-basis { margin-left: 0; margin-right: 0; }
+
+/* The same button when its area is already on the map — it hides rather than
+   shows, so it reads as an active toggle instead of a fresh action. */
+.pdr-finding-locate.shown {
+  border-color: #f87171;
+  background: #b91c1c88;
+  color: #fff;
+}
+.pdr-finding-locate.shown:hover { background: #dc2626aa; }
+
+/* A flight the scan has not reached yet. Distinct from "clear": no verdict is
+   not the same as a passing one. */
+.pdr-pending {
+  font-size: 10.5px;
+  font-style: italic;
+  color: var(--muted);
 }

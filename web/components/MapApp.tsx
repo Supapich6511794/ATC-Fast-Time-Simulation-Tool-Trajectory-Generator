@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AltitudeLegend from "@/components/AltitudeLegend";
 import DownloadModal, {
   type DownloadInfo,
+  type ReportKind,
 } from "@/components/DownloadModal";
 import FilterPanel, {
   EMPTY_FILTER,
@@ -162,11 +163,43 @@ import DepartureConflictPanel from "@/components/cdr/DepartureConflictPanel";
 import NotificationPanel from "@/components/cdr/NotificationPanel";
 import SuggestionCards from "@/components/cdr/SuggestionCards";
 import PdrPanel from "@/components/pdr/PdrPanel";
+import SectorInfoPanel from "@/components/report/SectorInfoPanel";
 import {
   pathFromTrajectory,
   usePdrCheck,
   type PdrFlight,
 } from "@/lib/pdr/usePdrCheck";
+import type { PdrReport } from "@/lib/pdr/detect";
+import type { PdrArea } from "@/lib/pdr/types";
+import { saveBinaryFile, saveTextFile } from "@/lib/saveFile";
+import {
+  buildFlightEvents,
+  buildSectorHours,
+  flightEventsCsv,
+  sectorHoursCsv,
+  type FlightEventRow,
+  type ReportConflict,
+  type ReportFlight,
+  type SectorHourRow,
+} from "@/lib/report/flightEvents";
+import {
+  DEFAULT_DYNAMIC_CONFIG,
+  dynamicSectorsCsv,
+  dynamicSpansCsv,
+  planDynamicSectors,
+  type DynamicPlan,
+  type DynamicSectorConfig,
+} from "@/lib/report/dynamicSectors";
+import {
+  buildSectorAdjacency,
+  type SectorAdjacency,
+} from "@/lib/report/sectorAdjacency";
+import {
+  conflictBySectorXlsx,
+  flightTrajectoryXlsx,
+  standardVsMergedXlsx,
+} from "@/lib/report/chartData";
+import { XLSX_MIME } from "@/lib/report/xlsx";
 
 const LeafletMap = dynamic(() => import("@/components/LeafletMap"), {
   ssr: false,
@@ -254,6 +287,26 @@ interface AutoPassState {
   /** False while the pass is still stepping through the queue. */
   done: boolean;
 }
+
+/** Above this many loaded flights the "Show area" move stops animating.
+ *  Leaflet's canvas renderer redraws every vector layer on each frame of a pan,
+ *  and each flight is one; a 2000-flight day turned the animation into a
+ *  multi-second freeze. Below it the fly-to is smooth and worth having. */
+const ANIMATED_PAN_MAX_FLIGHTS = 150;
+
+/** Flights per chunk when building a run report. Sized to stay inside a frame
+ *  on a mid-range laptop; the loop yields between chunks. */
+const REPORT_CHUNK = 50;
+
+/** The CD&R views that share the left rail with the departure-conflict panel. */
+type CdrView =
+  | "notifications"
+  | "dashboard"
+  | "arrivals"
+  | "log"
+  | "pdr"
+  | "sectorinfo"
+  | null;
 
 export default function MapApp() {
   const [airways, setAirways] = useState<AirwayCollection | null>(null);
@@ -951,9 +1004,7 @@ export default function MapApp() {
   // Which CD&R view is open (chosen from the ⚡ CD&R dropdown), and whether the
   // dropdown itself is showing. "notifications" = the realtime alert stack;
   // "dashboard" = the strategic 2-column LoS/Fixed board.
-  const [cdrView, setCdrView] = useState<
-    "notifications" | "dashboard" | "arrivals" | "log" | "pdr" | null
-  >(
+  const [cdrView, setCdrView] = useState<CdrView>(
     null,
   );
   const [cdrMenuOpen, setCdrMenuOpen] = useState(false);
@@ -1121,7 +1172,18 @@ export default function MapApp() {
   const [depPanelOpen, setDepPanelOpen] = useState(false);
   const [depChoiceFor, setDepChoiceFor] = useState<string | null>(null);
   const depConflicts = depConflictState?.conflicts ?? [];
-  const openDepPanel = useCallback(() => setDepPanelOpen(true), []);
+  // The departure-conflict rail and the CD&R views share the same slot on the
+  // left of the map, so opening one has to close the other — otherwise they
+  // stack and the one underneath is unreachable.
+  const openDepPanel = useCallback(() => {
+    setDepPanelOpen(true);
+    setCdrView(null);
+  }, []);
+  /** Open a CD&R view, closing the departure rail. */
+  const openCdrView = useCallback((v: CdrView) => {
+    setCdrView(v);
+    setDepPanelOpen(false);
+  }, []);
   // Nothing left to show → the panel closes itself rather than sitting there
   // empty (Auto fix all clears the whole list in one click).
   useEffect(() => {
@@ -1659,6 +1721,43 @@ export default function MapApp() {
   // filed routing is even a published one for the pair. Advisory only; the
   // suggestion is staged into the generator, never flown automatically.
   const [pdrSelected, setPdrSelected] = useState<string | null>(null);
+  /** The P/D/R areas picked out in red on the map, from "Show area". A list,
+   *  not one: a rejected flight often has several findings and the useful
+   *  question is where they sit RELATIVE to each other and to the route. */
+  const [focusedAreas, setFocusedAreas] = useState<PdrArea[]>([]);
+  /** Which run report is being built and how far along, null when idle. The
+   *  KIND matters: both report buttons share this state, and without it each
+   *  one showed the other's progress. */
+  const [reportProgress, setReportProgress] = useState<{
+    kind: ReportKind;
+    percent: number;
+  } | null>(null);
+  // "Edit route in plan" — which plan tab the generator should bring forward.
+  const [planFocus, setPlanFocus] = useState<{
+    planId: string;
+    nonce: number;
+  } | null>(null);
+  // The PDR check over the FILED PLANS, emitted by GeneratorPanel before
+  // anything is generated. Preferred over the trajectory-based check below,
+  // because a route is worth fixing while it is still a plan.
+  const [pdrPlanState, setPdrPlanState] = useState<{
+    flights: {
+      flightKey: string;
+      callsign: string;
+      adep: string;
+      ades: string;
+      rflFt: number;
+    }[];
+    reports: Map<string, PdrReport>;
+    loading: boolean;
+    error: string | null;
+    validFrom: string | null;
+    validTo: string | null;
+    useRoute: (flightKey: string, route: string) => void;
+    retry: () => void;
+    scanning: boolean;
+    detailFor: (flightKey: string) => PdrReport | undefined;
+  } | null>(null);
   const [routeHandoff, setRouteHandoff] = useState<{
     callsign: string;
     adep: string;
@@ -1685,6 +1784,14 @@ export default function MapApp() {
         eobtMs: path[0]?.timeMs ?? Date.parse(t.meta.eobtIso),
         rflFt: t.stats.rflFt,
         gsKt: hours > 0 ? t.stats.distanceNm / hours : 450,
+        // Candidate routes are estimates even here, so they get the same
+        // anchors — the flown trajectory's own ends.
+        terminals: {
+          dep: path[0] ? { lat: path[0].lat, lon: path[0].lon } : null,
+          arr: path.length
+            ? { lat: path[path.length - 1].lat, lon: path[path.length - 1].lon }
+            : null,
+        },
         path,
       };
     });
@@ -1694,13 +1801,340 @@ export default function MapApp() {
   // the ⚡ menu can carry the count without the operator opening it first.
   const pdr = usePdrCheck(pdrFlights, trajectories.length > 0);
 
-  const pdrActionable = useMemo(
-    () =>
-      [...pdr.reports.values()].filter((r) =>
-        r.findings.some((f) => f.severity !== "info"),
-      ).length,
-    [pdr.reports],
+  /**
+   * Which check the panel shows.
+   *
+   * The GENERATED trajectories win as soon as there are any: they are the real
+   * flown path, with the SID and STAR actually flown and real times, so their
+   * verdict supersedes the estimate. The filed plans are the pre-generation
+   * preview and only stand in until then.
+   *
+   * This used to be "plans whenever plans exist" — and the generator always has
+   * plans, so the trajectory check was unreachable. The panel kept showing
+   * "Filed plans, before generation" and its estimated climb-out findings long
+   * after Generate had run, which read as the new times never reaching the
+   * calculation at all.
+   */
+  const pdrShowsPlans =
+    trajectories.length === 0 && (pdrPlanState?.flights.length ?? 0) > 0;
+
+  const pdrActionable = useMemo(() => {
+    const reports = pdrShowsPlans ? pdrPlanState!.reports : pdr.reports;
+    return [...reports.values()].filter((r) =>
+      r.findings.some((f) => f.severity !== "info"),
+    ).length;
+  }, [pdrShowsPlans, pdrPlanState, pdr.reports]);
+
+  /**
+   * Draw one restricted area in red and fly the map to it.
+   *
+   * The panel is closed on the way: it is 680 px wide over the left of the map,
+   * so leaving it open would often hide the very area being shown. The red
+   * outline stays until it is dismissed from the chip, so the map can be panned
+   * around the area afterwards.
+   */
+  const handleFocusArea = useCallback(
+    (area: PdrArea) => {
+      let next: PdrArea[] = [];
+      setFocusedAreas((prev) => {
+        // Clicking the same area again takes it off, so the button toggles.
+        const without = prev.filter((a) => a.ident !== area.ident);
+        next = without.length === prev.length ? [...prev, area] : without;
+        return next;
+      });
+      setCdrView(null);
+      // Nothing to move to when the click switched the area OFF.
+      if (!mapInstance || !next.some((a) => a.ident === area.ident)) return;
+
+      // Go to the area just clicked, not to the union of every highlighted one:
+      // the union zooms further out with each pick, so the area you asked to see
+      // gets smaller the more you look at.
+      const [minLon, minLat, maxLon, maxLat] = area.bbox;
+
+      // Animate — but only while it is affordable. Leaflet's canvas renderer
+      // redraws every vector layer on each frame of a pan, and this canvas
+      // carries a polyline per flight; with a whole imported traffic day the
+      // animation itself locked the tab for seconds. Above the threshold the
+      // move is instant, which is unremarkable but never janky.
+      const animate = trajectories.length <= ANIMATED_PAN_MAX_FLIGHTS;
+      mapInstance.flyToBounds(
+        [
+          [minLat, minLon],
+          [maxLat, maxLon],
+        ],
+        { padding: [80, 80], maxZoom: 10, animate, duration: 0.6 },
+      );
+    },
+    [mapInstance, trajectories.length],
   );
+
+  /**
+   * Save one of the run-level report CSVs.
+   *
+   * Built here rather than in the API because two of the three inputs only
+   * exist in the browser: the airspace polygons the sector crossings come from,
+   * and the conflict log, which is a record of what happened during THIS run.
+   */
+  /** The run-report tables, built once and shared by the download buttons and
+   *  the sector-information panel — they are the same walk over every flight,
+   *  and doing it twice is seconds of work for nothing. */
+  /** The band-boxing rule the controller is asking "what if" with. Held here,
+   *  not in the panel, because the download button in the Download dialog has
+   *  to produce the SAME plan the panel is showing. */
+  const [dynConfig, setDynConfig] = useState<DynamicSectorConfig>(
+    DEFAULT_DYNAMIC_CONFIG,
+  );
+
+  const reportCacheRef = useRef<{
+    key: unknown[];
+    events: FlightEventRow[];
+    sectorHours: SectorHourRow[];
+    /** Which sectors touch which, per layer. Geometry, not traffic — but it is
+     *  built from the same airspace index this walk already loads, so it is
+     *  cached with it rather than re-derived on every threshold change. */
+    adjacency: Record<string, SectorAdjacency>;
+  } | null>(null);
+
+  const buildReportData = useCallback(
+    async (kind: ReportKind) => {
+      const cacheKey: unknown[] = [trajectories, conflictLog, sectorData];
+      const hit = reportCacheRef.current;
+      if (
+        hit &&
+        hit.key.length === cacheKey.length &&
+        hit.key.every((v, i) => v === cacheKey[i])
+      ) {
+        return {
+          events: hit.events,
+          sectorHours: hit.sectorHours,
+          adjacency: hit.adjacency,
+        };
+      }
+      // The sector polygons are loaded lazily, the first time the user toggles
+      // that map layer on — and they all start off. Reading `sectorData` here
+      // meant the report usually had NO sector rows at all: no crossing times,
+      // and an empty sector-hours file, which reads as "this flight crossed no
+      // sectors" rather than "nobody switched the layer on". The report owns
+      // its own load; `fetchSector` is memoised per file, so a layer already on
+      // costs nothing.
+      const ATS_LAYERS: SectorKey[] = ["bacc", "subsector", "ctr", "tma"];
+      const collections: Partial<Record<SectorKey, SectorCollection>> = {
+        ...sectorData,
+      };
+      await Promise.all(
+        ATS_LAYERS.filter((k) => !collections[k]).map((k) =>
+          fetchSector(k)
+            .then((c) => {
+              collections[k] = c;
+            })
+            // A layer that will not load leaves the report thinner rather than
+            // failing it: takeoff / waypoints / TOC / TOD still export.
+            .catch(() => undefined),
+        ),
+      );
+      const index = buildAirspaceIndex(collections);
+
+      const flights: ReportFlight[] = trajectories.map((t) => ({
+        flightKey: t.meta.flightKey,
+        callsign: t.meta.callsign,
+        actype: t.meta.aircraftType,
+        adep: t.meta.adep,
+        ades: t.meta.ades,
+        points: t.points,
+        route: t.route,
+        toc: t.profile?.toc
+          ? {
+              lat: t.profile.toc.lat,
+              lon: t.profile.toc.lon,
+              altitudeFt: t.profile.toc.altitudeFt,
+              epochTs: t.profile.toc.epochTs,
+            }
+          : null,
+        tod: t.profile?.tod
+          ? {
+              lat: t.profile.tod.lat,
+              lon: t.profile.tod.lon,
+              altitudeFt: t.profile.tod.altitudeFt,
+              epochTs: t.profile.tod.epochTs,
+            }
+          : null,
+      }));
+
+      // Built in chunks, yielding to the browser between them. Every flight is
+      // walked point by point against every airspace volume, so a full traffic
+      // sample is seconds of work — done in one synchronous pass it locked the
+      // tab from the moment the button was pressed until the file appeared,
+      // with no way to tell the two apart from a crash.
+      const events: ReturnType<typeof buildFlightEvents> = [];
+      for (let i = 0; i < flights.length; i += REPORT_CHUNK) {
+        for (const f of flights.slice(i, i + REPORT_CHUNK)) {
+          events.push(...buildFlightEvents(f, index));
+        }
+        setReportProgress({
+          kind,
+          percent: Math.min(
+            100,
+            Math.round(((i + REPORT_CHUNK) / flights.length) * 100),
+          ),
+        });
+        await new Promise((r) => setTimeout(r, 0));
+      }
+      setReportProgress(null);
+      // A conflict's sector: the unit recorded on the applied fix when it was
+      // resolved there, else the unit that owns the CPA.
+      const conflicts: ReportConflict[] = conflictLog.map((e) => ({
+        id: e.id,
+        aCallsign: e.aCallsign,
+        bCallsign: e.bCallsign,
+        startMs: timelineOriginMs + e.fromSec * 1000,
+        sector:
+          e.resolution?.sector ??
+          sectorOfConflict({ a: e.a, b: e.b }, e.tCpaSec)?.label ??
+          null,
+        resolved: !!e.resolution,
+      }));
+      const adjacency: Record<string, SectorAdjacency> = {};
+      for (const k of ATS_LAYERS) adjacency[k] = buildSectorAdjacency(index, k);
+      const built = {
+        events,
+        sectorHours: buildSectorHours(events, conflicts),
+        adjacency,
+      };
+      reportCacheRef.current = { key: cacheKey, ...built };
+      return built;
+    },
+    [trajectories, sectorData, conflictLog, timelineOriginMs, sectorOfConflict],
+  );
+
+  /** Save one of the run reports. */
+  const handleDownloadReport = useCallback(
+    async (kind: ReportKind) => {
+      const data = await buildReportData(kind);
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      // Each report ships with a companion holding just its headline chart's
+      // series, laid out so the block can be selected and charted in Excel
+      // without being re-arranged first. A .csv cannot carry a chart object;
+      // it can carry a table already shaped like one.
+      const plan = () =>
+        planDynamicSectors(
+          data.sectorHours,
+          data.adjacency[dynConfig.layer] ?? new Map(),
+          dynConfig,
+        );
+      if (kind === "events") {
+        saveTextFile(flightEventsCsv(data.events), "flight_events_" + stamp + ".csv");
+        saveBinaryFile(
+          flightTrajectoryXlsx(data.events),
+          "flight_events_" + stamp + "_chart_trajectory.xlsx",
+          XLSX_MIME,
+        );
+      } else if (kind === "sectors") {
+        saveTextFile(
+          sectorHoursCsv(data.sectorHours),
+          "sector_hours_" + stamp + ".csv",
+        );
+        saveBinaryFile(
+          standardVsMergedXlsx(plan(), data.sectorHours),
+          "sector_hours_" + stamp + "_chart_standard_vs_merged.xlsx",
+          XLSX_MIME,
+        );
+      } else {
+        // Same traffic table, one more decision on top of it. The threshold is
+        // whatever the Sector information panel is currently set to, so the
+        // file and the screen always describe the same configuration.
+        const p = plan();
+        saveTextFile(dynamicSectorsCsv(p), "dynamic_sectorization_" + stamp + ".csv");
+        saveTextFile(
+          dynamicSpansCsv(p),
+          "dynamic_sectorization_" + stamp + "_periods.csv",
+        );
+        saveBinaryFile(
+          conflictBySectorXlsx(data.sectorHours, dynConfig.layer, p),
+          "dynamic_sectorization_" + stamp + "_chart_conflict_by_sector.xlsx",
+          XLSX_MIME,
+        );
+      }
+    },
+    [buildReportData, dynConfig],
+  );
+
+  // --- Sector information panel ---------------------------------------------
+  const [sectorAdjacency, setSectorAdjacency] = useState<Record<
+    string,
+    SectorAdjacency
+  > | null>(null);
+  const [sectorHours, setSectorHours] = useState<SectorHourRow[] | null>(null);
+  const [sectorHoursLoading, setSectorHoursLoading] = useState(false);
+  // Held in a ref, NOT listed as a dependency. `buildReportData` closes over
+  // `sectorOfConflict`, which is rebuilt on most renders, so depending on it
+  // re-ran this effect every render — each run cancelling the one before, and
+  // the cancelled flag then blocking the `finally` that clears the spinner. The
+  // panel sat on "Walking every flight against the airspace…" forever while
+  // restarting the build behind it.
+  const buildReportDataRef = useRef(buildReportData);
+  buildReportDataRef.current = buildReportData;
+
+  /** Build (or reuse) the sector-hour table when the panel opens. */
+  useEffect(() => {
+    // Nothing to build FROM. The spinner is cleared here rather than simply
+    // returning, because a build that gets cancelled part-way — the panel is
+    // closed, or the flights are re-generated — never reaches its own
+    // `finally`, so the flag survives into the next run. If that next run then
+    // bails out at this guard, the panel opens onto "walking every flight…"
+    // that nothing will ever finish. Clearing on the way out makes the stuck
+    // state unreachable.
+    if (cdrView !== "sectorinfo" || trajectories.length === 0) {
+      setSectorHoursLoading(false);
+      // Rows from a previous run would otherwise be shown against a traffic
+      // sample that no longer exists.
+      if (trajectories.length === 0) setSectorHours(null);
+      return;
+    }
+    let cancelled = false;
+    setSectorHoursLoading(true);
+    buildReportDataRef.current("sectors")
+      .then((d) => {
+        if (cancelled) return;
+        setSectorHours(d.sectorHours);
+        setSectorAdjacency(d.adjacency);
+      })
+      .catch(() => {
+        // An empty table reads as "built, found nothing" — which the panel
+        // says plainly. A failed build must not look like a running one.
+        if (!cancelled) setSectorHours([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSectorHoursLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Only the real inputs: the panel opening, and the data it reads.
+  }, [cdrView, trajectories, conflictLog]);
+
+  /** The dynamic sectorization for the open panel: the published sectors of the
+   *  chosen layer, grouped by the traffic that is already on screen. Cheap —
+   *  it is a grouping over the sector-hour table, not another walk over the
+   *  flights — so it re-runs freely as the threshold is dragged. */
+  const dynamicPlan: DynamicPlan | null = useMemo(() => {
+    if (!sectorHours || !sectorAdjacency) return null;
+    const adj = sectorAdjacency[dynConfig.layer];
+    if (!adj || adj.size === 0) return null;
+    return planDynamicSectors(sectorHours, adj, dynConfig);
+  }, [sectorHours, sectorAdjacency, dynConfig]);
+
+  /** Open a flight's plan so its route can be re-written by hand. The PDR
+   *  flightKey for a filed plan is "<planId>::<comboIndex>", so the plan id is
+   *  its first half. Steps out of the panel and into the generator, which is
+   *  where the route field lives. */
+  const handleOpenPlan = useCallback((flightKey: string) => {
+    setPlanFocus({ planId: flightKey.split("::")[0], nonce: Date.now() });
+    setNav({ kind: "generator" });
+    // The check panel STAYS open. It sits to the right of the generator rail
+    // rather than over it, and the check re-runs as the route is edited — so
+    // keeping both on screen is the point: the findings update while the
+    // controller types, instead of having to be reopened to see the result.
+  }, []);
 
   /** Stage a suggested route on its flight's plan. Deliberately does NOT
    *  regenerate: the controller reviews the routing in the generator and
@@ -2777,6 +3211,9 @@ export default function MapApp() {
             waypointIdents={routeIdents}
             onDepartureConflicts={setDepConflictState}
             onOpenDepartureConflicts={openDepPanel}
+            onPdrPlanCheck={setPdrPlanState}
+            onOpenPdrCheck={() => openCdrView("pdr")}
+            focusPlan={planFocus}
             routeHandoff={routeHandoff}
           />
         </div>
@@ -3061,7 +3498,7 @@ export default function MapApp() {
                           role="menuitem"
                           className={cdrView === "notifications" ? "active" : ""}
                           onClick={() => {
-                            setCdrView("notifications");
+                            openCdrView("notifications");
                             setCdrMenuOpen(false);
                           }}
                         >
@@ -3077,7 +3514,7 @@ export default function MapApp() {
                           role="menuitem"
                           className={cdrView === "dashboard" ? "active" : ""}
                           onClick={() => {
-                            setCdrView("dashboard");
+                            openCdrView("dashboard");
                             setCdrMenuOpen(false);
                           }}
                         >
@@ -3088,7 +3525,7 @@ export default function MapApp() {
                           role="menuitem"
                           className={cdrView === "arrivals" ? "active" : ""}
                           onClick={() => {
-                            setCdrView("arrivals");
+                            openCdrView("arrivals");
                             setCdrMenuOpen(false);
                           }}
                         >
@@ -3099,7 +3536,7 @@ export default function MapApp() {
                           role="menuitem"
                           className={cdrView === "log" ? "active" : ""}
                           onClick={() => {
-                            setCdrView("log");
+                            openCdrView("log");
                             setCdrMenuOpen(false);
                           }}
                           title="Every encounter of the run: when, who, what kind, and what resolved it"
@@ -3116,15 +3553,27 @@ export default function MapApp() {
                           role="menuitem"
                           className={cdrView === "pdr" ? "active" : ""}
                           onClick={() => {
-                            setCdrView("pdr");
+                            openCdrView("pdr");
                             setCdrMenuOpen(false);
                           }}
-                          title="Check each filed route against the prohibited/danger/restricted areas and the published ENR 1.10 routes"
+                          title="Check each filed route against the Prohibited/Danger/Restricted areas and the published preferred routes (PDR, ENR 1.10)"
                         >
-                          🚫 PDR route check
+                          🚫 Route &amp; area check
                           {pdrActionable > 0 && (
                             <span className="cdr-menu-count">{pdrActionable}</span>
                           )}
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className={cdrView === "sectorinfo" ? "active" : ""}
+                          onClick={() => {
+                            openCdrView("sectorinfo");
+                            setCdrMenuOpen(false);
+                          }}
+                          title="Per sector, per hour: aircraft entering, conflicts, and how many ATC resolved"
+                        >
+                          📊 Sector information
                         </button>
                         <div className="cdr-menu-sep" role="separator" />
                         {/* Auto-resolve is a three-way choice, not a switch:
@@ -3224,7 +3673,56 @@ export default function MapApp() {
               results={trajectories}
               downloads={downloads}
               onBeforeDownload={stampConflictMarks}
+              onDownloadReport={handleDownloadReport}
+              reportProgress={reportProgress}
             />
+            {/* What the red outline on the map is, and the way to clear it —
+                the highlight outlives the panel that set it, so it needs to be
+                dismissible from the map itself. */}
+            {focusedAreas.length > 0 && (
+              <div className="pdr-focus-chip" role="status">
+                {focusedAreas.map((a) => (
+                  <span key={a.ident} className="pdr-focus-one">
+                    <span className={"pdr-area-class cls-" + a.kind}>{a.kind}</span>
+                    <span className="pdr-focus-name">
+                      {a.ident}
+                      {a.name ? " " + a.name : ""}
+                    </span>
+                    <button
+                      type="button"
+                      className="pdr-focus-clear"
+                      onClick={() =>
+                        setFocusedAreas((prev) =>
+                          prev.filter((x) => x.ident !== a.ident),
+                        )
+                      }
+                      aria-label={"Stop showing " + a.ident}
+                      title={"Stop showing " + a.ident}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+                <button
+                  type="button"
+                  className="pdr-focus-back"
+                  onClick={() => openCdrView("pdr")}
+                  title="Back to the route &amp; area check"
+                >
+                  ← Check
+                </button>
+                <button
+                  type="button"
+                  className="pdr-focus-clear"
+                  onClick={() => setFocusedAreas([])}
+                  aria-label="Clear every highlighted area"
+                  title="Clear all"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
             <MapOverlay
               theme={theme}
               onTheme={setTheme}
@@ -3364,6 +3862,12 @@ export default function MapApp() {
               onAircraftClick={handleAircraftClick}
               onAircraftHover={handleAircraftHover}
               onMapReady={onMapReady}
+              highlightAreas={focusedAreas.map((a) => ({
+                ident: a.ident,
+                name: a.name,
+                kind: a.kind,
+                mp: a.mp as number[][][][],
+              }))}
               cdrConflicts={cdrMonitoring ? cdr.conflicts : undefined}
               cdrTraffic={cdrMonitoring ? cdr.traffic : undefined}
               cdrSelectedId={selectedConflictId}
@@ -3451,7 +3955,7 @@ export default function MapApp() {
                   setHighlightFixId(id);
                 } else {
                   setSelectedConflictId(id);
-                  setCdrView("notifications");
+                  openCdrView("notifications");
                 }
               }}
             />
@@ -3652,7 +4156,7 @@ export default function MapApp() {
                 utc={logUtc}
                 onSelect={(id) => {
                   setSelectedConflictId(id);
-                  setCdrView("dashboard");
+                  openCdrView("dashboard");
                 }}
                 onClose={() => setCdrView(null)}
               />
@@ -3664,23 +4168,67 @@ export default function MapApp() {
                 has nothing to do with whether live traffic monitoring is on. */}
             {cdrView === "pdr" && (
               <PdrPanel
-                flights={pdrFlights.map((f) => ({
-                  flightKey: f.flightKey,
-                  callsign: f.callsign,
-                  adep: f.adep,
-                  ades: f.ades,
-                }))}
-                reports={pdr.reports}
-                loading={pdr.loading}
-                error={pdr.error}
-                validFrom={pdr.validFrom}
-                validTo={pdr.validTo}
+                flights={
+                  pdrShowsPlans
+                    ? pdrPlanState!.flights
+                    : pdrFlights.map((f) => ({
+                        flightKey: f.flightKey,
+                        callsign: f.callsign,
+                        adep: f.adep,
+                        ades: f.ades,
+                      }))
+                }
+                reports={pdrShowsPlans ? pdrPlanState!.reports : pdr.reports}
+                loading={pdrShowsPlans ? pdrPlanState!.loading : pdr.loading}
+                error={pdrShowsPlans ? pdrPlanState!.error : pdr.error}
+                validFrom={pdrShowsPlans ? pdrPlanState!.validFrom : pdr.validFrom}
+                validTo={pdrShowsPlans ? pdrPlanState!.validTo : pdr.validTo}
+                // Say which picture is on screen: a filed plan is checked on an
+                // ESTIMATED climb/cruise/descent profile, a generated flight on
+                // its real trajectory. The difference decides how much weight a
+                // marginal finding deserves.
+                sourceNote={
+                  pdrShowsPlans
+                    ? "Filed plans, before generation — profile estimated at 3 NM per 1000 ft. Re-checked against the real trajectory once generated."
+                    : "Generated trajectories (" +
+                      trajectories.length +
+                      ") — real flown path, real times, SID/STAR included. Re-generate after editing a plan to re-check it."
+                }
                 selectedKey={pdrSelected}
                 onSelect={setPdrSelected}
-                onUseRoute={handleUseSuggestedRoute}
-                // onFocusArea is deliberately not passed: MapApp has no
-                // imperative map-centring seam today, and the panel hides the
-                // locate button when it is absent.
+                onUseRoute={
+                  pdrShowsPlans ? pdrPlanState!.useRoute : handleUseSuggestedRoute
+                }
+                // Only offered for filed plans: a generated flight's key is a
+                // flightKey, which no longer identifies a plan tab.
+                onOpenPlan={pdrShowsPlans ? handleOpenPlan : undefined}
+                onRetry={pdrShowsPlans ? pdrPlanState!.retry : pdr.retry}
+                detailFor={
+                  pdrShowsPlans ? pdrPlanState!.detailFor : pdr.detailFor
+                }
+                onFocusArea={handleFocusArea}
+                shownAreas={focusedAreas.map((a) => a.ident)}
+                rflFtOf={(k) =>
+                  (pdrShowsPlans
+                    ? pdrPlanState?.flights.find((f) => f.flightKey === k)
+                    : pdrFlights.find((f) => f.flightKey === k)
+                  )?.rflFt
+                }
+                onClose={() => setCdrView(null)}
+              />
+            )}
+
+            {/* Per-sector, per-hour workload. Not gated on cdrMonitoring: the
+                traffic counts are answerable from the trajectories alone, and
+                the conflict columns simply read zero when no monitoring ran. */}
+            {cdrView === "sectorinfo" && (
+              <SectorInfoPanel
+                rows={sectorHours}
+                loading={sectorHoursLoading}
+                flightCount={trajectories.length}
+                dynamicPlan={dynamicPlan}
+                dynamicConfig={dynConfig}
+                onDynamicConfig={setDynConfig}
                 onClose={() => setCdrView(null)}
               />
             )}

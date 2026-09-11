@@ -20,10 +20,21 @@
  *     every sheet together, the obvious implementation, gets that area exactly
  *     backwards on a holiday.
  *
- * Where the app genuinely cannot answer — "Notified by NOTAM", or a public
- * holiday with no holiday calendar in the dataset — the verdict is `unknown`
- * rather than a guess. Callers are expected to treat that conservatively and
- * say so; see ./detect.
+ * Where the app genuinely cannot answer — a public holiday with no holiday
+ * calendar in the dataset, or a polygon with no activity record at all — the
+ * verdict is `unknown` rather than a guess. Callers are expected to treat that
+ * conservatively and say so; see ./detect.
+ *
+ * The one deliberate assumption
+ * ----------------------------
+ * 21 areas publish no timesheet at all: their activity note reads "Notified by
+ * NOTAM" and the AIP says nothing more. Those are reported INACTIVE here. It is
+ * a modelling choice, not a reading of the data: a fast-time run has no NOTAM
+ * feed, and calling them active for want of one shut whole routes for areas
+ * that are cold on most days — the tool contradicting itself about airspace it
+ * cannot actually see. The verdict carries the assumption in its `detail`, so
+ * the reason travels with the answer, and the moment a NOTAM source is wired in
+ * this branch is the only place that has to change.
  *
  * A note on what a day code means
  * ------------------------------
@@ -180,6 +191,48 @@ export function formatSchedule(activity: PdrActivity | null): string {
 
 // --- the verdict -----------------------------------------------------------
 
+/** How many weekdays a sheet's day code covers. ANY is the whole week; HOL
+ *  cannot be counted without a holiday calendar and reports 0. */
+function daysCovered(sheet: Timesheet): number {
+  const code = sheet.day.toUpperCase();
+  if (code === "ANY") return 7;
+  if (code === "HOL") return 0;
+  let n = 0;
+  for (let i = 0; i < 7; i++) {
+    if (daySpanCovers(code, sheet.dayTil, i)) n++;
+  }
+  return n;
+}
+
+/**
+ * Is this area active at every instant, so that re-timing the flight can never
+ * clear it?
+ *
+ * The distinction matters for the advice the check gives. An area published
+ * MON-FRI 0100-0900 has inactive periods, so "fly outside the active window" is
+ * a real option. VTR1 Bangkok City is published Daily 0000-2400: it is never
+ * inactive, and telling a controller to change the date would waste their time.
+ *
+ * Conservative in both directions. A solar window ("sunset to sunrise") is not
+ * treated as always-active because it genuinely has a gap; an area with no
+ * timesheet at all returns false, because nothing published says it is
+ * permanently active — see `activityAt` for what happens to those.
+ */
+export function isAlwaysActive(activity: PdrActivity | null): boolean {
+  if (!activity || activity.sheets.length === 0) return false;
+  // An exclusion carves time out, so the area has an inactive period by
+  // construction.
+  if (activity.sheets.some((s) => s.excluded)) return false;
+  return activity.sheets.some(
+    (s) =>
+      !s.startEvent &&
+      !s.endEvent &&
+      s.start === "00:00" &&
+      s.end === "24:00" &&
+      daysCovered(s) === 7,
+  );
+}
+
 /** Worst-case ordering: an active area outranks one we cannot judge, which
  *  outranks a cold one. Used to reduce a whole crossing to one state. */
 export function worseState(a: ActivityState, b: ActivityState): ActivityState {
@@ -211,15 +264,28 @@ export function activityAt(
     };
   }
 
-  // A published schedule this app cannot evaluate: "Notified by NOTAM" is a
-  // real answer in the AIP, and no NOTAM feed is wired in.
+  // No timesheet to evaluate. Two different situations hide behind that.
   if (activity.sheets.length === 0) {
     const note = activity.activityNote || "";
+    // "Notified by NOTAM" is a real answer in the AIP, and no NOTAM feed is
+    // wired in. Treated as INACTIVE: see the file header for why, and note that
+    // this leaves the state honest in the detail rather than silent.
+    if (/notam/i.test(note)) {
+      return {
+        state: "inactive",
+        schedule,
+        detail:
+          "Activation is by NOTAM and no NOTAM source is wired in - treated as INACTIVE. Confirm against the NOTAMs for the day of flight.",
+        holidayCaveat: false,
+      };
+    }
+    // An unstructured note ("MON - FRI", with no times) is not the same claim:
+    // something IS published, this app just cannot parse it into a window.
     return {
       state: "unknown",
       schedule,
-      detail: /notam/i.test(note)
-        ? "Activation is by NOTAM; no NOTAM source in the dataset - assume active."
+      detail: note
+        ? 'Published activity "' + note + '" could not be read as a time window - assume active.'
         : "No structured activity time published - assume active.",
       holidayCaveat: false,
     };

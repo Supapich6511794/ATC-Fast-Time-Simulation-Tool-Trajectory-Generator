@@ -81,6 +81,12 @@ import {
   type DepartureFlight,
 } from "@/lib/departureSeparation";
 import {
+  climbCruiseDescentFt,
+  pathFromFixes,
+} from "@/lib/pdr/penetration";
+import { usePdrCheck, type PdrFlight } from "@/lib/pdr/usePdrCheck";
+import type { PdrReport } from "@/lib/pdr/detect";
+import {
   eobtMonth,
   runwayDefault,
   type RunwayDefault,
@@ -285,6 +291,11 @@ interface PlanDraft {
   approachTransition: string;
 }
 
+/** How long after the last plan edit the route & area check re-runs. Long
+ *  enough that typing a level or a callsign does not restart it per keystroke,
+ *  short enough that the verdict feels tied to the edit. */
+const PLAN_CHECK_DEBOUNCE_MS = 400;
+
 /** How many times "Auto fix all" re-scans. Moving a flight makes it the
  *  neighbour of a different one, so the fix cascades; a handful of passes
  *  settles a normal bank, and the cap stops a pathological set (every flight
@@ -381,6 +392,39 @@ interface Props {
   }) => void;
   /** Open that rail — the panel's own "N departure conflicts →" line calls it. */
   onOpenDepartureConflicts?: () => void;
+  /** PDR route check over the FILED PLANS, before anything is generated, plus
+   *  the action that applies a suggested route. Emitted upward for the same
+   *  reason as the departure conflicts: the findings belong in the right-hand
+   *  rail with the other CD&R panels, while the plans live in here. */
+  onPdrPlanCheck?: (state: {
+    flights: {
+      flightKey: string;
+      callsign: string;
+      adep: string;
+      ades: string;
+      /** The level the check ran with, so the panel can show it. */
+      rflFt: number;
+    }[];
+    reports: Map<string, PdrReport>;
+    loading: boolean;
+    error: string | null;
+    validFrom: string | null;
+    validTo: string | null;
+    /** Put a published route in the plan's Item-15 field. Never generates. */
+    useRoute: (flightKey: string, route: string) => void;
+    /** Re-run the AIP data load after a failure. */
+    retry: () => void;
+    /** True while the bulk scan is still working through the plans. */
+    scanning: boolean;
+    /** Full report (alternatives included) for one plan, on demand. */
+    detailFor: (flightKey: string) => PdrReport | undefined;
+  }) => void;
+  /** Open the PDR panel — the "N PDR route conflicts →" line calls it. */
+  onOpenPdrCheck?: () => void;
+  /** Bring a plan's tab to the front so its route can be edited by hand. Sent
+   *  by the PDR panel's "Edit route in plan" button. `nonce` makes a repeat
+   *  request for the same plan a new event. */
+  focusPlan?: { planId: string; nonce: number } | null;
   /** A route the PDR check has staged for review.
    *
    *  It fills the matching plan's Item-15 route field and stops there: the
@@ -498,6 +542,9 @@ function GeneratorPanel({
   waypointIdents,
   onDepartureConflicts,
   onOpenDepartureConflicts,
+  onPdrPlanCheck,
+  onOpenPdrCheck,
+  focusPlan,
   routeHandoff,
 }: Props) {
   const [routeMode, setRouteMode] = useState<RouteMode>("fpl");
@@ -983,6 +1030,163 @@ function GeneratorPanel({
     [initialTrackOf],
   );
 
+  // --- PDR route check over the FILED PLANS ---------------------------------
+  //
+  // Runs BEFORE anything is generated, so a routing through an active
+  // prohibited/danger/restricted area can be fixed while it is still a plan.
+  // The path is estimated from the filed fixes on a 3:1 climb/cruise/descent
+  // profile between the two aerodromes rather than flown: the point is to catch
+  // the low areas under the climb-out and the descent, which a flat-at-RFL
+  // check cannot see (only 16 of the 73 published areas reach FL330). The same
+  // check re-runs against the real trajectory once the flight is generated.
+  //
+  // Keyed on a CONTENT signature rather than on `allDrafts`, which is rebuilt
+  // on every render: without this the memo, the reports and the upward emit
+  // would all change identity every render, and the parent's setState would
+  // re-render this panel forever. It also stops a whole bank being re-analysed
+  // when the user types in a field the check does not read.
+  const pdrPlanKey = useMemo(
+    () =>
+      allDrafts
+        .map((d) =>
+          [
+            d.id,
+            d.callsign,
+            d.actype,
+            d.adep,
+            d.ades,
+            d.eobt,
+            d.rfl,
+            d.gsKt,
+            d.routeMode,
+            d.routeStr,
+            d.builtWpts.join(","),
+            d.routes.map((r) => r.route).join("|"),
+            // The terminal selection belongs in the signature too. It does not
+            // change the ESTIMATED path today (that runs straight to the first
+            // fix — see the caveat on those findings), but leaving it out meant
+            // picking a different SID silently left the previous verdict on
+            // screen, which reads as the check ignoring the edit.
+            d.sid,
+            d.star,
+            d.depRwy,
+            d.arrRwy,
+            d.approach,
+          ].join("~"),
+        )
+        .join(";"),
+    [allDrafts],
+  );
+
+  // Debounced, because the signature above changes on every KEYSTROKE — typing
+  // "250" into RFL is three edits, and each one rebuilt ~2000 route paths
+  // synchronously and restarted the scan. The field became impossible to type
+  // in. The check is advisory and re-runs a moment after the edit settles.
+  const [settledPlanKey, setSettledPlanKey] = useState(pdrPlanKey);
+  useEffect(() => {
+    const t = setTimeout(() => setSettledPlanKey(pdrPlanKey), PLAN_CHECK_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [pdrPlanKey]);
+
+  const pdrPlanFlights = useMemo<PdrFlight[]>(() => {
+    if (allFixes.length === 0) return [];
+    const airportLL = new Map(
+      airports.map((a) => [a.code.toUpperCase(), { lat: a.lat, lon: a.lon }]),
+    );
+    const out: PdrFlight[] = [];
+    allDrafts.forEach((d, i) => {
+      const adep = d.adep.trim().toUpperCase();
+      const ades = d.ades.trim().toUpperCase();
+      // eobtToMs is null for a blank/unparseable EOBT, and the whole check is
+      // a wall-clock one — without a real departure time there is nothing to
+      // read the area schedules against.
+      const eobtMs = eobtToMs(d.eobt);
+      if (!adep || !ades || eobtMs == null || !Number.isFinite(eobtMs)) return;
+
+      draftCombos(d).forEach((combo, ci) => {
+        if (!combo.route.trim()) return;
+        const mid = resolveRoutePreview(combo.route, allFixes, airwaysMap);
+        if (mid.length === 0) return;
+        // Anchor the profile at the aerodromes so the climb and descent start
+        // and finish in the right place; the enroute fixes alone would put the
+        // aircraft at cruise from the first waypoint.
+        const dep = airportLL.get(adep);
+        const arr = airportLL.get(ades);
+        const fixes = [
+          ...(dep ? [dep] : []),
+          ...mid.map((pt) => ({ lat: pt.lat, lon: pt.lon })),
+          ...(arr ? [arr] : []),
+        ];
+        out.push({
+          flightKey: d.id + "::" + ci,
+          callsign: d.callsign.trim() || planLabel(d, i),
+          adep,
+          ades,
+          actype: d.actype,
+          filedRoute: combo.route,
+          eobtMs,
+          rflFt: d.rfl * 100,
+          gsKt: d.gsKt,
+          estimated: true,
+          // With no usable level there is no vertical dimension to check
+          // against: a path built at 0 ft skims the ground and "enters" every
+          // low-level area. The check reports the missing level instead.
+          
+          // The same anchors the filed path uses, so a candidate route is
+          // profiled identically and the two verdicts are comparable.
+          terminals: { dep: dep ?? null, arr: arr ?? null },
+          path:
+            d.rfl > 0
+              ? pathFromFixes(fixes, {
+                  startMs: eobtMs,
+                  gsKt: d.gsKt,
+                  altFt: climbCruiseDescentFt({ rflFt: d.rfl * 100 }),
+                })
+              : [],
+        });
+      });
+    });
+    return out;
+    // Intentionally keyed on the SETTLED signature, not on `allDrafts` and not
+    // on the live one — see above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settledPlanKey, allFixes, airwaysMap, airports]);
+
+  const pdrPlan = usePdrCheck(pdrPlanFlights, pdrPlanFlights.length > 0);
+
+  /** Plans with something the controller should look at before generating. */
+  const pdrPlanConflicts = useMemo(
+    () =>
+      [...pdrPlan.reports.values()].filter((r) =>
+        r.findings.some((f) => f.severity !== "info"),
+      ).length,
+    [pdrPlan.reports],
+  );
+
+  /** Put a suggested route in a plan's Item-15 field. Keyed by the synthetic
+   *  "<planId>::<comboIndex>" the check uses. Deliberately does NOT generate —
+   *  the controller reviews the routing and presses Generate themselves. */
+  const usePdrRoute = useCallback(
+    (flightKey: string, route: string) => {
+      const planId = flightKey.split("::")[0];
+      setPlans((prev) =>
+        prev.map((p) =>
+          p.id === planId
+            ? { ...p, routeStr: route, routeMode: "fpl" as RouteMode, routes: [] }
+            : p,
+        ),
+      );
+      // The tab on screen keeps its own copy of the inputs, so if it is the one
+      // that moved, its route box has to be told too.
+      if (planId === activeIdRef.current) {
+        setRouteMode("fpl");
+        setRouteStr(route);
+        setRoutes([]);
+      }
+    },
+    [],
+  );
+
   const depConflicts = useMemo<DepartureConflict[]>(() => {
     if (allDrafts.length < 2) return [];
     return findDepartureConflicts(toDepartureFlights(allDrafts)).filter(
@@ -997,6 +1201,45 @@ function GeneratorPanel({
   // Latest values for the handlers below, which are handed to the parent ONCE
   // (they have to keep a stable identity or the panel would re-emit on every
   // render and loop).
+  // Hand the PDR findings to the parent so the rail can render them. Same
+  // shape-and-actions contract as onDepartureConflicts.
+  const onPdrPlanCheckRef = useRef(onPdrPlanCheck);
+  onPdrPlanCheckRef.current = onPdrPlanCheck;
+  useEffect(() => {
+    onPdrPlanCheckRef.current?.({
+      flights: pdrPlanFlights.map((f) => ({
+        flightKey: f.flightKey,
+        callsign: f.callsign,
+        adep: f.adep,
+        ades: f.ades,
+        rflFt: f.rflFt,
+      })),
+      reports: pdrPlan.reports,
+      loading: pdrPlan.loading,
+      error: pdrPlan.error,
+      validFrom: pdrPlan.validFrom,
+      validTo: pdrPlan.validTo,
+      useRoute: usePdrRoute,
+      retry: pdrPlan.retry,
+      scanning: pdrPlan.scanning,
+      detailFor: pdrPlan.detailFor,
+    });
+    // Depends on the STABLE members, not on `pdrPlan` itself: the hook returns
+    // a fresh object literal every render, so listing it here fired the emit —
+    // and the parent's setState, and so another render — forever.
+  }, [
+    pdrPlanFlights,
+    pdrPlan.reports,
+    pdrPlan.loading,
+    pdrPlan.error,
+    pdrPlan.validFrom,
+    pdrPlan.validTo,
+    pdrPlan.retry,
+    pdrPlan.scanning,
+    pdrPlan.detailFor,
+    usePdrRoute,
+  ]);
+
   const depConflictsRef = useRef(depConflicts);
   depConflictsRef.current = depConflicts;
   const allDraftsRef = useRef(allDrafts);
@@ -1012,6 +1255,21 @@ function GeneratorPanel({
   // callsign was just typed would not be found. Nothing is generated: the
   // routing is put in the Item-15 box and the Generate press stays the
   // controller's.
+  // Jump to a plan's tab on request from the PDR panel. Mirrors what the
+  // departure-conflict fix does, including clearing the FPL search box: the
+  // target tab may be filtered out of view, and a redirect that lands on a tab
+  // the user cannot see is worse than none.
+  const focusNonce = useRef<number | null>(null);
+  useEffect(() => {
+    if (!focusPlan || focusNonce.current === focusPlan.nonce) return;
+    focusNonce.current = focusPlan.nonce;
+    if (!plans.some((p) => p.id === focusPlan.planId)) return;
+    setPlanQuery("");
+    if (focusPlan.planId !== activeIdRef.current) {
+      switchToRef.current(focusPlan.planId);
+    }
+  }, [focusPlan, plans]);
+
   const handoffNonce = useRef<number | null>(null);
   useEffect(() => {
     if (!routeHandoff || handoffNonce.current === routeHandoff.nonce) return;
@@ -2588,6 +2846,57 @@ function GeneratorPanel({
               lives in the right-hand conflict rail with the other CD&R panels;
               what belongs HERE is the count and the way to it, because this is
               the panel the user is looking at when a file lands. */}
+          {/* PDR route check over the filed plans — a routing through an
+              active restricted area is worth seeing BEFORE it is flown. Same
+              pointer pattern as the departure conflicts below. */}
+          {pdrPlanFlights.length > 0 &&
+            (pdrPlanConflicts > 0 ||
+              pdrPlan.loading ||
+              pdrPlan.scanning ||
+              pdrPlan.error) && (
+            <button
+              type="button"
+              className={
+                "dep-conf-pointer pdr-conf-pointer" +
+                (pdrPlan.error ? " failed" : "")
+              }
+              onClick={() => {
+                // A failed load is retried from here as well as opened: the
+                // panel is no use until the AIP data is in.
+                if (pdrPlan.error) pdrPlan.retry();
+                onOpenPdrCheck?.();
+              }}
+              title={
+                pdrPlan.error
+                  ? "The AIP restricted-area data could not be loaded — click to retry"
+                  : "Open the route & area check — P/D/R area conflicts and published-route (PDR) rules"
+              }
+            >
+              <span className="dep-conf-pointer-txt">
+                {pdrPlan.error ? (
+                  <>⚠ Route &amp; area check unavailable — data did not load</>
+                ) : pdrPlan.loading || pdrPlan.scanning ? (
+                  <>
+                    ⏳ Checking routes &amp; P/D/R areas…
+                    {pdrPlan.scanning && pdrPlanConflicts > 0 && (
+                      <> ({pdrPlanConflicts} so far)</>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    ⚠ <b>{pdrPlanConflicts}</b> flight
+                    {pdrPlanConflicts === 1 ? "" : "s"} with a route or area
+                    conflict
+                  </>
+                )}
+              </span>
+              <span className="dep-conf-pointer-go">
+                {pdrPlan.error ? "Retry" : "Route & Area Check"}{" "}
+                <span aria-hidden="true">→</span>
+              </span>
+            </button>
+          )}
+
           {depConflicts.length > 0 && (
             <button
               type="button"

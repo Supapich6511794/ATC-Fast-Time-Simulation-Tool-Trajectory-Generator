@@ -25,6 +25,20 @@
  *   detect       — the orchestrator: findings + ranked suggestions
  */
 
+export {
+  checkAirwayUsage,
+  edgePermitted,
+  fetchRouteSegments,
+  indexSegments,
+} from "./airwayDirection";
+export type {
+  AirwayIssue,
+  AirwayIssueKind,
+  RouteSegment,
+  RouteSegmentFile,
+  SegmentDirection,
+  SegmentIndex,
+} from "./airwayDirection";
 export { fetchPdrActivity, buildPdrAreas, areasWithoutSchedule } from "./areas";
 export { analysePdr, areaScheduleText } from "./detect";
 export type {

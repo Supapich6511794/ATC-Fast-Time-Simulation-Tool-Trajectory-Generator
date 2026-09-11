@@ -1,10 +1,23 @@
 "use client";
 
 /**
- * PdrPanel — the PDR (Prohibited / Danger / Restricted) conflict check.
+ * PdrPanel — the route and airspace check.
  *
- * Left column: every generated flight with its worst finding, so a bank can be
- * scanned at a glance. Right column: the selected flight's findings, each with
+ * Two different things are reported here and the panel keeps them apart,
+ * because they answer different questions and have different remedies:
+ *
+ *   * **P / D / R Area conflicts** — the route intersects a Prohibited, Danger
+ *     or Restricted AREA. Governed by AREA_POLICY: P is never permitted, D is a
+ *     conflict only while active, R needs authorization.
+ *   * **Route checks (PDR / ENR 1.10)** — the filed ROUTE itself: is it a
+ *     published preferred route for the pair, in the right direction, with its
+ *     conditions met.
+ *
+ * Left column: every flight with its worst finding, so a bank can be scanned at
+ * a glance. The rows are filed PLANS before generation (checked on an estimated
+ * climb/cruise/descent profile) and generated trajectories afterwards — the
+ * `sourceNote` says which, because it changes how much a marginal finding is
+ * worth. Right column: the selected flight's findings, each with
  * the published rule it breaches, and the alternative routes ENR 1.10 offers.
  *
  * The Apply action deliberately does NOT re-fly the flight. It stages the
@@ -14,7 +27,14 @@
  * would be a different (and much worse) tool.
  */
 
-import type { PdrFinding, PdrReport, RouteSuggestion } from "@/lib/pdr/detect";
+import { useMemo } from "react";
+
+import type {
+  PdrFinding,
+  PdrReport,
+  Remedy,
+  RouteSuggestion,
+} from "@/lib/pdr/detect";
 import type { PdrArea } from "@/lib/pdr/types";
 
 export interface PdrFlightRow {
@@ -32,17 +52,43 @@ interface Props {
   /** AIRAC window the activity data covers, for the staleness banner. */
   validFrom: string | null;
   validTo: string | null;
+  /** Which picture this is — filed plans (estimated profile) or generated
+   *  trajectories (real ones). Shown under the header so a marginal finding can
+   *  be weighed correctly. */
+  sourceNote?: string;
   selectedKey: string | null;
   onSelect: (key: string | null) => void;
   /** Stage a suggested route into that flight's plan (no regeneration). */
   onUseRoute: (flightKey: string, route: string) => void;
-  /** Centre the map on an area named by a finding. */
+  /** Open this flight's plan in the generator so the route can be re-written by
+   *  hand. The way out when the AIP publishes no alternative — which is most of
+   *  the time, since ENR 1.10 covers a minority of city pairs. Omitted when the
+   *  panel is showing generated trajectories, which no longer map to a plan. */
+  onOpenPlan?: (flightKey: string) => void;
+  /** The FULL report for one flight, alternatives included. The `reports` map
+   *  is a bulk scan without them — building suggestions for a whole traffic
+   *  sample costs about as much as the rest of the check put together, and only
+   *  the open flight needs them. */
+  detailFor?: (flightKey: string) => PdrReport | undefined;
+  /** Re-run the AIP data load after a failure. */
+  onRetry?: () => void;
+  /** Centre the map on an area named by a finding. Toggles: calling it again
+   *  with the same area takes it off. */
   onFocusArea?: (area: PdrArea) => void;
+  /** Area idents currently drawn on the map. */
+  shownAreas?: string[];
+  /** The requested level the check ran with, per flight key. Shown in the
+   *  header: when the form and the check disagree, the number that matters is
+   *  the one the check used. */
+  rflFtOf?: (flightKey: string) => number | undefined;
   onClose: () => void;
 }
 
+/** Chip wording. "REJECTED" rather than "conflict": the finding is that the
+ *  plan breaches a published restriction and cannot be filed as it stands —
+ *  which is a verdict on the plan, not a report of traffic in the way. */
 const SEVERITY_LABEL = {
-  violation: "CONFLICT",
+  violation: "REJECTED",
   caution: "CHECK",
   info: "NOTE",
 } as const;
@@ -63,19 +109,48 @@ function staleNote(validTo: string | null): string | null {
   );
 }
 
+/** Why a candidate sits where it does, in the engine's own order of weight:
+ *  a route that still crosses something hot, or that breaks another published
+ *  rule, is ranked behind a clean one however short it is. */
+function rankReason(s: RouteSuggestion): string {
+  if (s.activeAreas.length > 0) return "still crosses an active area";
+  if (s.issues.length > 0) return "breaks another published rule";
+  if (s.condition?.state === "unknown") return "condition cannot be verified";
+  if (s.distanceNm != null) return "clean · " + s.distanceNm.toFixed(0) + " NM";
+  return "clean";
+}
+
 function SuggestionCard({
   s,
+  rank,
+  total,
   onUse,
 }: {
   s: RouteSuggestion;
+  /** 1-based position in the ranked list. */
+  rank: number;
+  total: number;
   onUse: () => void;
 }) {
+  const clean = s.activeAreas.length === 0 && s.issues.length === 0;
   return (
     <div className="pdr-sugg">
       <div className="pdr-sugg-top">
+        {/* The list IS ranked — best first — but that was only visible as sort
+            order, which says nothing at all when there is one card. */}
+        <span
+          className={"pdr-sugg-rank" + (rank === 1 && clean ? " best" : "")}
+        >
+          #{rank}
+          {total > 1 ? "/" + total : ""}
+        </span>
         <code className="pdr-sugg-route">{s.route}</code>
         <span className="pdr-sugg-tag">{s.rnav ? "RNAV" : "Non-RNAV"}</span>
       </div>
+      <p className="pdr-sugg-rankwhy">
+        {rank === 1 ? "Best option — " : "Ranked #" + rank + " — "}
+        {rankReason(s)}
+      </p>
       <p className="pdr-sugg-why">{s.why}</p>
       {s.condition && (
         <p className={"pdr-sugg-cond state-" + s.condition.state}>
@@ -90,15 +165,110 @@ function SuggestionCard({
           <span className="warn">still crosses {s.activeAreas.join(", ")}</span>
         )}
       </div>
+      {/* A candidate that avoids the areas but breaks another published rule is
+          not a fix on its own — say so on the card rather than letting it be
+          accepted and come straight back as a new rejection. */}
+      {s.issues.map((issue) => (
+        <p key={issue} className="pdr-sugg-issue">
+          ⚠ {issue}
+        </p>
+      ))}
+      {s.capabilityNote && (
+        <p className="pdr-sugg-cap">ℹ {s.capabilityNote}</p>
+      )}
+      {/* The label has to match what accepting this route would actually do.
+          "Use this route" on a candidate that still crosses an active area
+          reads as a fix, and the controller applies it expecting the finding to
+          clear. */}
       <button
         type="button"
-        className="pdr-sugg-apply"
+        className={"pdr-sugg-apply" + (clean ? "" : " unresolved")}
         onClick={onUse}
-        title="Put this routing in the flight's plan for review — it is not generated until you press Generate"
+        title={
+          clean
+            ? "Put this routing in the flight's plan for review — it is not generated until you press Generate"
+            : "This routing does NOT clear the finding above. It is staged for review only."
+        }
       >
-        Use this route →
+        {clean ? "Use this route →" : "Use anyway — conflict remains →"}
       </button>
     </div>
+  );
+}
+
+const AREA_CLASS_LABEL = { P: "Prohibited", D: "Danger", R: "Restricted" } as const;
+
+/** Short tag for each way out, in the order the engine ranks them. */
+const REMEDY_LABEL: Record<Remedy["kind"], string> = {
+  level: "LEVEL",
+  route: "ROUTE",
+  authorization: "AUTH",
+  notam: "NOTAM",
+};
+
+/** One group of findings. Renders nothing when the group is empty, so a flight
+ *  with only route findings does not show an empty airspace heading. */
+function FindingList({
+  title,
+  findings,
+  onFocusArea,
+  shownAreas,
+}: {
+  title: string;
+  findings: PdrFinding[];
+  onFocusArea?: (area: PdrArea) => void;
+  /** Idents currently drawn on the map, so the button can say which way it
+   *  goes. The action toggles, and a button labelled "Show" that hides is
+   *  worse than no label at all. */
+  shownAreas: ReadonlySet<string>;
+}) {
+  if (findings.length === 0) return null;
+  return (
+    <>
+      <h4 className="pdr-group-h">
+        {title} ({findings.length})
+      </h4>
+      <ul className="pdr-findings">
+        {findings.map((f) => (
+          <li key={f.id} className={"pdr-finding sev-" + f.severity}>
+            <div className="pdr-finding-head">
+              {severityChip(f.severity)}
+              {f.areaClass && (
+                <span className={"pdr-area-class cls-" + f.areaClass}>
+                  {f.areaClass} · {AREA_CLASS_LABEL[f.areaClass]}
+                </span>
+              )}
+              <span className="pdr-finding-title">{f.title}</span>
+              {f.incursion && onFocusArea && (() => {
+                const shown = shownAreas.has(f.incursion.area.ident);
+                return (
+                  <button
+                    type="button"
+                    className={"pdr-finding-locate" + (shown ? " shown" : "")}
+                    onClick={() => onFocusArea(f.incursion!.area)}
+                    title={
+                      shown
+                        ? "Take " + f.incursion.area.ident + " off the map"
+                        : "Draw " + f.incursion.area.ident +
+                          " on the map in red and fly to it"
+                    }
+                  >
+                    {shown ? "◉ Hide area" : "⌖ Show area"}
+                  </button>
+                );
+              })()}
+            </div>
+            <p className="pdr-finding-reason">{f.reason}</p>
+            {f.action && (
+              <p className="pdr-finding-action">
+                <strong>Action:</strong> {f.action}
+              </p>
+            )}
+            <p className="pdr-finding-src">{f.source}</p>
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }
 
@@ -109,20 +279,29 @@ export default function PdrPanel({
   error,
   validFrom,
   validTo,
+  sourceNote,
   selectedKey,
   onSelect,
   onUseRoute,
+  onOpenPlan,
+  detailFor,
+  onRetry,
   onFocusArea,
+  shownAreas,
+  rflFtOf,
   onClose,
 }: Props) {
-  const selected = selectedKey ? reports.get(selectedKey) : undefined;
+  const selected = selectedKey
+    ? detailFor?.(selectedKey) ?? reports.get(selectedKey)
+    : undefined;
   const selectedFlight = flights.find((f) => f.flightKey === selectedKey);
   const stale = staleNote(validTo);
+  const shown = useMemo(() => new Set(shownAreas ?? []), [shownAreas]);
 
   return (
     <div className="cdr-panel pdr-panel" role="dialog" aria-label="PDR conflict check">
       <div className="cdr-panel-head">
-        <strong>🚫 PDR Conflict Check</strong>
+        <strong>🚫 Route &amp; P/D/R Area Check</strong>
         <button
           type="button"
           className="cdr-panel-close"
@@ -135,15 +314,25 @@ export default function PdrPanel({
 
       {loading && <p className="cdr-panel-empty">Loading AIP restricted-area data…</p>}
       {error && (
-        <p className="cdr-panel-empty pdr-error">
-          Could not load the PDR data: {error}. No areas were checked.
-        </p>
+        <div className="cdr-panel-empty pdr-error">
+          <p>
+            Could not load the AIP restricted-area data: {error}. Nothing was
+            checked — this is not a clean result.
+          </p>
+          {onRetry && (
+            <button type="button" className="pdr-edit-plan" onClick={onRetry}>
+              Retry
+            </button>
+          )}
+        </div>
       )}
       {stale && <p className="pdr-stale">⚠ {stale}</p>}
+      {sourceNote && <p className="pdr-source-note">{sourceNote}</p>}
 
       {!loading && !error && flights.length === 0 && (
         <p className="cdr-panel-empty">
-          Generate a flight to check it against the restricted areas.
+          Add a flight plan with a route to check it against the restricted
+          areas — no need to generate first.
         </p>
       )}
 
@@ -153,6 +342,9 @@ export default function PdrPanel({
             <h3 className="cdr-dash-h">Flights ({flights.length})</h3>
             <ul>
               {flights.map((f) => {
+                // A flight the scan has not reached yet has NO verdict. It used
+                // to fall through to the "clear" branch, so an unchecked flight
+                // was indistinguishable from one that had passed.
                 const r = reports.get(f.flightKey);
                 const worst = r?.worst ?? null;
                 const actionable =
@@ -175,9 +367,13 @@ export default function PdrPanel({
                         {f.adep}→{f.ades}
                       </span>
                       <span className="pdr-flight-state">
-                        {actionable > 0
-                          ? severityChip(worst ?? "caution")
-                          : <span className="pdr-ok">clear</span>}
+                        {r === undefined ? (
+                          <span className="pdr-pending">checking…</span>
+                        ) : actionable > 0 ? (
+                          severityChip(worst ?? "caution")
+                        ) : (
+                          <span className="pdr-ok">clear</span>
+                        )}
                       </span>
                     </button>
                   </li>
@@ -193,9 +389,29 @@ export default function PdrPanel({
 
             {selected && (
               <>
-                <h3 className="cdr-dash-h">
-                  {selectedFlight?.callsign} — {selected.areasChecked} areas checked
-                </h3>
+                <div className="pdr-detail-head">
+                  <h3 className="cdr-dash-h">
+                    {selectedFlight?.callsign} — {selected.areasChecked} areas
+                    checked
+                    {(() => {
+                      const ft = rflFtOf?.(selectedKey!);
+                      if (ft == null) return null;
+                      return ft > 0
+                        ? " · checked at FL" + Math.round(ft / 100)
+                        : " · no level set";
+                    })()}
+                  </h3>
+                  {onOpenPlan && (
+                    <button
+                      type="button"
+                      className="pdr-edit-plan"
+                      onClick={() => onOpenPlan(selectedKey!)}
+                      title="Bring this flight's tab to the front in the generator. This panel stays open, and the check re-runs as you edit."
+                    >
+                      ✎ Edit route in plan
+                    </button>
+                  )}
+                </div>
 
                 {selected.areasChecked === 0 && (
                   <p className="pdr-stale">
@@ -210,28 +426,42 @@ export default function PdrPanel({
                     matches ENR 1.10 for this pair.
                   </p>
                 ) : (
-                  <ul className="pdr-findings">
-                    {selected.findings.map((f) => (
-                      <li key={f.id} className={"pdr-finding sev-" + f.severity}>
-                        <div className="pdr-finding-head">
-                          {severityChip(f.severity)}
-                          <span className="pdr-finding-title">{f.title}</span>
-                          {f.incursion && onFocusArea && (
-                            <button
-                              type="button"
-                              className="pdr-finding-locate"
-                              onClick={() => onFocusArea(f.incursion!.area)}
-                              title="Centre the map on this area"
-                            >
-                              ⌖
-                            </button>
-                          )}
-                        </div>
-                        <p className="pdr-finding-reason">{f.reason}</p>
-                        <p className="pdr-finding-src">{f.source}</p>
-                      </li>
-                    ))}
-                  </ul>
+                  <>
+                    <FindingList
+                      title="P / D / R Area conflicts"
+                      findings={selected.findings.filter(
+                        (f) => f.category === "restricted-airspace",
+                      )}
+                      onFocusArea={onFocusArea}
+                      shownAreas={shown}
+                    />
+                    <FindingList
+                      title="Route checks — PDR / ENR 1.10"
+                      findings={selected.findings.filter(
+                        (f) => f.category !== "restricted-airspace",
+                      )}
+                      onFocusArea={onFocusArea}
+                      shownAreas={shown}
+                    />
+                  </>
+                )}
+
+                {selected.remedies.length > 0 && (
+                  <>
+                    <h4 className="pdr-group-h">
+                      Recommended actions ({selected.remedies.length})
+                    </h4>
+                    <ol className="pdr-remedies">
+                      {selected.remedies.map((rm, i) => (
+                        <li key={rm.kind + i} className={"pdr-remedy k-" + rm.kind}>
+                          <span className="pdr-remedy-kind">
+                            {REMEDY_LABEL[rm.kind]}
+                          </span>
+                          <span className="pdr-remedy-text">{rm.detail}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  </>
                 )}
 
                 {selected.suggestions.length > 0 && (
@@ -240,14 +470,29 @@ export default function PdrPanel({
                       Suggested routes ({selected.suggestions.length})
                     </h3>
                     <p className="pdr-sugg-note">
-                      Published ENR 1.10 routes for this pair. Choosing one fills the
+                      Published ENR 1.10 routes for this pair, best first: a route
+                      that clears every active area and breaks no other rule ranks
+                      above a shorter one that does not. Choosing one fills the
                       flight&apos;s route field — nothing is re-flown until you press
                       Generate.
                     </p>
-                    {selected.suggestions.map((s) => (
+                    {/* When nothing on offer actually removes a finding, say
+                        so once at the top. Otherwise a "Best option" card reads
+                        as a fix and the controller swaps between two routes
+                        that each carry the same problem. */}
+                    {selected.suggestions.every((s) => s.clears.length === 0) && (
+                      <p className="pdr-sugg-nogain">
+                        None of these clears the finding above — every published
+                        route for this pair carries it. Changing the level, or
+                        editing the route by hand, is the way out.
+                      </p>
+                    )}
+                    {selected.suggestions.map((s, i) => (
                       <SuggestionCard
                         key={s.route + (s.rnav ? "-R" : "-N")}
                         s={s}
+                        rank={i + 1}
+                        total={selected.suggestions.length}
                         onUse={() => onUseRoute(selectedKey!, s.route)}
                       />
                     ))}
@@ -256,10 +501,23 @@ export default function PdrPanel({
 
                 {selected.suggestions.length === 0 &&
                   selected.findings.some((f) => f.severity !== "info") && (
-                    <p className="cdr-panel-empty">
-                      No published alternative is available for this pair at this
-                      time. The routing needs coordination rather than a re-file.
-                    </p>
+                    <div className="pdr-no-alt">
+                      <p>
+                        No published alternative is available for this pair at
+                        this time — ENR 1.10 covers only a minority of city
+                        pairs. Re-route by hand, or coordinate the filed routing.
+                      </p>
+                      {onOpenPlan && (
+                        <button
+                          type="button"
+                          className="pdr-edit-plan wide"
+                          onClick={() => onOpenPlan(selectedKey!)}
+                          title="Bring this flight's tab to the front in the generator. This panel stays open, and the check re-runs as you edit."
+                        >
+                          ✎ Edit route in plan →
+                        </button>
+                      )}
+                    </div>
                   )}
 
                 {validFrom && validTo && (

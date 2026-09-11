@@ -10,7 +10,13 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { activityAt, formatSchedule, formatSheet, worseState } from "./schedule";
+import {
+  activityAt,
+  formatSchedule,
+  formatSheet,
+  isAlwaysActive,
+  worseState,
+} from "./schedule";
 import type { PdrActivity, PdrActivityFile, Timesheet } from "./types";
 
 const ACTIVITY = resolve(__dirname, "../../public/data/aixm/pdr_activity.json");
@@ -159,11 +165,49 @@ describe("activityAt — excluded sheets subtract time", () => {
   });
 });
 
-describe("activityAt — what the data cannot answer", () => {
-  it("returns unknown for NOTAM-activated areas and says so", () => {
+describe("activityAt — areas notified by NOTAM", () => {
+  // A deliberate modelling choice, not a reading of the data: with no NOTAM
+  // feed, calling these active shut routes for airspace that is cold on most
+  // days. The assumption has to travel with the verdict.
+  it("reports them INACTIVE", () => {
     const v = activityAt(area("VTR3"), MON + 5 * 3600000, THAI);
-    expect(v.state).toBe("unknown");
+    expect(v.state).toBe("inactive");
+  });
+
+  it("says in the detail that this is an assumption, not a published window", () => {
+    const v = activityAt(area("VTR3"), MON + 5 * 3600000, THAI);
     expect(v.detail).toMatch(/NOTAM/i);
+    expect(v.detail).toMatch(/treated as INACTIVE/i);
+    expect(v.detail).toMatch(/confirm/i);
+  });
+
+  it("holds at every hour of every day — there is no window to fall outside", () => {
+    for (let h = 0; h < 24 * 7; h += 7) {
+      expect(activityAt(area("VTR3"), MON + h * 3600000, THAI).state).toBe("inactive");
+    }
+  });
+
+  it("does not touch an area that publishes a timesheet AND mentions NOTAM", () => {
+    // VTD75 is SAT-SUN 2300-1400, "after this period will be notified by
+    // NOTAM". The published window still governs: inside it the area is ACTIVE,
+    // and the assumption must not reach in and turn that off.
+    const sat = MON + 5 * DAY; // Saturday
+    expect(activityAt(area("VTD75"), sat + 23.5 * 3600000, THAI).state).toBe("active");
+    // Wednesday afternoon is outside every published sheet.
+    expect(activityAt(area("VTD75"), MON + 2 * DAY + 18 * 3600000, THAI).state).toBe(
+      "inactive",
+    );
+  });
+});
+
+describe("activityAt — what the data cannot answer", () => {
+  it("stays unknown for a note it cannot parse into a window", () => {
+    // The TRAs publish "MON - FRI" with no times. Something IS published; this
+    // app just cannot read it, which is a different claim from "by NOTAM".
+    const v = activityAt(area("VTTRA2"), MON + 5 * 3600000, THAI);
+    expect(v.state).toBe("unknown");
+    expect(v.detail).toMatch(/MON - FRI/);
+    expect(v.detail).toMatch(/assume active/i);
   });
 
   it("returns unknown when a polygon has no activity record at all", () => {
@@ -208,5 +252,49 @@ describe("the AIRAC 2608 fixture itself", () => {
       const v = activityAt(a, MON + 5 * 3600000, THAI);
       expect(["active", "inactive", "unknown"]).toContain(v.state);
     }
+  });
+});
+
+describe("isAlwaysActive — can re-timing ever clear this area?", () => {
+  it("is true for an area published Daily 0000-2400", () => {
+    // VTR1 Bangkok City. No date change can ever clear it.
+    expect(isAlwaysActive(area("VTR1"))).toBe(true);
+  });
+
+  it("is false for a weekday window, which does have inactive periods", () => {
+    expect(isAlwaysActive(area("VTD43"))).toBe(false); // MON-FRI 0100-0900
+  });
+
+  it("is false for a solar window — sunset to sunrise has a daytime gap", () => {
+    expect(isAlwaysActive(area("VTP36"))).toBe(false);
+  });
+
+  it("is false when activation is by NOTAM — an assumed-cold area is not 'always'", () => {
+    expect(isAlwaysActive(area("VTR3"))).toBe(false);
+  });
+
+  it("is false when an exclusion carves time out", () => {
+    expect(isAlwaysActive(area("VTD70"))).toBe(false); // except public holidays
+  });
+
+  it("is false for no activity record at all", () => {
+    expect(isAlwaysActive(null)).toBe(false);
+  });
+
+  it("treats a full MON-SUN 0000-2400 span as continuous too", () => {
+    expect(
+      isAlwaysActive({
+        designator: "T",
+        type: "R",
+        name: "T",
+        sheets: [
+          sheet({ day: "MON", dayTil: "SUN", start: "00:00", end: "24:00" }),
+        ],
+        activityNote: "",
+        restriction: "",
+        hazard: "",
+        remarks: "",
+      }),
+    ).toBe(true);
   });
 });

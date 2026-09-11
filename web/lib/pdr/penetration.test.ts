@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  climbCruiseDescentFt,
   decimatePath,
   findIncursions,
   pathFromFixes,
@@ -226,5 +227,62 @@ describe("decimatePath", () => {
   it("leaves a short path alone", () => {
     const two = dense.slice(0, 2);
     expect(decimatePath(two)).toEqual(two);
+  });
+});
+
+describe("climbCruiseDescentFt", () => {
+  const profile = climbCruiseDescentFt({ rflFt: 33000, depElevFt: 10, arrElevFt: 10 });
+  const TOTAL = 400; // NM
+
+  it("starts near field elevation and ends near it", () => {
+    expect(profile(0, TOTAL)).toBeLessThan(200);
+    expect(profile(TOTAL, TOTAL)).toBeLessThan(200);
+  });
+
+  it("reaches the requested level in the cruise", () => {
+    expect(profile(TOTAL / 2, TOTAL)).toBe(33000);
+  });
+
+  it("climbs at roughly 3 NM per 1000 ft", () => {
+    // 30 NM out should be near 10 000 ft.
+    expect(profile(30, TOTAL)).toBeGreaterThan(9000);
+    expect(profile(30, TOTAL)).toBeLessThan(11000);
+  });
+
+  it("never exceeds the requested level on a short leg that cannot reach it", () => {
+    const short = climbCruiseDescentFt({ rflFt: 33000 });
+    // 60 NM total: the climb and descent legs cross well below cruise.
+    const peak = Math.max(...[0, 15, 30, 45, 60].map((d) => short(d, 60)));
+    expect(peak).toBeLessThan(33000);
+    expect(peak).toBeGreaterThan(5000);
+  });
+
+  it("is never negative", () => {
+    for (const d of [0, 1, 200, 399, 400]) {
+      expect(profile(d, TOTAL)).toBeGreaterThanOrEqual(0);
+    }
+  });
+});
+
+describe("pathFromFixes with a profile", () => {
+  it("catches a low area under the climb-out that a cruise-level check misses", () => {
+    // The box tops at 15 000 ft; the route crosses it 30 NM after departure.
+    const fixes = [
+      { lat: 15, lon: 99.0 },
+      { lat: 15, lon: 103.0 },
+    ];
+    const flat = pathFromFixes(fixes, {
+      startMs: MON + 3 * HOUR,
+      gsKt: 450,
+      altFt: 33000,
+    });
+    expect(findIncursions(flat, [boxArea()])).toEqual([]);
+
+    const profiled = pathFromFixes(fixes, {
+      startMs: MON + 3 * HOUR,
+      gsKt: 450,
+      altFt: climbCruiseDescentFt({ rflFt: 33000 }),
+    });
+    expect(findIncursions(profiled, [boxArea()]).length).toBeGreaterThan(0);
   });
 });

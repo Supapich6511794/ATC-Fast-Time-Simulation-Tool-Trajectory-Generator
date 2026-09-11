@@ -66,7 +66,35 @@ export function findIncursions(
   const out: PdrIncursion[] = [];
   if (path.length === 0) return out;
 
+  // Whole-route bounding box and level range, computed once. A flight is near
+  // a handful of the 73 published areas at most, and without this every area
+  // was walked against every sample of every flight — the single biggest cost
+  // in the check when a whole traffic day is loaded.
+  let pMinLon = Infinity;
+  let pMinLat = Infinity;
+  let pMaxLon = -Infinity;
+  let pMaxLat = -Infinity;
+  let pMinAlt = Infinity;
+  let pMaxAlt = -Infinity;
+  for (const p of path) {
+    if (p.lon < pMinLon) pMinLon = p.lon;
+    if (p.lon > pMaxLon) pMaxLon = p.lon;
+    if (p.lat < pMinLat) pMinLat = p.lat;
+    if (p.lat > pMaxLat) pMaxLat = p.lat;
+    if (p.altFt < pMinAlt) pMinAlt = p.altFt;
+    if (p.altFt > pMaxAlt) pMaxAlt = p.altFt;
+  }
+
   for (const area of areas) {
+    // Skip the area entirely when the route cannot touch it. Same tolerance as
+    // the per-sample test, so this can never reject something that test would
+    // have accepted.
+    const [aMinLon, aMinLat, aMaxLon, aMaxLat] = area.bbox;
+    if (pMaxLon < aMinLon || pMinLon > aMaxLon) continue;
+    if (pMaxLat < aMinLat || pMinLat > aMaxLat) continue;
+    if (pMaxAlt < area.lowerFt - BAND_TOLERANCE_FT) continue;
+    if (pMinAlt > area.upperFt + BAND_TOLERANCE_FT) continue;
+
     let run: TimedPoint[] = [];
 
     const close = () => {
@@ -127,19 +155,30 @@ export function findIncursions(
  */
 export function pathFromFixes(
   fixes: ReadonlyArray<{ lat: number; lon: number }>,
-  opts: { startMs: number; gsKt: number; altFt: number; stepNm?: number },
+  opts: {
+    startMs: number;
+    gsKt: number;
+    /** A level for the whole route, or a profile: given distance flown and the
+     *  route's total length (both NM), return the altitude in feet. */
+    altFt: number | ((distNm: number, totalNm: number) => number);
+    stepNm?: number;
+  },
 ): TimedPoint[] {
   const step = opts.stepNm ?? 2;
   const gs = opts.gsKt > 0 ? opts.gsKt : 450;
   const out: TimedPoint[] = [];
   if (fixes.length === 0) return out;
 
+  const totalNm = routeLengthNm(fixes);
+  const altAt =
+    typeof opts.altFt === "function" ? opts.altFt : () => opts.altFt as number;
+
   let distNm = 0;
   const push = (lat: number, lon: number, d: number) =>
     out.push({
       lat,
       lon,
-      altFt: opts.altFt,
+      altFt: altAt(d, totalNm),
       timeMs: opts.startMs + (d / gs) * 3600000,
     });
 
@@ -158,6 +197,36 @@ export function pathFromFixes(
     distNm += legNm;
   }
   return out;
+}
+
+/**
+ * A rough climb / cruise / descent profile, for checking a plan that has not
+ * been generated yet.
+ *
+ * This exists because a flat-at-cruise estimate is not merely imprecise, it is
+ * blind to most of the hazard: only 16 of the 73 published PDR areas reach
+ * FL330, while 51 of them top out below FL200. Check a plan at its RFL alone
+ * and every low area under the climb-out and the descent is missed.
+ *
+ * Uses the controller's 3:1 rule — 3 NM per 1000 ft — from the departure and
+ * arrival field elevations. It is an approximation of the engine's real BADA
+ * profile and is labelled as such in the UI; once the flight is generated, the
+ * check re-runs against the actual trajectory.
+ */
+export function climbCruiseDescentFt(opts: {
+  rflFt: number;
+  depElevFt?: number;
+  arrElevFt?: number;
+  nmPerThousandFt?: number;
+}): (distNm: number, totalNm: number) => number {
+  const grad = opts.nmPerThousandFt ?? 3;
+  const dep = opts.depElevFt ?? 0;
+  const arr = opts.arrElevFt ?? 0;
+  return (distNm, totalNm) => {
+    const climbing = dep + (distNm / grad) * 1000;
+    const descending = arr + ((totalNm - distNm) / grad) * 1000;
+    return Math.max(0, Math.min(opts.rflFt, climbing, descending));
+  };
 }
 
 /**
