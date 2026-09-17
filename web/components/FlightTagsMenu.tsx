@@ -9,6 +9,7 @@
  */
 
 import { memo, useEffect, useRef, useState } from "react";
+import NavIcon from "@/components/nav/NavIcon";
 
 export interface TagFields {
   callsign: boolean;
@@ -26,13 +27,33 @@ const ROWS: { key: keyof TagFields; label: string }[] = [
   { key: "airspace", label: "Airspace" },
 ];
 
-function FlightTagsMenu({
-  fields,
-  onChange,
-}: {
+export interface TagFieldsPanelProps {
   fields: TagFields;
   onChange: (next: TagFields) => void;
-}) {
+}
+
+/**
+ * The checkbox rows alone, with no button and no popover around them — so the
+ * global Tool menu can show them inline rather than keeping a second copy.
+ */
+export function TagFieldsBody({ fields, onChange }: TagFieldsPanelProps) {
+  return (
+    <>
+      {ROWS.map((r) => (
+        <label key={r.key} className="flight-tags-row">
+          <span>{r.label}</span>
+          <input
+            type="checkbox"
+            checked={fields[r.key]}
+            onChange={(e) => onChange({ ...fields, [r.key]: e.target.checked })}
+          />
+        </label>
+      ))}
+    </>
+  );
+}
+
+function FlightTagsMenu({ fields, onChange }: TagFieldsPanelProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -57,22 +78,11 @@ function FlightTagsMenu({
         aria-expanded={open}
         title="Choose which fields show in the aircraft label"
       >
-        <span aria-hidden>🏷</span> Flight Tags
+        <NavIcon name="tag" size={14} /> Flight Tags
       </button>
       {open && (
         <div className="flight-tags-panel" role="menu">
-          {ROWS.map((r) => (
-            <label key={r.key} className="flight-tags-row">
-              <span>{r.label}</span>
-              <input
-                type="checkbox"
-                checked={fields[r.key]}
-                onChange={(e) =>
-                  onChange({ ...fields, [r.key]: e.target.checked })
-                }
-              />
-            </label>
-          ))}
+          <TagFieldsBody fields={fields} onChange={onChange} />
         </div>
       )}
     </div>

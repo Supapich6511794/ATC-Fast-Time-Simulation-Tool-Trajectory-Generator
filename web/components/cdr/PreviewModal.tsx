@@ -47,6 +47,7 @@ import type { TrajectoryResult } from "@/lib/trajectory/types";
 import { aircraftAt, toSamples, totalSeconds, type AircraftState } from "@/lib/useSimPlayback";
 
 import SectorChip from "./SectorChip";
+import NavIcon from "@/components/nav/NavIcon";
 
 interface Sample extends AircraftState { t: number }
 
@@ -941,7 +942,9 @@ export default function PreviewModal({
 
             {/* Controller phraseology for the chosen clearance. */}
             <div className="cdr-modal-phrase">
-              <span className="cdr-phrase-label">📢 Clearance</span>
+              <span className="cdr-phrase-label">
+                <NavIcon name="clearance" size={13} /> Clearance
+              </span>
               <span className="cdr-phrase-text">“{phraseology}”</span>
             </div>
 

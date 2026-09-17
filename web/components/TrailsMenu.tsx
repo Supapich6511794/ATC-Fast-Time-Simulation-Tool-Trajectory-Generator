@@ -18,6 +18,7 @@
  */
 
 import { memo, useEffect, useRef, useState } from "react";
+import NavIcon from "@/components/nav/NavIcon";
 
 export interface TrailOpts {
   /** Draw the route path behind each aircraft. */
@@ -61,18 +62,83 @@ const CHECKS: { key: "show" | "flColor"; label: string }[] = [
   { key: "flColor", label: "FL Color Trails" },
 ];
 
-function TrailsMenu({
-  opts,
-  onChange,
-  flightTagsOn,
-  onFlightTagsToggle,
-}: {
+export interface TrailsPanelProps {
   opts: TrailOpts;
   onChange: (next: TrailOpts) => void;
   /** Whether any aircraft tag field is shown (drives the Flight Tags row). */
   flightTagsOn: boolean;
   onFlightTagsToggle: (on: boolean) => void;
-}) {
+}
+
+/**
+ * The rows alone, with no button and no popover around them — so the global
+ * Tool menu can show the same controls inline without a second copy of them.
+ */
+export function TrailsPanelBody({
+  opts,
+  onChange,
+  flightTagsOn,
+  onFlightTagsToggle,
+}: TrailsPanelProps) {
+  return (
+    <>
+      {CHECKS.map((r) => (
+        <label key={r.key} className="flight-tags-row">
+          <input
+            type="checkbox"
+            checked={opts[r.key]}
+            onChange={(e) => onChange({ ...opts, [r.key]: e.target.checked })}
+          />
+          <span>{r.label}</span>
+        </label>
+      ))}
+      <label className="flight-tags-row">
+        <input
+          type="checkbox"
+          checked={flightTagsOn}
+          onChange={(e) => onFlightTagsToggle(e.target.checked)}
+        />
+        <span>Flight Tags</span>
+      </label>
+      <div className="flight-tags-decay">
+        <span className="flight-tags-decay-label">Trail Decay</span>
+        <select
+          value={opts.decaySec}
+          onChange={(e) =>
+            onChange({ ...opts, decaySec: Number(e.target.value) })
+          }
+        >
+          {DECAY_OPTS.map((d) => (
+            <option key={d.sec} value={d.sec}>
+              {d.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="flight-tags-decay">
+        <span className="flight-tags-decay-label">
+          Trail Thickness ({opts.weight.toFixed(1)} px)
+        </span>
+        <input
+          type="range"
+          min={TRAIL_WEIGHT_MIN}
+          max={TRAIL_WEIGHT_MAX}
+          step={0.5}
+          value={opts.weight}
+          onChange={(e) => onChange({ ...opts, weight: Number(e.target.value) })}
+          aria-label="Trail thickness"
+        />
+      </div>
+    </>
+  );
+}
+
+function TrailsMenu({
+  opts,
+  onChange,
+  flightTagsOn,
+  onFlightTagsToggle,
+}: TrailsPanelProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -96,61 +162,16 @@ function TrailsMenu({
         aria-expanded={open}
         title="How the route trail is drawn"
       >
-        <span aria-hidden>🪶</span> Trails
+        <NavIcon name="trails" size={14} /> Trails
       </button>
       {open && (
         <div className="flight-tags-panel" role="menu">
-          {CHECKS.map((r) => (
-            <label key={r.key} className="flight-tags-row">
-              <input
-                type="checkbox"
-                checked={opts[r.key]}
-                onChange={(e) =>
-                  onChange({ ...opts, [r.key]: e.target.checked })
-                }
-              />
-              <span>{r.label}</span>
-            </label>
-          ))}
-          <label className="flight-tags-row">
-            <input
-              type="checkbox"
-              checked={flightTagsOn}
-              onChange={(e) => onFlightTagsToggle(e.target.checked)}
-            />
-            <span>Flight Tags</span>
-          </label>
-          <div className="flight-tags-decay">
-            <span className="flight-tags-decay-label">Trail Decay</span>
-            <select
-              value={opts.decaySec}
-              onChange={(e) =>
-                onChange({ ...opts, decaySec: Number(e.target.value) })
-              }
-            >
-              {DECAY_OPTS.map((d) => (
-                <option key={d.sec} value={d.sec}>
-                  {d.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="flight-tags-decay">
-            <span className="flight-tags-decay-label">
-              Trail Thickness ({opts.weight.toFixed(1)} px)
-            </span>
-            <input
-              type="range"
-              min={TRAIL_WEIGHT_MIN}
-              max={TRAIL_WEIGHT_MAX}
-              step={0.5}
-              value={opts.weight}
-              onChange={(e) =>
-                onChange({ ...opts, weight: Number(e.target.value) })
-              }
-              aria-label="Trail thickness"
-            />
-          </div>
+          <TrailsPanelBody
+            opts={opts}
+            onChange={onChange}
+            flightTagsOn={flightTagsOn}
+            onFlightTagsToggle={onFlightTagsToggle}
+          />
         </div>
       )}
     </div>

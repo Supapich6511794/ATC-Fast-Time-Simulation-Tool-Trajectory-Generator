@@ -23,6 +23,7 @@ import type { ConflictSector } from "@/lib/cdr/sector";
 import type { AppliedFix, Severity } from "@/lib/cdr/types";
 
 import SectorChip from "./SectorChip";
+import NavIcon from "@/components/nav/NavIcon";
 
 interface Props {
   conflicts: TrackedConflict[];
@@ -60,7 +61,9 @@ export default function NotificationPanel({
   return (
     <div className="cdr-panel cdr-notif" role="dialog" aria-label="Conflict notifications">
       <div className="cdr-panel-head">
-        <strong>🔔 Conflict notifications ({unresolved})</strong>
+        <strong>
+          <NavIcon name="bell" size={14} /> Conflict notifications ({unresolved})
+        </strong>
         <button type="button" className="cdr-panel-close" onClick={onClose} aria-label="Close">
           ✕
         </button>

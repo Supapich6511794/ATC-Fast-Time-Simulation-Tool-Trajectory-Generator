@@ -15,6 +15,7 @@
 import { memo, useEffect, useRef } from "react";
 
 import type { AirwayExtra } from "@/components/LayerOptions";
+import NavIcon from "@/components/nav/NavIcon";
 
 function AirwayMenu({
   open,
@@ -22,7 +23,7 @@ function AirwayMenu({
   airway,
   onAirwayChange,
 }: {
-  /** Controlled open state — lifted to MapOverlay so opening this dropdown
+  /** Controlled open state — lifted to the parent so opening this dropdown
    *  closes the Layers one (and vice-versa). */
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -53,7 +54,7 @@ function AirwayMenu({
         aria-expanded={open}
         title="Airway reference layers"
       >
-        🛩 Airway
+        <NavIcon name="airway" size={14} /> Airway
       </button>
 
       {open && (

@@ -31,7 +31,13 @@ import {
   type FlightEventRow,
   type SectorHourRow,
 } from "./flightEvents";
-import { dynamicSectorsTable, type DynamicPlan } from "./dynamicSectors";
+import {
+  dynamicLogTable,
+  dynamicSectorsTable,
+  dynamicTransfersTable,
+  dynamicTransitionsTable,
+  type DynamicPlan,
+} from "./dynamicSectors";
 import { buildWorkbook, type Cell, type ChartSpec } from "./xlsx";
 
 /** The sheet the chart reads its series from. The report itself always
@@ -141,6 +147,30 @@ export function conflictBySectorXlsx(
     conflictBySectorRows(rows, layer),
     CONFLICT_BY_SECTOR_CHART,
   );
+}
+
+/**
+ * The whole dynamic-sectorisation result in one workbook.
+ *
+ * The tables that only make sense together — the log of what was in force hour
+ * by hour, what each sector did, the boundaries that moved, and when the
+ * configuration has to change — plus the chart. As separate files they arrive
+ * as a handful of downloads and get read apart; as tabs they stay one answer.
+ */
+export function dynamicSectorisationXlsx(
+  plan: DynamicPlan,
+  rows: SectorHourRow[],
+): Uint8Array {
+  return buildWorkbook({
+    sheets: [
+      { name: "Log", rows: dynamicLogTable(plan) },
+      { name: "Plan", rows: dynamicSectorsTable(plan) },
+      { name: "Boundary changes", rows: dynamicTransfersTable(plan) },
+      { name: "Timeline", rows: dynamicTransitionsTable(plan) },
+      { name: SERIES_SHEET, rows: standardVsMergedRows(plan) },
+    ],
+    chart: { spec: STANDARD_VS_MERGED_CHART, dataSheet: SERIES_SHEET },
+  });
 }
 
 // --- 2. Standard vs merged --------------------------------------------------

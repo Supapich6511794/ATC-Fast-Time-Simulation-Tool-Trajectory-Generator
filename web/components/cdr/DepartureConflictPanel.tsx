@@ -23,6 +23,7 @@ import {
   resolvedEobtMs,
   type DepartureConflict,
 } from "@/lib/departureSeparation";
+import NavIcon from "@/components/nav/NavIcon";
 
 interface Props {
   conflicts: DepartureConflict[];
@@ -60,7 +61,9 @@ export default function DepartureConflictPanel({
       aria-label="Departure conflicts"
     >
       <div className="cdr-panel-head">
-        <strong>🛫 Departure Conflict</strong>
+        <strong>
+          <NavIcon name="departure" size={14} /> Departure Conflict
+        </strong>
         <button
           type="button"
           className="cdr-panel-close"

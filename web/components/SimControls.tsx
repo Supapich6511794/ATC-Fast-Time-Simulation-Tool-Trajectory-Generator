@@ -16,6 +16,7 @@ import {
   type SimPlayback,
   type SimSpeed,
 } from "@/lib/useSimPlayback";
+import NavIcon from "@/components/nav/NavIcon";
 
 export type PlaybackSource = number | "all";
 
@@ -25,7 +26,8 @@ function mmss(sec: number): string {
   return `${String(m).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }
 
-/** Speed picker as a drop-up menu (the bar sits at the screen bottom). */
+/** Speed picker. Drops DOWN: the playback strip sits at the top of the map,
+ *  under the global bar. */
 function SpeedMenu({
   speed,
   setSpeed,
@@ -56,7 +58,7 @@ function SpeedMenu({
         aria-expanded={open}
         title="Playback speed"
       >
-        x{speed} <span className="caret">{open ? "▾" : "▴"}</span>
+        x{speed} <span className="caret">{open ? "▴" : "▾"}</span>
       </button>
       {open && (
         <ul className="sim-speed-pop" role="listbox">
@@ -213,7 +215,7 @@ function RouteSourcePicker({
         title="Replay source"
       >
         <span className="sim-route-label">{label}</span>
-        <span className="caret">{open ? "▾" : "▴"}</span>
+        <span className="caret">{open ? "▴" : "▾"}</span>
       </button>
       {open && (
         <ul className="sim-route-menu" role="listbox">
@@ -288,7 +290,11 @@ function RouteSourcePicker({
                       onToggleHidden(t.meta.flightKey);
                     }}
                   >
-                    {hidden ? "🚫" : "👁"}
+                    {hidden ? (
+                  <NavIcon name="eye-off" size={14} />
+                ) : (
+                  <NavIcon name="eye" size={14} />
+                )}
                   </button>
                 )}
               </li>
@@ -356,7 +362,11 @@ export default function SimControls({
               : "Hide all route lines (aircraft stay visible)"
           }
         >
-          {allRoutesHidden ? "🚫" : "👁"}
+          {allRoutesHidden ? (
+            <NavIcon name="eye-off" size={14} />
+          ) : (
+            <NavIcon name="eye" size={14} />
+          )}
         </button>
       )}
 

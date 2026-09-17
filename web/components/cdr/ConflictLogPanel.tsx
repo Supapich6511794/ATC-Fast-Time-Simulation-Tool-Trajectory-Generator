@@ -27,6 +27,7 @@ import {
 } from "@/lib/cdr/conflictLog";
 import { conflictLogDocx } from "@/lib/cdr/conflictLogDocx";
 import { DOCX_MIME } from "@/lib/docx";
+import NavIcon from "@/components/nav/NavIcon";
 
 interface Props {
   log: ConflictLogEntry[];
@@ -122,7 +123,9 @@ export default function ConflictLogPanel({ log, onClose, utc, onSelect }: Props)
   return (
     <div className="cdr-panel log-panel" role="dialog" aria-label="Conflict log">
       <div className="cdr-panel-head">
-        <strong>🧾 Conflict log</strong>
+        <strong>
+          <NavIcon name="log" size={14} /> Conflict log
+        </strong>
         <button
           type="button"
           className="cdr-panel-close"

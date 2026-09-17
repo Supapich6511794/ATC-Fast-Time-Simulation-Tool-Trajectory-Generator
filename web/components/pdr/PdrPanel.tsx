@@ -36,6 +36,7 @@ import type {
   RouteSuggestion,
 } from "@/lib/pdr/detect";
 import type { PdrArea } from "@/lib/pdr/types";
+import NavIcon from "@/components/nav/NavIcon";
 
 export interface PdrFlightRow {
   flightKey: string;
@@ -301,7 +302,9 @@ export default function PdrPanel({
   return (
     <div className="cdr-panel pdr-panel" role="dialog" aria-label="PDR conflict check">
       <div className="cdr-panel-head">
-        <strong>🚫 Route &amp; P/D/R Area Check</strong>
+        <strong>
+          <NavIcon name="restricted" size={14} /> Route &amp; P/D/R Area Check
+        </strong>
         <button
           type="button"
           className="cdr-panel-close"

@@ -252,6 +252,31 @@ export function buildSectorAdjacency(
   return adj;
 }
 
+/**
+ * Sector outlines by display name — the outer ring of each polygon.
+ *
+ * The same collapse by display name the adjacency graph uses, so a sector
+ * modelled as two altitude slabs comes back as one shape. Only outer rings: a
+ * hole in a sector is not something a working boundary is cut around.
+ */
+export function sectorShapes(
+  index: AirspaceIndex,
+  layer: SectorKey,
+): ReadonlyMap<string, { lat: number; lon: number }[][]> {
+  const out = new Map<string, { lat: number; lon: number }[][]>();
+  for (const e of index[layer] ?? []) {
+    const name = sectorDisplayName(layer, e.label);
+    if (!name) continue;
+    const rings = e.mp
+      .map((poly) => (poly[0] ?? []).map((c) => ({ lon: c[0], lat: c[1] })))
+      .filter((r) => r.length >= 3);
+    const existing = out.get(name);
+    if (existing) existing.push(...rings);
+    else out.set(name, rings);
+  }
+  return out;
+}
+
 /** Do these two sectors share a boundary? Unknown sectors are never adjacent —
  *  a name the geometry does not know about cannot be merged into anything. */
 export function areAdjacent(adj: SectorAdjacency, a: string, b: string): boolean {

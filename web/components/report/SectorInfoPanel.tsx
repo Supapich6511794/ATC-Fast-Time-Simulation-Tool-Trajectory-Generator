@@ -20,7 +20,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import SectorLoadChart from "@/components/report/SectorLoadChart";
-import { conflictBySectorXlsx, trafficBySectorXlsx } from "@/lib/report/chartData";
+import { trafficBySectorXlsx } from "@/lib/report/chartData";
 import { XLSX_MIME } from "@/lib/report/xlsx";
 import {
   sectorHourCsv,
@@ -28,16 +28,9 @@ import {
   type SectorHourRow,
   type SectorLoadPoint,
 } from "@/lib/report/flightEvents";
-import {
-  describePosition,
-  dynamicSectorsCsv,
-  dynamicSpansCsv,
-  hourRangeLabel,
-  spanLabel,
-  type DynamicPlan,
-  type DynamicSectorConfig,
-} from "@/lib/report/dynamicSectors";
+import type { DynamicSectorConfig } from "@/lib/report/dynamicSectors";
 import { saveBinaryFile, saveTextFile } from "@/lib/saveFile";
+import NavIcon from "@/components/nav/NavIcon";
 
 /** Layer keys as the airspace index names them, in the order a controller
  *  would think of them: the en-route sector first, then the terminal units. */
@@ -55,11 +48,10 @@ interface Props {
   /** How many trajectories exist. Only used to tell the two empty states
    *  apart: nothing generated yet, versus generated but nothing crossed. */
   flightCount: number;
-  /** The band-boxing plan over the same traffic, or null when the chosen layer
-   *  has no adjacency to work with (the CTRs are islands). */
-  dynamicPlan: DynamicPlan | null;
+  /** Only the merge threshold is read here, to draw the reference line on the
+   *  load chart. The plan itself lives in its own panel — see
+   *  components/report/DynamicSectorPanel. */
   dynamicConfig: DynamicSectorConfig;
-  onDynamicConfig: (c: DynamicSectorConfig) => void;
   onClose: () => void;
 }
 
@@ -122,9 +114,7 @@ export default function SectorInfoPanel({
   rows,
   loading,
   flightCount,
-  dynamicPlan,
   dynamicConfig,
-  onDynamicConfig,
   onClose,
 }: Props) {
   const [layer, setLayer] = useState<string>("");
@@ -202,38 +192,6 @@ export default function SectorInfoPanel({
     [rows, layer, sector],
   );
 
-  /** The band-boxing for the hour on screen, and the sectors that were split
-   *  back into it. Both are read straight off the plan — the panel decides
-   *  nothing itself. */
-  const dyn = useMemo(() => {
-    if (!dynamicPlan || dynamicPlan.config.layer !== layer) return null;
-    const thisHour = dynamicPlan.hours.find((h) => h.hourUtc === hour);
-    if (!thisHour) return null;
-    return {
-      hour: thisHour,
-      merged: thisHour.positions.filter((p) => p.merged),
-      standalone: thisHour.positions.filter((p) => !p.merged),
-      spans: dynamicPlan.spans.filter(
-        (sp) => sp.fromHourUtc <= hour && hour < sp.toHourUtc,
-      ),
-    };
-  }, [dynamicPlan, layer, hour]);
-
-  const downloadDynamic = () => {
-    if (!dynamicPlan) return;
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const base = "dynamic_sectorization_" + stamp;
-    saveTextFile(dynamicSectorsCsv(dynamicPlan), base + ".csv");
-    saveTextFile(dynamicSpansCsv(dynamicPlan), base + "_periods.csv");
-    // Same three files the Download dialog writes: which button was pressed
-    // must not change what the reader ends up with.
-    saveBinaryFile(
-      conflictBySectorXlsx(rows ?? [], dynamicPlan.config.layer, dynamicPlan),
-      base + "_chart_conflict_by_sector.xlsx",
-      XLSX_MIME,
-    );
-  };
-
   /** Every hour for the chosen sector, so one cell can be read in context. */
   const dayTotals = useMemo(() => {
     const mine = (rows ?? []).filter(
@@ -250,7 +208,9 @@ export default function SectorInfoPanel({
   return (
     <div className="cdr-panel sector-info" role="dialog" aria-label="Sector information">
       <div className="cdr-panel-head">
-        <strong>📊 Sector information</strong>
+        <strong>
+          <NavIcon name="chart" size={14} /> Sector information
+        </strong>
         <span className="cdr-head-actions">
           <button
             type="button"
@@ -421,137 +381,11 @@ export default function SectorInfoPanel({
                 points={loadSeries}
                 selected={hour}
                 threshold={
-                  dynamicPlan && dynamicPlan.config.layer === layer
-                    ? dynamicConfig.mergeBelow
-                    : null
+                  dynamicConfig.layer === layer ? dynamicConfig.mergeBelow : null
                 }
                 onPick={setHour}
               />
 
-              {/* Dynamic sectorization. Deliberately below the measured
-                  numbers: it is a proposal derived FROM them, and reading it
-                  first invites taking it for a description of the airspace. */}
-              {dyn && (
-                <div className="si-dyn">
-                  <h4 className="pdr-group-h">
-                    Dynamic sectorization · {hourRangeLabel(dyn.hour.hourUtc)}
-                  </h4>
-
-                  {/* The two knobs, then the download on its own line. Squeezed
-                      onto one row the labels wrapped and the button ended up
-                      narrower than the number fields beside it. */}
-                  <div className="si-dyn-cfg">
-                    <label className="si-num">
-                      <span className="si-num-lbl">Merge below</span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={99}
-                        value={dynamicConfig.mergeBelow}
-                        onChange={(e) =>
-                          onDynamicConfig({
-                            ...dynamicConfig,
-                            mergeBelow: Math.max(
-                              1,
-                              Math.min(99, Number(e.target.value) || 1),
-                            ),
-                          })
-                        }
-                      />
-                      <span className="si-num-hint">aircraft / hour</span>
-                    </label>
-                    <label className="si-num">
-                      <span className="si-num-lbl">Max sectors</span>
-                      <input
-                        type="number"
-                        min={2}
-                        max={6}
-                        value={dynamicConfig.maxSectorsPerPosition}
-                        onChange={(e) =>
-                          onDynamicConfig({
-                            ...dynamicConfig,
-                            maxSectorsPerPosition: Math.max(
-                              2,
-                              Math.min(6, Number(e.target.value) || 2),
-                            ),
-                          })
-                        }
-                      />
-                      <span className="si-num-hint">per position</span>
-                    </label>
-                  </div>
-
-                  <button
-                    type="button"
-                    className="si-dl si-dl-wide"
-                    onClick={downloadDynamic}
-                    title="Save the whole-run plan and the band-box periods as CSV"
-                  >
-                    <DownloadIcon />
-                    <span className="si-dl-text">
-                      <b>Download plan</b>
-                      {/* Two files land, which is worth saying before two save
-                          dialogs appear unannounced. */}
-                      <em>
-                        3 files · plan and periods as CSV, plus an .xlsx whose
-                        Chart tab holds the conflicts-by-sector graph
-                      </em>
-                    </span>
-                  </button>
-
-                  <p className="si-dyn-head">
-                    {dyn.hour.positionsOpen} position
-                    {dyn.hour.positionsOpen === 1 ? "" : "s"} for{" "}
-                    {dyn.hour.baselineSectors} published sectors
-                    {dyn.hour.baselineSectors > dyn.hour.positionsOpen && (
-                      <>
-                        {" "}
-                        — {dyn.hour.baselineSectors - dyn.hour.positionsOpen} saved
-                      </>
-                    )}
-                  </p>
-
-                  {dyn.merged.length === 0 && (
-                    <p className="si-note">
-                      Nothing can be band-boxed this hour: every adjacent pair
-                      would carry {dynamicConfig.mergeBelow} aircraft or more.
-                      All {dyn.hour.baselineSectors} sectors are worked
-                      separately.
-                    </p>
-                  )}
-
-                  {dyn.merged.map((p) => (
-                    <p key={p.label} className="si-dyn-merge">
-                      {describePosition(p)}
-                    </p>
-                  ))}
-
-                  {dyn.spans.length > 0 && (
-                    <p className="si-note">
-                      In force:{" "}
-                      {dyn.spans
-                        .map((sp) => sp.label + " " + spanLabel(sp))
-                        .join(" · ")}
-                    </p>
-                  )}
-
-                  {dyn.hour.splitBack.length > 0 && (
-                    <p className="si-dyn-split">
-                      ↩ Split back this hour: {dyn.hour.splitBack.join(", ")} —
-                      traffic reached the threshold, so each returns to its own
-                      position.
-                    </p>
-                  )}
-
-                  <p className="si-note si-dyn-basis">
-                    This is a <b>dynamic operational configuration</b> — who
-                    works which airspace this hour. The published sector map is
-                    unchanged: every position above is a grouping of the same{" "}
-                    {dyn.hour.baselineSectors} baseline sectors, and nothing here
-                    is written back to the airspace definition.
-                  </p>
-                </div>
-              )}
             </div>
           )}
         </>

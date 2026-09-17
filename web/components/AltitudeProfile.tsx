@@ -22,6 +22,7 @@ import {
   type AirspaceMembership,
   type AirspaceSegment,
 } from "@/lib/airspace";
+import NavIcon from "@/components/nav/NavIcon";
 
 interface Props {
   trajectory: TrajectoryResult;
@@ -247,7 +248,7 @@ export default function AltitudeProfile({
   }, [samples, tMax, trajectory.stats.cruiseAltFt, trajectory.profile.constraints]);
 
   // --- Magnifier zoom (e-commerce style) ---------------------------------
-  // Click the 🔍 badge to arm zoom; then the whole chart scales up around the
+  // Click the magnifier badge to arm zoom; then the whole chart scales up around the
   // cursor as you move over it (transform-origin follows the pointer), so you
   // can inspect a level-off or the TOC/TOD region. Click again to exit.
   // (Declared before the early return below so the hook order stays stable.)
@@ -357,7 +358,7 @@ export default function AltitudeProfile({
           aria-label={zoomed ? "Exit zoom" : "Zoom"}
           aria-pressed={zoomed}
         >
-          <span aria-hidden>🔍</span>
+          <NavIcon name="search" size={14} />
         </button>
         <div
           className="alt-zoomable"

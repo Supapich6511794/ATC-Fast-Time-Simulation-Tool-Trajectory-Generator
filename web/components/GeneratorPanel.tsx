@@ -97,6 +97,7 @@ import {
   type AipRoute,
 } from "@/lib/aipRoutes";
 import type { TrajectoryPoint, TrajectoryResult } from "@/lib/trajectory/types";
+import NavIcon from "@/components/nav/NavIcon";
 
 /** How the route portion is supplied (all three kept, none removed). */
 type RouteMode = "fpl" | "build" | "csv";
@@ -364,7 +365,7 @@ interface Props {
    *  An array so several routes can be flown/shown at once. */
   onResult: (results: TrajectoryResult[] | null) => void;
   /** Emits the matching download URLs alongside results. Lifted to the
-   *  parent so the floating NavToolbar + DownloadModal can read them. */
+   *  parent so the global nav bar + DownloadModal can read them. */
   onDownloadsChange?: (dl: DownloadInfo[]) => void;
   /** Live preview of all routes the user has in flight (the queued
    *  routes plus the one currently being typed/built), so the map can
@@ -424,7 +425,22 @@ interface Props {
   /** Bring a plan's tab to the front so its route can be edited by hand. Sent
    *  by the PDR panel's "Edit route in plan" button. `nonce` makes a repeat
    *  request for the same plan a new event. */
-  focusPlan?: { planId: string; nonce: number } | null;
+  /** Bring one plan's tab forward.
+   *
+   *  Addressed either by `planId` — what a filed plan carries — or by
+   *  `match`, the callsign + city pair that identifies a plan before it has
+   *  been flown. The PDR check uses the first while it is reading filed plans
+   *  and the second once the flights are generated, since a trajectory has no
+   *  plan id to hand back. */
+  /** Leave the opening card and show these plans on the map, with the route
+   *  and area checks open. Optional: without it the Preview button is not
+   *  rendered at all, rather than rendered and inert. */
+  onPreview?: () => void;
+  focusPlan?: {
+    planId?: string;
+    match?: { callsign: string; adep: string; ades: string };
+    nonce: number;
+  } | null;
   /** A route the PDR check has staged for review.
    *
    *  It fills the matching plan's Item-15 route field and stops there: the
@@ -546,8 +562,19 @@ function GeneratorPanel({
   onOpenPdrCheck,
   focusPlan,
   routeHandoff,
+  onPreview,
 }: Props) {
   const [routeMode, setRouteMode] = useState<RouteMode>("fpl");
+
+  /**
+   * How this plan is being entered: typed in, or read from a file.
+   *
+   * A view switch only — both paths were already here and both still work. It
+   * opens on "manual" because that is the empty-handed case: someone who has a
+   * file knows they have one, someone who does not needs the form in front of
+   * them.
+   */
+  const [entryMode, setEntryMode] = useState<"manual" | "import">("manual");
 
   const [callsign, setCallsign] = useState("");
   const [actype, setActype] = useState("B738");
@@ -1262,11 +1289,26 @@ function GeneratorPanel({
   const focusNonce = useRef<number | null>(null);
   useEffect(() => {
     if (!focusPlan || focusNonce.current === focusPlan.nonce) return;
+    const up = (v: string) => v.trim().toUpperCase();
+    // By id when there is one, else by the identity a plan has before it has
+    // been flown — the same match `routeHandoff` uses just below.
+    const id = focusPlan.planId
+      ? plans.find((p) => p.id === focusPlan.planId)?.id
+      : focusPlan.match
+        ? plans.find(
+            (p) =>
+              up(p.callsign) === up(focusPlan.match!.callsign) &&
+              up(p.adep) === up(focusPlan.match!.adep) &&
+              up(p.ades) === up(focusPlan.match!.ades),
+          )?.id
+        : undefined;
+    // Leave the nonce unconsumed if the plan is not here yet: the tabs may
+    // still be filling in from an import, and a dropped focus is silent.
+    if (!id) return;
     focusNonce.current = focusPlan.nonce;
-    if (!plans.some((p) => p.id === focusPlan.planId)) return;
     setPlanQuery("");
-    if (focusPlan.planId !== activeIdRef.current) {
-      switchToRef.current(focusPlan.planId);
+    if (id !== activeIdRef.current) {
+      switchToRef.current(id);
     }
   }, [focusPlan, plans]);
 
@@ -2769,6 +2811,11 @@ function GeneratorPanel({
           </span>{" "}
           Airports: <b>{uniqueAirports.size}</b>
         </span>
+        {/* Up here with the counters rather than under the form: the form runs
+            to several screens once a plan is open, and on the preview page —
+            where the rail is the only column — a footer button is simply below
+            the fold. This is the one action that applies to every plan, so it
+            belongs beside the count of them. */}
         <button
           type="button"
           className="plans-genall"
@@ -2789,7 +2836,7 @@ function GeneratorPanel({
             className="plans-search"
             value={planQuery}
             onChange={(e) => setPlanQuery(e.target.value)}
-            placeholder="🔎 Search FPL — callsign / ADEP / ADES / route"
+            placeholder="Search FPL — callsign / ADEP / ADES / route"
             aria-label="Search flight plans"
           />
           {planQuery && (
@@ -2915,8 +2962,73 @@ function GeneratorPanel({
             </button>
           )}
 
-          {fileNote && <p className="file-note">📄 {fileNote}</p>}
+          {fileNote && (
+            <p className="file-note">
+              <NavIcon name="file" size={13} /> {fileNote}
+            </p>
+          )}
 
+          {/* Type a plan, or bring a file. One-of-N, so it takes the segmented
+              control the rest of the app uses for that. */}
+          <div className="gen-entry" role="tablist" aria-label="How to enter this plan">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={entryMode === "manual"}
+              className={entryMode === "manual" ? "active" : undefined}
+              onClick={() => setEntryMode("manual")}
+            >
+              Manual
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={entryMode === "import"}
+              className={entryMode === "import" ? "active" : undefined}
+              onClick={() => setEntryMode("import")}
+            >
+              Import file
+            </button>
+          </div>
+
+          {entryMode === "import" && (
+            <div className="gen-import-pane">
+              <div
+                className={`gen-import${dragging ? " drag" : ""}`}
+                onClick={() => fileRef.current?.click()}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragging(true);
+                }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragging(false);
+                  handleFiles(e.dataTransfer.files);
+                }}
+              >
+                <span className="gen-import-ico" aria-hidden>
+                  ⬆
+                </span>
+                <span className="gen-import-main">
+                  Drop a flight-plan file, or click to choose
+                </span>
+                <span className="gen-import-sub">
+                  CSV, JSON or GeoJSON · several files at once
+                </span>
+              </div>
+              <p className="gen-import-note">
+                Each flight in the file opens as its own plan tab. Edit any of
+                them here, then <b>Generate all</b> — importing does not
+                generate on its own.
+              </p>
+            </div>
+          )}
+
+          {/* The whole typed-in form. `hidden` rather than unmounted: every
+              field keeps its state while the Import tab is up, so switching
+              back does not wipe a half-filled plan. */}
+          <div className="gen-form" hidden={entryMode !== "manual"}>
           <div className="field-row">
             <label className="field">
               <span>Callsign</span>
@@ -3092,7 +3204,9 @@ function GeneratorPanel({
               aria-expanded={tuneOpen}
               onClick={() => setTuneOpen((v) => !v)}
             >
-              <span>⚙ Speed schedule (advanced)</span>
+              <span>
+                <NavIcon name="settings" size={13} /> Speed schedule (advanced)
+              </span>
               <span className="tune-caret">{tuneOpen ? "▾" : "▸"}</span>
             </button>
 
@@ -3639,43 +3753,31 @@ function GeneratorPanel({
             <code>{previewFpl || "— fill in the fields above —"}</code>
           </div>
 
-          {/* Inline bulk import — drop a CSV/JSON of many flights to fan
-              them out into tabs, ready for "Generate all". */}
-          <div
-            className={`gen-import${dragging ? " drag" : ""}`}
-            onClick={() => fileRef.current?.click()}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragging(true);
-            }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragging(false);
-              handleFiles(e.dataTransfer.files);
-            }}
-          >
-            <span className="gen-import-ico" aria-hidden>
-              ⬆
-            </span>
-            <span>Drag &amp; drop CSV / JSON to bulk-import flights ↗</span>
-            <input
-              ref={fileRef}
-              type="file"
-              accept=".csv,.json,.geojson,application/json,text/csv"
-              multiple
-              hidden
-              onChange={(e) => handleFiles(e.target.files)}
-            />
           </div>
+
+          {/* The file input itself stays mounted in both tabs: it is hidden
+              either way, and unmounting it with the Import pane would drop the
+              ref that the drop zone clicks through. */}
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv,.json,.geojson,application/json,text/csv"
+            multiple
+            hidden
+            onChange={(e) => handleFiles(e.target.files)}
+          />
 
           {/* Bottom action bar — hint on the left, Duplicate + Generate
               on the right (mirrors the mockup footer). */}
           <div className="gen-actionbar">
             <span className="gen-actionbar-hint">
+              {/* "Fill in fields above" would be pointing at a hidden form
+                  while the Import tab is up. */}
               {pairReady
                 ? `${dep} → ${des}`
-                : "Fill in fields above"}
+                : entryMode === "import"
+                  ? "Import a file, or switch to Manual"
+                  : "Fill in fields above"}
             </span>
             <div className="gen-actionbar-btns">
               <button
@@ -3699,6 +3801,23 @@ function GeneratorPanel({
               </button>
             </div>
           </div>
+
+          {/* Look at what these plans do before committing to generating
+              them. At the end of the form because that is where the eye lands
+              once the last field is filled; Generate all lives up in the
+              counter row, where it stays reachable from any scroll position. */}
+          {onPreview && (
+            <div className="gen-footer">
+              <button
+                type="button"
+                className="gen-preview"
+                onClick={onPreview}
+                title="Show these plans on the map with the route and area checks"
+              >
+                Preview
+              </button>
+            </div>
+          )}
       </>
 
       {error && <p className="gen-error">⚠ {error}</p>}

@@ -8,6 +8,7 @@
  */
 
 import type { Toast } from "@/lib/cdr/useToasts";
+import NavIcon from "@/components/nav/NavIcon";
 
 interface Props {
   toasts: Toast[];
@@ -42,7 +43,11 @@ export default function ToastStack({ toasts, onDismiss, onOpen }: Props) {
             title="Open in the Conflict Dashboard"
           >
             <span className="cdr-toast-ico" aria-hidden>
-              {t.kind === "auto" ? "🤖" : ICON[t.severity]}
+              {t.kind === "auto" ? (
+                <NavIcon name="auto" size={14} />
+              ) : (
+                ICON[t.severity]
+              )}
             </span>
             <span className="cdr-toast-text">
               <span className="cdr-toast-title">{t.title}</span>

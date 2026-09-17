@@ -12,6 +12,8 @@
 
 import { memo, useEffect, useMemo, useState } from "react";
 
+import NavIcon, { type NavIconName } from "@/components/nav/NavIcon";
+
 import type { PanelAirport } from "@/lib/atcLayers";
 import type { ProcedureDto } from "@/lib/api";
 import {
@@ -41,7 +43,7 @@ export const DEFAULT_PROC_LAYER: ProcLayerState = {
   thickness: 2,
 };
 
-type TabKey =
+export type LayerTabKey =
   | "airports"
   | "gates"
   | "sid"
@@ -50,6 +52,9 @@ type TabKey =
   | "ils"
   | "holding"
   | "airway";
+
+/** Kept for the file's own use; `LayerTabKey` is the exported name. */
+type TabKey = LayerTabKey;
 
 /** Holding-tab layer state: the racetracks, their fix labels, which of the four
  *  kinds are drawn, and the airport / holding-fix filters. */
@@ -88,15 +93,19 @@ export interface AirwayExtra {
 // Full layer set: Airports, Gates, SID, STAR, PBN, ILS terminal procedures,
 // plus the Airway reference layers. (Airspace sectors live in their own
 // toolbar dropdown beside the Layers button.)
-const TABS: { key: TabKey; icon: string; label: string }[] = [
-  { key: "airports", icon: "✈", label: "Airports" },
-  { key: "gates", icon: "🚪", label: "Gates" },
-  { key: "sid", icon: "🛫", label: "SID" },
-  { key: "star", icon: "🛬", label: "STAR" },
-  { key: "pbn", icon: "📍", label: "PBN" },
-  { key: "ils", icon: "📡", label: "ILS" },
-  { key: "holding", icon: "⭕", label: "Holding" },
-  { key: "airway", icon: "🛩", label: "Airway" },
+export const LAYER_TABS: {
+  key: LayerTabKey;
+  icon: NavIconName;
+  label: string;
+}[] = [
+  { key: "airports", icon: "trajectory", label: "Airports" },
+  { key: "gates", icon: "gates", label: "Gates" },
+  { key: "sid", icon: "departure", label: "SID" },
+  { key: "star", icon: "arrival", label: "STAR" },
+  { key: "pbn", icon: "waypoint", label: "PBN" },
+  { key: "ils", icon: "signal", label: "ILS" },
+  { key: "holding", icon: "holding", label: "Holding" },
+  { key: "airway", icon: "airway", label: "Airway" },
 ];
 
 /** One procedure-style layer's wiring (shared by SID/STAR/PBN/ILS). */
@@ -118,6 +127,9 @@ export interface ProcLayerWiring {
 interface Props {
   open: boolean;
   onClose: () => void;
+  /** Open straight on this tab — the global Layers menu names a layer, and the
+   *  panel should already be on it when it appears. */
+  initialTab?: LayerTabKey;
   // Airports
   airportList: PanelAirport[];
   hiddenAirports: Set<string>;
@@ -193,8 +205,14 @@ function LayerOptions({
   holdingAirportOpts,
   holdingOpts,
   holdingLoading,
+  initialTab,
 }: Props) {
   const [tab, setTab] = useState<TabKey>("airports");
+  // Followed rather than seeded once: picking a second layer from the global
+  // menu while the panel is already up has to move it, not be ignored.
+  useEffect(() => {
+    if (open && initialTab) setTab(initialTab);
+  }, [open, initialTab]);
   if (!open) return null;
 
   const PROC: Record<"sid" | "star" | "pbn" | "ils", ProcLayerWiring> = {
@@ -207,14 +225,16 @@ function LayerOptions({
   return (
     <div className="lo-panel" role="dialog" aria-label="Layer Options">
       <div className="lo-head">
-        <strong>⚙ Layer Options</strong>
+        <strong>
+          <NavIcon name="settings" size={14} /> Layer Options
+        </strong>
         <button className="lo-close" onClick={onClose} aria-label="Close">
           ✕
         </button>
       </div>
 
       <div className="lo-tabs" role="tablist">
-        {TABS.map((t) => (
+        {LAYER_TABS.map((t) => (
           <button
             key={t.key}
             role="tab"
@@ -222,8 +242,8 @@ function LayerOptions({
             className={`lo-tab${tab === t.key ? " active" : ""}`}
             onClick={() => setTab(t.key)}
           >
-            <span className="lo-tab-ico" aria-hidden>
-              {t.icon}
+            <span className="lo-tab-ico">
+              <NavIcon name={t.icon} size={15} />
             </span>
             <span>{t.label}</span>
           </button>

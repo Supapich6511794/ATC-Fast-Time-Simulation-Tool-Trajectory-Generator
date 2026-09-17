@@ -38,6 +38,7 @@ import {
   useMapEvents,
 } from "react-leaflet";
 
+import { greatCircleNm } from "@/lib/geoDistance";
 import { BASEMAPS, type Basemap } from "@/lib/mapPrefs";
 import type { PreviewPoint } from "@/lib/routePreview";
 import type { TrajectoryPoint, TrajectoryResult } from "@/lib/trajectory/types";
@@ -190,8 +191,16 @@ interface Props {
    *  pulsing highlight ring so it stands out from the rest. */
   followKey?: string;
   /** Clicking a plane on the map locks the camera onto it (the parent turns on
-   *  camera-follow + the detail card). Index is into `trajectories`. */
+   *  camera-follow + the detail card). Index is into `trajectories`. While the
+   *  Measure tool is armed the parent routes the same click to `measurePicks`
+   *  instead — the map does not need to know which it is. */
   onAircraftClick?: (index: number) => void;
+  /** Measure tool (Tool ▸ Measure): armed, and the aircraft picked so far —
+   *  0, 1 or 2 indices into `trajectories`. With two, the separation between
+   *  them is drawn and labelled at the live positions, so it tracks as they
+   *  fly. */
+  measureOn?: boolean;
+  measurePicks?: number[];
   /** Hovering a plane shows its detail card without locking the camera; the
    *  parent clears it on mouse-out (index null). */
   onAircraftHover?: (index: number | null) => void;
@@ -209,6 +218,11 @@ interface Props {
     kind: "P" | "D" | "R";
     /** GeoJSON MultiPolygon rings, [lon, lat]. */
     mp: [number, number][][][] | number[][][][];
+    /** Outline colour. Defaults to the restricted-area red. A proposed working
+     *  boundary is drawn in its own colour: it is a staffing proposal, and
+     *  painting it the same red as airspace to keep out of would say the
+     *  opposite of what it means. */
+    color?: string;
   }[];
   /** CD&R overlay: active conflicts + the traffic snapshot they were computed
    *  from, the selected conflict (drawn with full predicted tracks + CPA), and
@@ -859,6 +873,8 @@ export default function LeafletMap({
   followKey,
   onAircraftClick,
   onAircraftHover,
+  measureOn,
+  measurePicks,
   onMapReady,
   highlightAreas,
   cdrConflicts,
@@ -872,6 +888,7 @@ export default function LeafletMap({
   cdrOriginalLabel,
 }: Props) {
   const tiles = BASEMAPS[basemap];
+
 
   // Elapsed-time sample table per trajectory (rebuilt only on new data).
   const samplesByRoute = useMemo(
@@ -1850,7 +1867,69 @@ export default function LeafletMap({
     Math.min(120, Math.floor(2400 / Math.max(1, airborneNow))),
   );
 
+  /**
+   * The Measure tool's readout: the two picked aircraft AT THE CURRENT CLOCK,
+   * so the line and the numbers track them as they fly rather than freezing at
+   * whatever the separation was when they were clicked.
+   *
+   * Horizontal distance and vertical difference both, because that is what
+   * "how far apart are they" means in a control room — 6 NM is separation at
+   * the same level and nothing at all 4000 ft apart.
+   */
+  const measured = (() => {
+    if (!measureOn || !measurePicks || measurePicks.length < 2) return null;
+    const ends = measurePicks.slice(0, 2).map((ti) => {
+      const t = trajectories[ti];
+      const samples = samplesByRoute[ti];
+      if (!t || !samples?.length) return null;
+      const off = playbackIdx === "all" ? routeOffsetSec[ti] ?? 0 : 0;
+      const ac = aircraftAt(samples, simT - off);
+      return ac ? { ac, key: t.meta.flightKey } : null;
+    });
+    const [a, b] = ends;
+    if (!a || !b) return null;
+    return {
+      a,
+      b,
+      distNm: greatCircleNm(a.ac, b.ac),
+      vertFt: Math.abs((a.ac.altitudeFt ?? 0) - (b.ac.altitudeFt ?? 0)),
+    };
+  })();
+
   return (
+    <>
+      {/*
+        Basemap tone filter.
+
+        Esri's canvas is a neutral grey; the target palette is blue-tinted, and
+        no CSS filter can tint a grey (hue-rotate does nothing to a colour with
+        no saturation). An SVG colour matrix can, because it maps each output
+        channel independently.
+
+        Solved so the tile's two fills land exactly on the reference palette:
+        water grey 34 -> #0a0e17, land grey 65 -> #161c27. Verified against a
+        real z7 tile over Thailand — the two most common colours come out
+        (10,14,23) and (22,28,39), the reference's own values. Esri's canvas
+        brightens as it zooms in, so at z13 the same map yields (27,34,46):
+        the same hue, a little lighter, which is the tile's behaviour and not
+        the matrix's.
+
+        Each row reads luminance (0.2126/0.7152/0.0722) and scales it, so a
+        tile pixel that is not perfectly neutral still maps sensibly.
+      */}
+      <svg width="0" height="0" aria-hidden="true" focusable="false"
+           style={{ position: "absolute" }}>
+        <filter id="basemap-night" colorInterpolationFilters="sRGB">
+          <feColorMatrix
+            type="matrix"
+            values="
+              0.08230 0.27685 0.02795 0 -0.012397
+              0.09601 0.32299 0.03261 0 -0.005313
+              0.10973 0.36914 0.03726 0  0.021379
+              0       0       0       1  0"
+          />
+        </filter>
+      </svg>
     <MapContainer
       center={DEFAULT_CENTER}
       zoom={DEFAULT_ZOOM}
@@ -1858,18 +1937,23 @@ export default function LeafletMap({
       preferCanvas
       // Leaflet's default zoom control sits top-left. We disable it so a
       // custom +/− pair can be rendered next to the Light/Dark toggle
-      // (see MapOverlay) — see onMapReady prop below.
+      // (on the global nav bar) — see onMapReady prop below.
       zoomControl={false}
       style={{ height: "100%", width: "100%" }}
     >
-      <TileLayer
-        key={basemap}
-        attribution={tiles.attribution}
-        url={tiles.url}
-        className={tiles.className}
-      />
-      {/* Esri's canvas basemaps keep place names in a separate reference
-          layer, so the dark map draws it over the base. */}
+      {/* Tiles for streets and satellite. The dark basemap draws none at all
+          — see `vectorBase` — so nothing here is fetched while it is shown. */}
+      {tiles.url && (
+        <TileLayer
+          key={basemap}
+          attribution={tiles.attribution}
+          url={tiles.url}
+          className={tiles.className}
+        />
+      )}
+      {/* A tile source may carry a second overlay layer (Esri splits place
+          names out of its canvas base). None currently does — the dark map
+          wants no labels — but the capability stays on the type. */}
       {tiles.labelUrl && (
         <TileLayer
           key={basemap + "-labels"}
@@ -1877,6 +1961,7 @@ export default function LeafletMap({
           className={tiles.labelClassName}
         />
       )}
+
       {/* The picked-out P/D/R area, above every sector overlay. */}
       {(highlightAreas ?? []).map((area) =>
         (area.mp as number[][][][]).map((poly, pi) => (
@@ -1887,11 +1972,12 @@ export default function LeafletMap({
               ring.map((c) => [c[1], c[0]] as [number, number]),
             )}
             pathOptions={{
-              color: "#f87171",
+              color: area.color ?? "#f87171",
               weight: 3,
               opacity: 1,
-              fillColor: "#ef4444",
+              fillColor: area.color ?? "#ef4444",
               fillOpacity: 0.28,
+              dashArray: area.color ? "8 6" : undefined,
             }}
             // No tooltip: it would need an interactive layer, and a hover
             // handler over a 13 000-vertex ring (VTR62) on the shared canvas
@@ -2231,7 +2317,56 @@ export default function LeafletMap({
         />
       )}
 
+      {/* Measure tool — the span between the two picked aircraft. Drawn last so
+          it reads over the traffic it is measuring. */}
+      {measured && (
+        <>
+          <Polyline
+            positions={[
+              [measured.a.ac.lat, measured.a.ac.lon],
+              [measured.b.ac.lat, measured.b.ac.lon],
+            ]}
+            interactive={false}
+            pathOptions={{
+              color: "#22d3ee",
+              weight: 1.5,
+              opacity: 0.95,
+              dashArray: "6 5",
+            }}
+          />
+          {[measured.a, measured.b].map((end) => (
+            <CircleMarker
+              key={`measure-end-${end.key}`}
+              center={[end.ac.lat, end.ac.lon]}
+              radius={5}
+              interactive={false}
+              pathOptions={{
+                color: "#22d3ee",
+                weight: 1.5,
+                fillColor: "#22d3ee",
+                fillOpacity: 0.25,
+              }}
+            />
+          ))}
+          <Marker
+            position={[
+              (measured.a.ac.lat + measured.b.ac.lat) / 2,
+              (measured.a.ac.lon + measured.b.ac.lon) / 2,
+            ]}
+            interactive={false}
+            icon={L.divIcon({
+              className: "measure-label",
+              iconSize: [0, 0],
+              html: `<span class="measure-pill">${measured.distNm.toFixed(
+                1,
+              )} NM · ${Math.round(measured.vertFt).toLocaleString()} ft</span>`,
+            })}
+          />
+        </>
+      )}
+
       <FitBounds airways={airways} trajectories={trajectories} />
     </MapContainer>
+    </>
   );
 }

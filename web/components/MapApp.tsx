@@ -22,14 +22,27 @@ import FilterPanel, {
   EMPTY_FILTER,
   type FlightFilter,
 } from "@/components/FilterPanel";
-import FlightTagsMenu, { type TagFields } from "@/components/FlightTagsMenu";
-import TrailsMenu, {
-  DEFAULT_TRAIL_OPTS,
-  type TrailOpts,
-} from "@/components/TrailsMenu";
+import { type TagFields } from "@/components/FlightTagsMenu";
+import { DEFAULT_TRAIL_OPTS, type TrailOpts } from "@/components/TrailsMenu";
 import GeneratorPanel from "@/components/GeneratorPanel";
-import MapOverlay from "@/components/MapOverlay";
-import NavToolbar, { type NavView } from "@/components/NavToolbar";
+import MainNavigation, {
+  type MainNavSlot,
+} from "@/components/nav/MainNavigation";
+import NavIcon from "@/components/nav/NavIcon";
+import BasemapMenu from "@/components/nav/menus/BasemapMenu";
+import ConflictsMenu from "@/components/nav/menus/ConflictsMenu";
+import SectorMenu from "@/components/nav/menus/SectorMenu";
+import LayersMenu from "@/components/nav/menus/LayersMenu";
+import ToolMenu from "@/components/nav/menus/ToolMenu";
+import TrajectoryMenu from "@/components/nav/menus/TrajectoryMenu";
+import { AirspaceBody } from "@/components/AirspaceMenu";
+import type {
+  AutoModeOption,
+  AutoResolveMode,
+  CdrView,
+  MainNavId,
+  NavView,
+} from "@/components/nav/types";
 import RouteResultTabs from "@/components/RouteResultTabs";
 import SimControls from "@/components/SimControls";
 import {
@@ -80,6 +93,7 @@ import LayerOptions, {
   DEFAULT_PROC_LAYER,
   type AirwayExtra,
   type HoldingLayerState,
+  type LayerTabKey,
   type ProcLayerState,
 } from "@/components/LayerOptions";
 import { fetchCsvRouteIdents } from "@/lib/routeCsv";
@@ -163,6 +177,7 @@ import DepartureConflictPanel from "@/components/cdr/DepartureConflictPanel";
 import NotificationPanel from "@/components/cdr/NotificationPanel";
 import SuggestionCards from "@/components/cdr/SuggestionCards";
 import PdrPanel from "@/components/pdr/PdrPanel";
+import DynamicSectorPanel from "@/components/report/DynamicSectorPanel";
 import SectorInfoPanel from "@/components/report/SectorInfoPanel";
 import {
   pathFromTrajectory,
@@ -171,6 +186,7 @@ import {
 } from "@/lib/pdr/usePdrCheck";
 import type { PdrReport } from "@/lib/pdr/detect";
 import type { PdrArea } from "@/lib/pdr/types";
+import { activityAt } from "@/lib/pdr/schedule";
 import { saveBinaryFile, saveTextFile } from "@/lib/saveFile";
 import {
   buildFlightEvents,
@@ -183,6 +199,7 @@ import {
   type SectorHourRow,
 } from "@/lib/report/flightEvents";
 import {
+  applyPlan,
   DEFAULT_DYNAMIC_CONFIG,
   dynamicSectorsCsv,
   dynamicSpansCsv,
@@ -192,8 +209,10 @@ import {
 } from "@/lib/report/dynamicSectors";
 import {
   buildSectorAdjacency,
+  sectorShapes,
   type SectorAdjacency,
 } from "@/lib/report/sectorAdjacency";
+import type { AreaTransfer, Rings } from "@/lib/report/dynamicArea";
 import {
   conflictBySectorXlsx,
   flightTrajectoryXlsx,
@@ -246,21 +265,10 @@ function fmtSpd(c: { type: string; speed_kt?: number | null }): string {
   }
 }
 
-/**
- * When the auto-resolver works.
- *   "off"    — manual only (default).
- *   "before" — one up-front pass over the whole filed plan, run with the clock
- *              parked at t=0, so the replay starts already deconflicted.
- *   "during" — resolve continuously while the replay runs.
- */
-type AutoResolveMode = "off" | "before" | "during";
-
-/** The auto-resolve choices offered in the CD&R menu, in display order. */
-const AUTO_MODE_OPTIONS: {
-  mode: AutoResolveMode;
-  label: string;
-  hint: string;
-}[] = [
+/** The auto-resolve choices offered in the Conflicts menu, in display order.
+ *  (`AutoResolveMode` itself lives with the other navigation types, so the menu
+ *  can name it without importing this shell.) */
+const AUTO_MODE_OPTIONS: AutoModeOption[] = [
   {
     mode: "off",
     label: "Off",
@@ -298,23 +306,13 @@ const ANIMATED_PAN_MAX_FLIGHTS = 150;
  *  on a mid-range laptop; the loop yields between chunks. */
 const REPORT_CHUNK = 50;
 
-/** The CD&R views that share the left rail with the departure-conflict panel. */
-type CdrView =
-  | "notifications"
-  | "dashboard"
-  | "arrivals"
-  | "log"
-  | "pdr"
-  | "sectorinfo"
-  | null;
-
 export default function MapApp() {
   const [airways, setAirways] = useState<AirwayCollection | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [trajectories, setTrajectories] = useState<TrajectoryResult[]>([]);
   /** Download URLs that pair 1-to-1 with `trajectories`. Lifted out of
-   *  GeneratorPanel so the floating NavToolbar + DownloadModal can read
-   *  them without going through GeneratorPanel. */
+   *  GeneratorPanel so the global nav bar + DownloadModal can read them
+   *  without going through GeneratorPanel. */
   const [downloads, setDownloads] = useState<DownloadInfo[]>([]);
   /** Live (pre-Generate) route previews — one entry per route the user
    *  has typed/picked/queued, each drawn in a distinct colour. */
@@ -331,6 +329,15 @@ export default function MapApp() {
   /** Which routes the preview draws while composing: every route in flight
    *  ("full") or only the section currently being filled in ("current"). */
   const [previewScope, setPreviewScope] = useState<"full" | "current">("full");
+  /**
+   * The Flight Preview page: look at the filed routes before generating them.
+   *
+   * A chrome state rather than a route — the sidebar, the map and the preview
+   * layers are the console's own, so there is nothing to duplicate and nothing
+   * to restore on the way back. What changes is what surrounds the map: no
+   * tabs, a title and a count instead, and the map framed.
+   */
+  const [previewMode, setPreviewMode] = useState(false);
   // Editing routes (a new preview set arrives) brings the preview back.
   useEffect(() => {
     setPreviewHidden(false);
@@ -345,7 +352,16 @@ export default function MapApp() {
 
   // Top-level navigation state. `null` = nothing open; the sidebar
   // is hidden entirely so the map fills the viewport on first load.
-  const [nav, setNav] = useState<NavView>(null);
+  /**
+   * Which panel the sidebar is showing. Opens on the generator.
+   *
+   * It used to open on `null` — sidebar hidden, map only, and you clicked
+   * Generator to start. With the first-run card that left a centred header
+   * with nothing under it, because the panel inside is display:none until nav
+   * names it. Opening on the generator is also simply what the app is for
+   * with an empty run.
+   */
+  const [nav, setNav] = useState<NavView>({ kind: "generator" });
   const [generatedOpen, setGeneratedOpen] = useState(false);
   const [downloadOpen, setDownloadOpen] = useState(false);
   // Route Profile cards are individually collapsible (by flightKey). A key
@@ -377,6 +393,23 @@ export default function MapApp() {
   const [followIdx, setFollowIdx] = useState(0);
   const [detailIdx, setDetailIdx] = useState<number | null>(null);
 
+  // Measure tool (Tool ▸ Measure). While it is armed, clicking planes on the
+  // map picks the PAIR whose separation is drawn, rather than locking the
+  // camera onto one of them — two indices into `trajectories`, and a third
+  // click starts the next measurement.
+  const [measureOn, setMeasureOn] = useState(false);
+  const [measurePicks, setMeasurePicks] = useState<number[]>([]);
+  const toggleMeasure = useCallback(() => {
+    setMeasurePicks([]);
+    setMeasureOn((on) => !on);
+  }, []);
+  const clearMeasure = useCallback(() => setMeasurePicks([]), []);
+  // The picks are indices into `trajectories`; a regeneration renumbers them,
+  // so the pair is dropped rather than left pointing at whoever is there now.
+  useEffect(() => {
+    setMeasurePicks([]);
+  }, [trajectories]);
+
   // Locking the camera onto a flight (follow + zoom). Used by BOTH a Results-row
   // click and a click on the plane on the map — either way the camera tracks it.
   const lockOnFlight = useCallback((i: number) => {
@@ -388,7 +421,21 @@ export default function MapApp() {
     setPlaybackIdx((idx) => (idx === "all" ? "all" : i));
   }, []);
   const selectFlight = lockOnFlight;
-  const handleAircraftClick = lockOnFlight;
+  // A click on a plane means one of two things, and the measure tool decides
+  // which: normally it locks the camera on; while measuring it names one end
+  // of the pair being measured.
+  const handleAircraftClick = useCallback(
+    (i: number) => {
+      if (measureOn) {
+        setMeasurePicks((prev) =>
+          prev.length >= 2 ? [i] : prev.includes(i) ? prev : [...prev, i],
+        );
+        return;
+      }
+      lockOnFlight(i);
+    },
+    [measureOn, lockOnFlight],
+  );
 
   // Hovering a plane on the map: show its detail card, but leave the camera
   // unlocked. Ignored visually while a lock is active (the lock wins the card).
@@ -513,7 +560,7 @@ export default function MapApp() {
   );
 
   // Leaflet map instance, captured via MapRefBridge inside LeafletMap.
-  // Used to drive the custom +/− zoom buttons in MapOverlay (the
+  // Used to drive the custom +/− zoom buttons on the global bar (the
   // built-in Leaflet zoom control is disabled).
   const [mapInstance, setMapInstance] = useState<L.Map | null>(null);
   const onMapReady = useCallback(
@@ -527,7 +574,7 @@ export default function MapApp() {
   );
 
   // Stable callbacks for the memoised, animation-independent children
-  // (GeneratorPanel / NavToolbar / MapOverlay / DownloadModal). Keeping
+  // (GeneratorPanel / MainNavigation / DownloadModal). Keeping
   // these referentially constant lets React.memo skip those subtrees on
   // every aircraft-animation frame. All state setters are stable, so the
   // dependency lists are empty.
@@ -540,6 +587,9 @@ export default function MapApp() {
       // reveals the rest one at a time.
       if (list.length > 0) {
         setNav({ kind: "all", section: "both" });
+        // Looking is over: the results need the full console (and its tabs),
+        // which the preview page deliberately does not have.
+        setPreviewMode(false);
         setExpandedKeys(new Set()); // Overview lands with every card collapsed
         setProfileFlightQuery("");
         setProfileRouteQuery("");
@@ -634,6 +684,13 @@ export default function MapApp() {
 
   // Procedure-style layers (SID/STAR/PBN/ILS) — rich state from the panel.
   const [layersOpen, setLayersOpen] = useState(false);
+  /** Which Layer Options tab the panel opens on — set by the global Layers
+   *  menu, which names a layer rather than just opening the panel. */
+  const [layersTab, setLayersTab] = useState<LayerTabKey>("airports");
+  const openLayers = useCallback((tab: LayerTabKey) => {
+    setLayersTab(tab);
+    setLayersOpen(true);
+  }, []);
   const [sid, setSid] = useState<ProcLayerState>(DEFAULT_PROC_LAYER);
   const [star, setStar] = useState<ProcLayerState>(DEFAULT_PROC_LAYER);
   const [pbn, setPbn] = useState<ProcLayerState>(DEFAULT_PROC_LAYER);
@@ -998,10 +1055,10 @@ export default function MapApp() {
   // Detection runs continuously in "all" mode (the one timeline where every
   // aircraft is truly airborne) — it is NOT gated on the panel, so the live
   // conflict count (badge) and the bottom-right alerts appear without the user
-  // opening anything. The ⚡ CD&R button just toggles the detailed Conflict View
+  // opening anything. The Conflicts tab just toggles the detailed Conflict View
   // panel. Detection/lifecycle live in lib/cdr.
   const cdrMonitoring = safePlaybackIdx === "all";
-  // Which CD&R view is open (chosen from the ⚡ CD&R dropdown), and whether the
+  // Which CD&R view is open (chosen from the Conflicts menu), and whether the
   // dropdown itself is showing. "notifications" = the realtime alert stack;
   // "dashboard" = the strategic 2-column LoS/Fixed board.
   const [cdrView, setCdrView] = useState<CdrView>(
@@ -1724,6 +1781,44 @@ export default function MapApp() {
   /** The P/D/R areas picked out in red on the map, from "Show area". A list,
    *  not one: a rejected flight often has several findings and the useful
    *  question is where they sit RELATIVE to each other and to the route. */
+  /**
+   * The opening screen: the generator centred over a blurred map.
+   *
+   * True until either something has been generated or the operator has stepped
+   * past it. Not a separate component — the same sidebar, moved by CSS — so
+   * there is one generator in the tree and no state to keep in sync.
+   */
+  const [firstRunDismissed, setFirstRunDismissed] = useState(false);
+
+  const enterPreview = useCallback(() => {
+    setPreviewMode(true);
+    // Stepping onto the preview page IS stepping past the opening card.
+    setFirstRunDismissed(true);
+    // Drawing the routes is the whole point of the page, so a preview switched
+    // off earlier in the console does not carry over.
+    setPreviewHidden(false);
+    // The plan rail is the page's left-hand column, so make sure it is the
+    // panel on show even if Preview is reached from another view.
+    setNav({ kind: "generator" });
+  }, []);
+  const exitPreview = useCallback(() => {
+    setPreviewMode(false);
+    // Back to where Preview was pressed: the opening card while nothing has
+    // been generated, the console once something has (`firstRun` also requires
+    // an empty run, so this is a no-op in that case).
+    setFirstRunDismissed(false);
+  }, []);
+
+  // Entering or leaving the preview page insets the map container by the
+  // frame. Leaflet caches its own size and cannot see a CSS change, so without
+  // this the tiles keep the old dimensions and the centre drifts. Next frame,
+  // once the new geometry has been laid out.
+  useEffect(() => {
+    if (!mapInstance) return;
+    const f = requestAnimationFrame(() => mapInstance.invalidateSize());
+    return () => cancelAnimationFrame(f);
+  }, [mapInstance, previewMode]);
+
   const [focusedAreas, setFocusedAreas] = useState<PdrArea[]>([]);
   /** Which run report is being built and how far along, null when idle. The
    *  KIND matters: both report buttons share this state, and without it each
@@ -1734,7 +1829,8 @@ export default function MapApp() {
   } | null>(null);
   // "Edit route in plan" — which plan tab the generator should bring forward.
   const [planFocus, setPlanFocus] = useState<{
-    planId: string;
+    planId?: string;
+    match?: { callsign: string; adep: string; ades: string };
     nonce: number;
   } | null>(null);
   // The PDR check over the FILED PLANS, emitted by GeneratorPanel before
@@ -1798,7 +1894,7 @@ export default function MapApp() {
   }, [trajectories, downloads]);
 
   // Enabled whenever there are flights, not just while the panel is open, so
-  // the ⚡ menu can carry the count without the operator opening it first.
+  // the Conflicts menu can carry the count without the operator opening it first.
   const pdr = usePdrCheck(pdrFlights, trajectories.length > 0);
 
   /**
@@ -1893,6 +1989,9 @@ export default function MapApp() {
      *  built from the same airspace index this walk already loads, so it is
      *  cached with it rather than re-derived on every threshold change. */
     adjacency: Record<string, SectorAdjacency>;
+    /** Sector outlines by display name, per layer — what a boundary re-cut
+     *  actually cuts. */
+    shapes: Record<string, ReadonlyMap<string, Rings>>;
   } | null>(null);
 
   const buildReportData = useCallback(
@@ -1908,6 +2007,7 @@ export default function MapApp() {
           events: hit.events,
           sectorHours: hit.sectorHours,
           adjacency: hit.adjacency,
+          shapes: hit.shapes,
         };
       }
       // The sector polygons are loaded lazily, the first time the user toggles
@@ -1994,11 +2094,16 @@ export default function MapApp() {
         resolved: !!e.resolution,
       }));
       const adjacency: Record<string, SectorAdjacency> = {};
-      for (const k of ATS_LAYERS) adjacency[k] = buildSectorAdjacency(index, k);
+      const shapes: Record<string, ReadonlyMap<string, Rings>> = {};
+      for (const k of ATS_LAYERS) {
+        adjacency[k] = buildSectorAdjacency(index, k);
+        shapes[k] = sectorShapes(index, k);
+      }
       const built = {
         events,
         sectorHours: buildSectorHours(events, conflicts),
         adjacency,
+        shapes,
       };
       reportCacheRef.current = { key: cacheKey, ...built };
       return built;
@@ -2063,6 +2168,22 @@ export default function MapApp() {
     string,
     SectorAdjacency
   > | null>(null);
+  const [sectorShapesByLayer, setSectorShapesByLayer] = useState<Record<
+    string,
+    ReadonlyMap<string, Rings>
+  > | null>(null);
+  /**
+   * What of the configuration is drawn on the map right now.
+   *
+   * A merge and a re-cut are both "where does this apply", so one piece of
+   * state covers both: a band-box paints its member sectors, a transfer paints
+   * the slice that changes hands. `key` is what the panel ticks as shown.
+   */
+  const [shownConfig, setShownConfig] = useState<
+    | { kind: "transfer"; key: string; transfer: AreaTransfer }
+    | { kind: "merge"; key: string; label: string; sectors: string[] }
+    | null
+  >(null);
   const [sectorHours, setSectorHours] = useState<SectorHourRow[] | null>(null);
   const [sectorHoursLoading, setSectorHoursLoading] = useState(false);
   // Held in a ref, NOT listed as a dependency. `buildReportData` closes over
@@ -2083,7 +2204,10 @@ export default function MapApp() {
     // bails out at this guard, the panel opens onto "walking every flight…"
     // that nothing will ever finish. Clearing on the way out makes the stuck
     // state unreachable.
-    if (cdrView !== "sectorinfo" || trajectories.length === 0) {
+    if (
+      (cdrView !== "sectorinfo" && cdrView !== "dynsector") ||
+      trajectories.length === 0
+    ) {
       setSectorHoursLoading(false);
       // Rows from a previous run would otherwise be shown against a traffic
       // sample that no longer exists.
@@ -2097,6 +2221,7 @@ export default function MapApp() {
         if (cancelled) return;
         setSectorHours(d.sectorHours);
         setSectorAdjacency(d.adjacency);
+        setSectorShapesByLayer(d.shapes);
       })
       .catch(() => {
         // An empty table reads as "built, found nothing" — which the panel
@@ -2112,23 +2237,141 @@ export default function MapApp() {
     // Only the real inputs: the panel opening, and the data it reads.
   }, [cdrView, trajectories, conflictLog]);
 
-  /** The dynamic sectorization for the open panel: the published sectors of the
-   *  chosen layer, grouped by the traffic that is already on screen. Cheap —
-   *  it is a grouping over the sector-hour table, not another walk over the
-   *  flights — so it re-runs freely as the threshold is dragged. */
-  const dynamicPlan: DynamicPlan | null = useMemo(() => {
-    if (!sectorHours || !sectorAdjacency) return null;
+  /** P and R areas that are ACTIVE in a given hour — the airspace a re-cut is
+   *  not allowed to hand across. Danger areas are left out: they are a hazard
+   *  to the flight, not a bar on which controller owns the airspace. */
+  const blockersAt = useCallback(
+    (hourUtc: string) => {
+      const at = Date.parse(hourUtc);
+      if (!Number.isFinite(at)) return [];
+      return pdr.areas
+        .filter((a: PdrArea) => a.kind !== "D")
+        .filter(
+          (a: PdrArea) => activityAt(a.activity, at, a.centroid).state === "active",
+        )
+        .map((a: PdrArea) => ({
+          ident: a.ident,
+          rings: (a.mp as number[][][][])
+            .map((poly) => (poly[0] ?? []).map((c) => ({ lon: c[0], lat: c[1] })))
+            .filter((r) => r.length >= 3),
+        }));
+    },
+    [pdr.areas],
+  );
+
+  /**
+   * The dynamic sectorisation, produced when the operator asks for it.
+   *
+   * Held in state rather than derived on every render, because a configuration
+   * is a proposal someone looks at and then accepts: recomputing it silently
+   * under them as a threshold is typed would mean the thing they applied is not
+   * the thing they read. `runDynamic` is the only way it changes.
+   */
+  const [dynamicPlan, setDynamicPlan] = useState<DynamicPlan | null>(null);
+  const [dynamicApplied, setDynamicApplied] = useState(false);
+
+  const runDynamic = useCallback(() => {
+    if (!sectorHours || !sectorAdjacency) return;
     const adj = sectorAdjacency[dynConfig.layer];
-    if (!adj || adj.size === 0) return null;
-    return planDynamicSectors(sectorHours, adj, dynConfig);
-  }, [sectorHours, sectorAdjacency, dynConfig]);
+    if (!adj || adj.size === 0) {
+      setDynamicPlan(null);
+      return;
+    }
+    const shapes = sectorShapesByLayer?.[dynConfig.layer];
+    setDynamicPlan(
+      planDynamicSectors(
+        sectorHours,
+        adj,
+        dynConfig,
+        shapes ? { shapes, blockersAt } : undefined,
+      ),
+    );
+    // A fresh recommendation is not an applied one, whatever was applied before.
+    setDynamicApplied(false);
+    setShownConfig(null);
+  }, [sectorHours, sectorAdjacency, sectorShapesByLayer, dynConfig, blockersAt]);
+
+  /**
+   * A setting changed, so the configuration on screen is stale.
+   *
+   * Re-planned rather than blanked, once there is something to re-plan: the
+   * first configuration is asked for deliberately, and after that the numbers
+   * and the proposal beside them have to agree. What does NOT survive is the
+   * acceptance — `runDynamic` clears it, so a plan can never stay "applied"
+   * through a change to the rule that produced it.
+   */
+  const runDynamicRef = useRef(runDynamic);
+  runDynamicRef.current = runDynamic;
+  const hasPlanRef = useRef(false);
+  hasPlanRef.current = dynamicPlan !== null;
+  useEffect(() => {
+    if (hasPlanRef.current) runDynamicRef.current();
+    // Deliberately not `runDynamic`: it is rebuilt whenever any of these
+    // change, and depending on it would re-plan on every render instead.
+  }, [dynConfig, sectorHours]);
+
+  /** The configuration drawn on the map: the member sectors of a band-box, or
+   *  the slice a re-cut hands over. Built from the same outlines the planner
+   *  cut, so what is drawn is what was planned. */
+  const dynamicHighlight = useMemo(() => {
+    if (!shownConfig) return [];
+    if (shownConfig.kind === "transfer") {
+      const t = shownConfig.transfer;
+      return [
+        {
+          ident: shownConfig.key,
+          name: t.from + " cedes its " + t.quadrant + " airspace to " + t.to,
+          kind: "R" as const,
+          mp: [[t.boundary.map((q) => [q.lon, q.lat])]] as number[][][][],
+          color: "#fbbf24",
+        },
+      ];
+    }
+    const shapes = sectorShapesByLayer?.[dynConfig.layer];
+    if (!shapes) return [];
+    return shownConfig.sectors.flatMap((sector) => {
+      const rings = shapes.get(sector);
+      if (!rings || rings.length === 0) return [];
+      return [
+        {
+          ident: shownConfig.key + ":" + sector,
+          name: sector + " — worked as " + shownConfig.label,
+          kind: "R" as const,
+          mp: rings.map((ring) => [ring.map((q) => [q.lon, q.lat])]) as number[][][][],
+          color: "#38bdf8",
+        },
+      ];
+    });
+  }, [shownConfig, sectorShapesByLayer, dynConfig.layer]);
 
   /** Open a flight's plan so its route can be re-written by hand. The PDR
    *  flightKey for a filed plan is "<planId>::<comboIndex>", so the plan id is
    *  its first half. Steps out of the panel and into the generator, which is
    *  where the route field lives. */
+  /** Read inside callbacks that must not be rebuilt on every generation. */
+  const trajectoriesRef = useRef(trajectories);
+  trajectoriesRef.current = trajectories;
+
   const handleOpenPlan = useCallback((flightKey: string) => {
-    setPlanFocus({ planId: flightKey.split("::")[0], nonce: Date.now() });
+    // A FILED plan's key is "<planId>::<comboIndex>", so the id is its first
+    // half. A GENERATED flight has no plan id at all — it is matched on the
+    // callsign and city pair instead, which is what identifies a plan until it
+    // has been flown.
+    const flown = trajectoriesRef.current.find(
+      (t) => t.meta.flightKey === flightKey,
+    );
+    setPlanFocus(
+      flown
+        ? {
+            match: {
+              callsign: flown.meta.callsign,
+              adep: flown.meta.adep,
+              ades: flown.meta.ades,
+            },
+            nonce: Date.now(),
+          }
+        : { planId: flightKey.split("::")[0], nonce: Date.now() },
+    );
     setNav({ kind: "generator" });
     // The check panel STAYS open. It sits to the right of the generator rail
     // rather than over it, and the check re-runs as the route is edited — so
@@ -3118,6 +3361,26 @@ export default function MapApp() {
     [profileFlightRows],
   );
 
+  /**
+   * Home — back to the Generator, the first page of a run.
+   *
+   * Everything the other tabs opened over it closes; nothing that has been
+   * generated is thrown away. It does NOT put the opening screen back: the bar
+   * is hidden there, so a Home that returned to it would take away the control
+   * that was just used, and the way out of it again.
+   */
+  const goHome = useCallback(() => {
+    setNav({ kind: "generator" });
+    setSidebarOpen(true);
+    setCdrView(null);
+    setDepPanelOpen(false);
+    setFilterOpen(false);
+    setLayersOpen(false);
+    setDownloadOpen(false);
+    setMeasureOn(false);
+    setMeasurePicks([]);
+  }, []);
+
   const activeRouteLabel = (() => {
     if (nav?.kind === "all") {
       const sec =
@@ -3138,8 +3401,305 @@ export default function MapApp() {
     return `R${i + 1} · ${sec}`;
   })();
 
+  /** Nothing generated yet, and not yet stepped past. */
+  const firstRun = trajectories.length === 0 && !firstRunDismissed;
+
+  /** Any aircraft-tag field on — the Trails panel's master "Flight Tags" row. */
+  const flightTagsOn =
+    tagFields.callsign ||
+    tagFields.fl ||
+    tagFields.ias ||
+    tagFields.hdg ||
+    tagFields.airspace;
+
+  /**
+   * What each global tab is and does, keyed by the ids in the tab registry.
+   *
+   * A tab is ACTIVE when the page or panel it leads to is the one currently
+   * showing — that is the whole rule, and it is why nothing here has to track
+   * "which tab did I press last".
+   *
+   * Memoised because the shell re-renders on every animation frame while the
+   * replay runs: the bar is memoised too, and a fresh object each frame would
+   * defeat that. Everything a menu reads stays here, where the map state is —
+   * the bar only decides which dropdown is open.
+   */
+  const navSlots = useMemo<Partial<Record<MainNavId, MainNavSlot>>>(() => {
+    const hasFlights = trajectories.length > 0;
+    const noFlightsHint = "Generate a flight first";
+    // Departure conflicts come out of the filed PLANS, so this tab is worth
+    // opening before anything has been replayed; the live checks need traffic.
+    const conflictsReady = trajectories.length >= 2 || depConflicts.length > 0;
+    const sectorsAnyOn = SECTORS.some((sec) => sectorsOn[sec.key]);
+    // One number, not two summed: while the replay is monitoring, the live
+    // count is the urgent one; before that it is the filed departures that
+    // cannot be cleared. Each row in the menu still carries its own count.
+    const alertCount = cdrMonitoring
+      ? unresolvedConflicts.length
+      : depConflicts.length;
+
+    return {
+      home: {
+        active: nav?.kind === "generator",
+        onSelect: goHome,
+      },
+
+      tool: {
+        active: profilePinsOn || measureOn,
+        disabled: !hasFlights,
+        hint: hasFlights ? undefined : noFlightsHint,
+        menu: (close) => (
+          <ToolMenu
+            trailOpts={trailOpts}
+            onTrailOpts={setTrailOpts}
+            tagFields={tagFields}
+            onTagFields={setTagFields}
+            flightTagsOn={flightTagsOn}
+            onFlightTagsToggle={(on) =>
+              setTagFields(
+                on
+                  ? {
+                      callsign: true,
+                      fl: true,
+                      ias: false,
+                      hdg: false,
+                      airspace: true,
+                    }
+                  : {
+                      callsign: false,
+                      fl: false,
+                      ias: false,
+                      hdg: false,
+                      airspace: false,
+                    },
+              )
+            }
+            profilePinsOn={profilePinsOn}
+            onProfilePins={() => setProfilePinsOn((v) => !v)}
+            measureOn={measureOn}
+            onMeasure={toggleMeasure}
+            measurePicked={measurePicks.length}
+            filterOpen={filterOpen}
+            onFilter={() => {
+              setFilterOpen((v) => !v);
+              close();
+            }}
+          />
+        ),
+      },
+
+      trajectory: {
+        active: nav?.kind === "all" || nav?.kind === "route",
+        disabled: !hasFlights,
+        hint: hasFlights ? undefined : noFlightsHint,
+        badge: hasFlights ? { text: String(trajectories.length) } : null,
+        // Pressing the tab itself goes to the overview; the dropdown is the
+        // shortcut to one section, or to one flight's section.
+        onSelect: () => handleNavChange({ kind: "all", section: "both" }),
+        menu: (close) => (
+          <TrajectoryMenu
+            nav={nav}
+            onNavChange={handleNavChange}
+            downloads={downloads}
+            onPicked={close}
+          />
+        ),
+      },
+
+      filter: {
+        active: filterOpen,
+        disabled: !hasFlights,
+        hint: hasFlights ? undefined : noFlightsHint,
+        onSelect: () => setFilterOpen((v) => !v),
+      },
+
+      conflicts: {
+        active:
+          depPanelOpen ||
+          (cdrView !== null &&
+            cdrView !== "arrivals" &&
+            cdrView !== "sectorinfo" &&
+            cdrView !== "dynsector"),
+        disabled: !conflictsReady,
+        hint: conflictsReady
+          ? undefined
+          : "Generate two or more flights to check them against each other",
+        badge: alertCount > 0 ? { text: String(alertCount), tone: "alert" } : null,
+        onSelect: () => {
+          // Detection runs on its own in "all" mode; switching here means the
+          // menu never opens onto a view with no traffic to separate.
+          if (hasFlights && safePlaybackIdx !== "all") setPlaybackIdx("all");
+        },
+        menu: (close) => (
+          <ConflictsMenu
+            cdrView={cdrView}
+            onOpenView={openCdrView}
+            monitoring={cdrMonitoring}
+            unresolvedCount={unresolvedConflicts.length}
+            logCount={conflictLogCount.total}
+            pdrActionable={pdrActionable}
+            depConflictCount={depConflicts.length}
+            depPanelOpen={depPanelOpen}
+            onOpenDepartures={openDepPanel}
+            autoResolve={autoResolve}
+            autoResolveMode={autoResolveMode}
+            autoModeOptions={AUTO_MODE_OPTIONS}
+            onAutoResolveMode={setAutoResolveMode}
+            onRerunAutoPass={() => setAutoPassNonce((n) => n + 1)}
+            autoPass={autoPass}
+            onPicked={close}
+          />
+        ),
+      },
+
+      // Sector workload. Both views are built from the TRAJECTORIES, not from
+      // the replay, so one flight is enough to open them — the conflict
+      // columns simply read zero until monitoring has run.
+      sector: {
+        active: cdrView === "sectorinfo" || cdrView === "dynsector",
+        disabled: !hasFlights,
+        hint: hasFlights ? undefined : noFlightsHint,
+        menu: (close) => (
+          <SectorMenu
+            cdrView={cdrView}
+            onOpenView={openCdrView}
+            onPicked={close}
+          />
+        ),
+      },
+
+      sequencing: {
+        active: cdrView === "arrivals",
+        disabled: trajectories.length < 2,
+        hint:
+          trajectories.length < 2
+            ? "Generate two or more flights to sequence their arrivals"
+            : undefined,
+        onSelect: () => {
+          if (safePlaybackIdx !== "all") setPlaybackIdx("all");
+          openCdrView("arrivals");
+        },
+      },
+
+      basemap: {
+        menu: (close) => (
+          <BasemapMenu
+            basemap={basemap}
+            onBasemap={setBasemap}
+            onPicked={close}
+          />
+        ),
+      },
+
+      airspace: {
+        active: sectorsAnyOn,
+        menu: () => (
+          <div className="mnav-group">
+            <AirspaceBody
+              sectorsOn={sectorsOn}
+              onToggleSector={toggleSector}
+              colorMode={sectorColorMode}
+              onColorMode={setSectorColorMode}
+            />
+          </div>
+        ),
+      },
+
+      layers: {
+        active: layersOpen,
+        menu: (close) => (
+          <LayersMenu onOpenLayers={openLayers} onPicked={close} />
+        ),
+      },
+
+      export: {
+        active: downloadOpen,
+        disabled: !hasFlights,
+        hint: hasFlights ? undefined : noFlightsHint,
+        onSelect: openDownload,
+      },
+    };
+  }, [
+    autoPass,
+    autoResolve,
+    autoResolveMode,
+    basemap,
+    cdrMonitoring,
+    cdrView,
+    conflictLogCount,
+    depConflicts.length,
+    depPanelOpen,
+    downloadOpen,
+    downloads,
+    filterOpen,
+    flightTagsOn,
+    goHome,
+    handleNavChange,
+    layersOpen,
+    measureOn,
+    measurePicks.length,
+    nav,
+    openCdrView,
+    openDepPanel,
+    openDownload,
+    openLayers,
+    pdrActionable,
+    profilePinsOn,
+    safePlaybackIdx,
+    sectorColorMode,
+    sectorsOn,
+    tagFields,
+    toggleMeasure,
+    toggleSector,
+    trailOpts,
+    trajectories.length,
+    unresolvedConflicts.length,
+  ]);
+
   return (
-    <div className={`app theme-${theme}`} data-theme={theme}>
+    <div
+      className={`app theme-${theme}${firstRun ? " first-run" : ""}${
+        previewMode ? " preview-mode" : ""
+      }`}
+      data-theme={theme}
+    >
+      {/* The blurred ground behind the opening generator. Clicking it steps
+          past — the map is explorable before anything is generated, so this
+          must not be a wall. */}
+      {firstRun && (
+        <button
+          type="button"
+          className="first-run-scrim"
+          aria-label="Continue to the map"
+          onClick={() => setFirstRunDismissed(true)}
+        />
+      )}
+
+      {/* The application's own navigation, above everything it navigates.
+
+          Two screens do without it. The preview page has one thing to do and
+          one way back, and its own header says both. The OPENING screen has
+          nothing to navigate: no flight exists, so nine of the eleven tabs are
+          dead, and a row of greyed-out words is a worse first impression than
+          no row at all. It appears the moment there is something to look at —
+          a flight generated, or the scrim stepped past. */}
+      {!previewMode && !firstRun && (
+        <MainNavigation
+          slots={navSlots}
+          theme={theme}
+          onTheme={setTheme}
+          onZoomIn={handleZoomIn}
+          onZoomOut={handleZoomOut}
+          onToggleSidebar={toggleSidebar}
+        />
+      )}
+
+      {/* The workspace under the bar: the Generator rail and the map it drives.
+          Everything below is one PAGE of the application — which is why the bar
+          is not inside it. (Left at this indent level deliberately: the wrapper
+          is a layout row, and re-indenting a thousand lines to add one would
+          bury the change.) */}
+      <div className="main-content">
       <aside
         className={`sidebar${sidebarOpen ? " open" : ""}${
           sidebarVisible ? "" : " hidden"
@@ -3167,31 +3727,45 @@ export default function MapApp() {
           {nav?.kind === "generator" && genStatus && (
             <span className="sidebar-ready">{genStatus}</span>
           )}
-          {/* ✕ closes the sidebar entirely so only the floating tool
-              menu remains, regardless of viewport size. */}
+          {/* ✕ closes the workspace rail entirely, leaving the map under the
+              global bar. Home brings it back. */}
           <button
             type="button"
             className="sidebar-close"
             onClick={() => {
               setNav(null);
               setSidebarOpen(false);
+              // Closing the panel IS stepping past the opening screen; without
+              // this the scrim would stay up over an empty centred card.
+              setFirstRunDismissed(true);
             }}
-            aria-label="Close panel"
+            aria-label="Close the panel"
+            title="Close the panel and show the whole map"
           >
             ✕
           </button>
         </div>
 
-        {activeRouteLabel && (
+        {/* Which page of the workspace this is. Always shown, not just on a
+            route: "Generator" is a page of the application now, and a page
+            that never names itself leaves the bar above looking like the only
+            navigation there is. */}
+        {nav && (
           <p className="nav-breadcrumb">
-            <button
-              className="nav-crumb-link"
-              onClick={() => setNav({ kind: "generator" })}
-            >
-              Generator
-            </button>
-            <span>›</span>
-            <strong>{activeRouteLabel}</strong>
+            {activeRouteLabel ? (
+              <>
+                <button
+                  className="nav-crumb-link"
+                  onClick={() => setNav({ kind: "generator" })}
+                >
+                  Generator
+                </button>
+                <span>›</span>
+                <strong>{activeRouteLabel}</strong>
+              </>
+            ) : (
+              <strong>Generator</strong>
+            )}
           </p>
         )}
 
@@ -3209,6 +3783,7 @@ export default function MapApp() {
             onCurrentPreviewChange={setCurrentPreview}
             onReadyChange={setGenStatus}
             waypointIdents={routeIdents}
+            onPreview={enterPreview}
             onDepartureConflicts={setDepConflictState}
             onOpenDepartureConflicts={openDepPanel}
             onPdrPlanCheck={setPdrPlanState}
@@ -3343,6 +3918,45 @@ export default function MapApp() {
       )}
 
       <main className="map-area">
+        {/* Spans the shell rather than the map — fixed, so it sits over the
+            rail as well. Outside the `airways` gate below: it carries the only
+            way off this page, which must not wait on a data file. */}
+        {previewMode && (
+          <header className="preview-head">
+            {/* On a phone the plan rail is an off-canvas drawer, and the tool
+                menu that normally opens it is not on this page — so the way in
+                has to be here. CSS hides it at widths where the rail is always
+                on screen. */}
+            <button
+              type="button"
+              className="preview-plans"
+              onClick={() => setSidebarOpen((o) => !o)}
+              aria-label="Show the plan list"
+              title="Show the plan list"
+            >
+              ☰
+            </button>
+            <div className="preview-head-id">
+              <h2 className="preview-head-title">Flight Preview</h2>
+              {genStatus && (
+                // The generator's own count, tightened: how many of the filed
+                // plans have actually been flown. The rail's header is hidden
+                // on this page so that this is the only place it is said.
+                <span className="preview-head-status">
+                  {genStatus.replace(/\s*\/\s*/, "/")}
+                </span>
+              )}
+            </div>
+            <button
+              type="button"
+              className="preview-back"
+              onClick={exitPreview}
+              title="Leave the preview and return to the console"
+            >
+              Back
+            </button>
+          </header>
+        )}
         {/* A failed ACTION (e.g. a rejected downwind extension) must not take
             the map down with it: once the base data is in, the error shows as
             a dismissible banner over a still-live map. Only a failure that
@@ -3368,282 +3982,45 @@ export default function MapApp() {
         {isLoading && <div className="status">Loading airway data…</div>}
         {airways && (
           <>
-            <NavToolbar
-              nav={nav}
-              onNavChange={handleNavChange}
-              results={trajectories}
-              downloads={downloads}
-              generatedOpen={generatedOpen}
-              onGeneratedOpenChange={setGeneratedOpen}
-              onOpenDownload={openDownload}
-            />
-            {/* Top-center toolbar: Flight Tags menu + the Filter-panel
-                toggle. The aircraft-type search now lives inside the panel. */}
-            {trajectories.length > 0 && (
-              <div className="map-topbar">
-                <TrailsMenu
-                  opts={trailOpts}
-                  onChange={setTrailOpts}
-                  flightTagsOn={
-                    tagFields.callsign ||
-                    tagFields.fl ||
-                    tagFields.ias ||
-                    tagFields.hdg ||
-                    tagFields.airspace
-                  }
-                  onFlightTagsToggle={(on) =>
-                    setTagFields(
-                      on
-                        ? {
-                            callsign: true,
-                            fl: true,
-                            ias: false,
-                            hdg: false,
-                            airspace: true,
-                          }
-                        : {
-                            callsign: false,
-                            fl: false,
-                            ias: false,
-                            hdg: false,
-                            airspace: false,
-                          },
-                    )
-                  }
-                />
-                <FlightTagsMenu fields={tagFields} onChange={setTagFields} />
-                <button
-                  type="button"
-                  className={`map-filter-btn${profilePinsOn ? " active" : ""}`}
-                  onClick={() => setProfilePinsOn((v) => !v)}
-                  aria-pressed={profilePinsOn}
-                  title={
-                    profilePinsOn
-                      ? "Hide the TOC/TOD markers"
-                      : "Add the Top-of-Climb / Top-of-Descent markers"
-                  }
-                >
-                  {profilePinsOn ? "✓ TOC/TOD" : "＋ TOC/TOD"}
-                </button>
-                <button
-                  type="button"
-                  className={`map-filter-btn${filterOpen ? " active" : ""}`}
-                  onClick={() => setFilterOpen((v) => !v)}
-                  aria-pressed={filterOpen}
-                  title="Filter flights"
-                >
-                  ⚲ Filter
-                </button>
-                {/* Departure conflicts come out of the PLANS, so this tab has
-                    to be reachable before anything is generated — it is not
-                    inside the Conflict Detection menu, which needs traffic. */}
-                {depConflicts.length > 0 && (
+            {/* The map itself carries no navigation any more: Trails, Flight
+                Tags, TOC/TOD, the filter, the conflict views and the layer
+                menus are all tabs on the global bar above. What is left over
+                the map is what is ABOUT the map — the status banners, the
+                measurement readout and the playback strip. */}
+
+            {/* Measure tool: armed, it says what to click next; with a pair
+                picked it names them, and the numbers are on the map itself. */}
+            {measureOn && (
+              <div className="measure-chip" role="status" aria-live="polite">
+                <span className="measure-chip-ico">
+                  <NavIcon name="measure" size={15} />
+                </span>
+                <span className="measure-chip-text">
+                  {measurePicks.length === 0
+                    ? "Measure — click the first aircraft"
+                    : measurePicks.length === 1
+                      ? `${trajectories[measurePicks[0]]?.meta.flightKey ?? "—"} — click the second aircraft`
+                      : `${trajectories[measurePicks[0]]?.meta.flightKey ?? "—"} ↔ ${trajectories[measurePicks[1]]?.meta.flightKey ?? "—"}`}
+                </span>
+                {measurePicks.length > 0 && (
                   <button
                     type="button"
-                    className={`map-filter-btn cdr-toggle alerting${
-                      depPanelOpen ? " active" : ""
-                    }`}
-                    onClick={() => setDepPanelOpen((v) => !v)}
-                    aria-pressed={depPanelOpen}
-                    title={`${depConflicts.length} filed departures cannot be cleared as they stand`}
+                    className="measure-chip-btn"
+                    onClick={clearMeasure}
+                    title="Clear the pair and measure another"
                   >
-                    🛫 Departure Conflict
-                    <span className="cdr-badge sev-los">
-                      {depConflicts.length}
-                    </span>
+                    Reset
                   </button>
                 )}
-                {trajectories.length >= 2 && (
-                  <div className="cdr-dropdown-wrap">
-                    <button
-                      type="button"
-                      className={`map-filter-btn cdr-toggle${
-                        cdrView ? " active" : ""
-                      }${unresolvedConflicts.length > 0 ? " alerting" : ""}`}
-                      onClick={() => {
-                        // Detection runs on its own in "all" mode; this button
-                        // just opens the CD&R view menu. In single-route
-                        // playback, switch to "all" so there's traffic to
-                        // separate.
-                        if (safePlaybackIdx !== "all") setPlaybackIdx("all");
-                        setCdrMenuOpen((v) => !v);
-                      }}
-                      aria-haspopup="menu"
-                      aria-expanded={cdrMenuOpen}
-                      title={
-                        safePlaybackIdx === "all"
-                          ? `Conflict Detection — ${unresolvedConflicts.length} active`
-                          : "Switch playback to “All routes” to run conflict detection"
-                      }
-                    >
-                      ⚡ Conflict Detection ▾
-                      {cdrMonitoring && unresolvedConflicts.length > 0 && (
-                        <span
-                          className={`cdr-badge sev-${unresolvedConflicts[0].severity.toLowerCase()}`}
-                        >
-                          {unresolvedConflicts.length}
-                        </span>
-                      )}
-                    </button>
-                    {cdrMenuOpen && (
-                      <div
-                        className="cdr-menu-backdrop"
-                        onClick={() => setCdrMenuOpen(false)}
-                      />
-                    )}
-                    {cdrMenuOpen && (
-                      <div className="cdr-menu" role="menu">
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className={cdrView === "notifications" ? "active" : ""}
-                          onClick={() => {
-                            openCdrView("notifications");
-                            setCdrMenuOpen(false);
-                          }}
-                        >
-                          🔔 Conflict notifications
-                          {cdrMonitoring && unresolvedConflicts.length > 0 && (
-                            <span className="cdr-menu-count">
-                              {unresolvedConflicts.length}
-                            </span>
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className={cdrView === "dashboard" ? "active" : ""}
-                          onClick={() => {
-                            openCdrView("dashboard");
-                            setCdrMenuOpen(false);
-                          }}
-                        >
-                          ⚡ Conflict dashboard
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className={cdrView === "arrivals" ? "active" : ""}
-                          onClick={() => {
-                            openCdrView("arrivals");
-                            setCdrMenuOpen(false);
-                          }}
-                        >
-                          🛬 Arrival sequence
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className={cdrView === "log" ? "active" : ""}
-                          onClick={() => {
-                            openCdrView("log");
-                            setCdrMenuOpen(false);
-                          }}
-                          title="Every encounter of the run: when, who, what kind, and what resolved it"
-                        >
-                          🧾 Conflict log
-                          {conflictLogCount.total > 0 && (
-                            <span className="cdr-menu-count">
-                              {conflictLogCount.total}
-                            </span>
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className={cdrView === "pdr" ? "active" : ""}
-                          onClick={() => {
-                            openCdrView("pdr");
-                            setCdrMenuOpen(false);
-                          }}
-                          title="Check each filed route against the Prohibited/Danger/Restricted areas and the published preferred routes (PDR, ENR 1.10)"
-                        >
-                          🚫 Route &amp; area check
-                          {pdrActionable > 0 && (
-                            <span className="cdr-menu-count">{pdrActionable}</span>
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className={cdrView === "sectorinfo" ? "active" : ""}
-                          onClick={() => {
-                            openCdrView("sectorinfo");
-                            setCdrMenuOpen(false);
-                          }}
-                          title="Per sector, per hour: aircraft entering, conflicts, and how many ATC resolved"
-                        >
-                          📊 Sector information
-                        </button>
-                        <div className="cdr-menu-sep" role="separator" />
-                        {/* Auto-resolve is a three-way choice, not a switch:
-                            the operator picks WHEN the resolver works — up
-                            front over the whole filed plan, or live as the
-                            replay runs. */}
-                        <div className="cdr-auto-head">
-                          <span>🤖 Auto-resolve conflicts</span>
-                          <span
-                            className={`cdr-auto-pill${
-                              autoResolve ? " on" : ""
-                            }`}
-                          >
-                            {autoResolve ? "ON" : "OFF"}
-                          </span>
-                        </div>
-                        <div
-                          className="cdr-auto-modes"
-                          role="group"
-                          aria-label="Auto-resolve conflicts"
-                        >
-                          {AUTO_MODE_OPTIONS.map((o) => (
-                            <button
-                              key={o.mode}
-                              type="button"
-                              role="menuitemradio"
-                              aria-checked={autoResolveMode === o.mode}
-                              className={`cdr-auto-mode${
-                                autoResolveMode === o.mode ? " active" : ""
-                              }`}
-                              onClick={() => {
-                                // Re-picking "Before replay" re-runs the pass
-                                // over whatever is still unresolved.
-                                if (
-                                  o.mode === "before" &&
-                                  autoResolveMode === "before"
-                                ) {
-                                  setAutoPassNonce((n) => n + 1);
-                                } else {
-                                  setAutoResolveMode(o.mode);
-                                }
-                              }}
-                              title={o.hint}
-                            >
-                              <span className="cdr-auto-radio" aria-hidden>
-                                {autoResolveMode === o.mode ? "●" : "○"}
-                              </span>
-                              <span>{o.label}</span>
-                            </button>
-                          ))}
-                        </div>
-                        {autoResolveMode === "before" && autoPass && (
-                          <div
-                            className="cdr-auto-status"
-                            role="status"
-                            aria-live="polite"
-                          >
-                            {autoPass.done
-                              ? `Plan deconflicted · ${autoPass.fixed} fixed${
-                                  autoPass.unfixed > 0
-                                    ? ` · ${autoPass.unfixed} need manual action`
-                                    : ""
-                                } — pick again to re-run`
-                              : `Resolving the filed plan… ${autoPass.fixed} fixed`}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
+                <button
+                  type="button"
+                  className="measure-chip-btn"
+                  onClick={toggleMeasure}
+                  aria-label="Turn the measure tool off"
+                  title="Turn the measure tool off"
+                >
+                  ✕
+                </button>
               </div>
             )}
             <FilterPanel
@@ -3723,23 +4100,10 @@ export default function MapApp() {
               </div>
             )}
 
-            <MapOverlay
-              theme={theme}
-              onTheme={setTheme}
-              basemap={basemap}
-              onBasemap={setBasemap}
-              sectorsOn={sectorsOn}
-              onToggleSector={toggleSector}
-              sectorColorMode={sectorColorMode}
-              onSectorColorMode={setSectorColorMode}
-              onOpenLayers={() => setLayersOpen(true)}
-              onToggleSidebar={toggleSidebar}
-              onZoomIn={handleZoomIn}
-              onZoomOut={handleZoomOut}
-            />
             <LayerOptions
               open={layersOpen}
               onClose={() => setLayersOpen(false)}
+              initialTab={layersTab}
               airportList={airportList}
               hiddenAirports={hiddenAirports}
               onToggleAirport={toggleAirport}
@@ -3861,13 +4225,21 @@ export default function MapApp() {
               followKey={cardTraj?.meta.flightKey}
               onAircraftClick={handleAircraftClick}
               onAircraftHover={handleAircraftHover}
+              measureOn={measureOn}
+              measurePicks={measurePicks}
               onMapReady={onMapReady}
-              highlightAreas={focusedAreas.map((a) => ({
-                ident: a.ident,
-                name: a.name,
-                kind: a.kind,
-                mp: a.mp as number[][][][],
-              }))}
+              highlightAreas={[
+                ...focusedAreas.map((a) => ({
+                  ident: a.ident,
+                  name: a.name,
+                  kind: a.kind,
+                  mp: a.mp as number[][][][],
+                })),
+                // The configuration, dashed and in its own colours: cyan for a
+                // band-box (sectors worked together), amber for airspace that
+                // changes hands. Neither is the red of airspace to keep out of.
+                ...dynamicHighlight,
+              ]}
               cdrConflicts={cdrMonitoring ? cdr.conflicts : undefined}
               cdrTraffic={cdrMonitoring ? cdr.traffic : undefined}
               cdrSelectedId={selectedConflictId}
@@ -3878,7 +4250,42 @@ export default function MapApp() {
               cdrResolvedLabel={resolvedRouteLabel}
               cdrOriginalLabel={originalRouteLabel}
             />
-            {previewRoutes.length > 0 && (
+            {/* The preview page's own pair, centred at the foot of the frame:
+                every filed route, or just the plan open in the rail. Rendered
+                even with nothing to draw — disabled says "no routes yet",
+                whereas an absent control says nothing at all. */}
+            {previewMode ? (
+              <div
+                className="preview-actions"
+                role="group"
+                aria-label="What to preview"
+              >
+                <button
+                  type="button"
+                  className={`preview-act${
+                    previewScope === "full" ? " active" : ""
+                  }`}
+                  onClick={() => setPreviewScope("full")}
+                  disabled={previewRoutes.length === 0}
+                  aria-pressed={previewScope === "full"}
+                  title="Draw every route of every plan"
+                >
+                  Preview All
+                </button>
+                <button
+                  type="button"
+                  className={`preview-act${
+                    previewScope === "current" ? " active" : ""
+                  }`}
+                  onClick={() => setPreviewScope("current")}
+                  disabled={currentPreview.length === 0}
+                  aria-pressed={previewScope === "current"}
+                  title="Draw only the plan open in the rail"
+                >
+                  Preview Current
+                </button>
+              </div>
+            ) : previewRoutes.length > 0 ? (
               <div className={`preview-fab${previewHidden ? " off" : ""}`}>
                 <button
                   type="button"
@@ -3891,8 +4298,8 @@ export default function MapApp() {
                       : "Hide the live route preview"
                   }
                 >
-                  <span className="preview-fab-ico" aria-hidden>
-                    {previewHidden ? "🚫" : "👁"}
+                  <span className="preview-fab-ico">
+                    <NavIcon name={previewHidden ? "eye-off" : "eye"} size={15} />
                   </span>
                   {previewHidden ? "Show preview" : "Preview"}
                 </button>
@@ -3924,7 +4331,7 @@ export default function MapApp() {
                   </div>
                 )}
               </div>
-            )}
+            ) : null}
             <SimControls
               sim={sim}
               trajectories={trajectories}
@@ -3966,8 +4373,12 @@ export default function MapApp() {
                 <div className="cdr-fix-detail-head">
                   {/* Only the auto-resolver fills in `reason`; a hand-applied
                       fix opened from the dashboard gets the neutral label. */}
-                  <span className="cdr-fix-detail-ico" aria-hidden>
-                    {highlightedFix.reason ? "🤖" : "✓"}
+                  <span className="cdr-fix-detail-ico">
+                    {highlightedFix.reason ? (
+                      <NavIcon name="auto" size={15} />
+                    ) : (
+                      <span aria-hidden>✓</span>
+                    )}
                   </span>
                   <span className="cdr-fix-detail-title">
                     {highlightedFix.reason ? "Auto-resolved" : "Resolved"} ·{" "}
@@ -4201,7 +4612,9 @@ export default function MapApp() {
                 }
                 // Only offered for filed plans: a generated flight's key is a
                 // flightKey, which no longer identifies a plan tab.
-                onOpenPlan={pdrShowsPlans ? handleOpenPlan : undefined}
+                // Offered in BOTH views: a rejected generated flight is the
+                // case where reaching the plan matters most.
+                onOpenPlan={handleOpenPlan}
                 onRetry={pdrShowsPlans ? pdrPlanState!.retry : pdr.retry}
                 detailFor={
                   pdrShowsPlans ? pdrPlanState!.detailFor : pdr.detailFor
@@ -4226,10 +4639,40 @@ export default function MapApp() {
                 rows={sectorHours}
                 loading={sectorHoursLoading}
                 flightCount={trajectories.length}
-                dynamicPlan={dynamicPlan}
                 dynamicConfig={dynConfig}
-                onDynamicConfig={setDynConfig}
                 onClose={() => setCdrView(null)}
+              />
+            )}
+
+            {cdrView === "dynsector" && (
+              <DynamicSectorPanel
+                plan={dynamicPlan}
+                applied={dynamicApplied}
+                onRun={runDynamic}
+                onApply={() => {
+                  setDynamicPlan((p) => (p ? applyPlan(p) : p));
+                  setDynamicApplied(true);
+                }}
+                onRevert={() => {
+                  // Clear the stamp as well as the badge: they are the same
+                  // claim, and an export that still said APPLIED after a revert
+                  // would be the file disagreeing with the screen.
+                  setDynamicPlan((p) => (p ? { ...p, appliedAt: null } : p));
+                  setDynamicApplied(false);
+                  setShownConfig(null);
+                }}
+                running={sectorHoursLoading}
+                rows={sectorHours}
+                loading={sectorHoursLoading}
+                flightCount={trajectories.length}
+                config={dynConfig}
+                onConfig={setDynConfig}
+                onView={setShownConfig}
+                shownKey={shownConfig?.key ?? null}
+                onClose={() => {
+                  setShownConfig(null);
+                  setCdrView(null);
+                }}
               />
             )}
 
@@ -4317,7 +4760,8 @@ export default function MapApp() {
                       {cardTraj.meta.flightKey}
                     </span>
                     <span className="follow-card-unlock">
-                      {followActive ? "🔒 click to unlock" : "🔓 click to lock"}
+                      <NavIcon name={followActive ? "lock" : "unlock"} size={12} />
+                      {followActive ? "click to unlock" : "click to lock"}
                     </span>
                   </button>
                   <button
@@ -4461,6 +4905,7 @@ export default function MapApp() {
           </>
         )}
       </main>
+      </div>
     </div>
   );
 }

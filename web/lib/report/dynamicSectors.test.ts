@@ -17,9 +17,14 @@ import { describe, expect, it } from "vitest";
 import { buildAirspaceIndex } from "@/lib/airspace";
 
 import {
+  applyPlan,
   DEFAULT_DYNAMIC_CONFIG,
   describePosition,
+  dynamicLog,
+  dynamicLogCsv,
+  dynamicLogTable,
   dynamicSectorsCsv,
+  leadTimeIssues,
   dynamicSpansCsv,
   planDynamicSectors,
   planHour,
@@ -115,6 +120,7 @@ function row(
     entryEvents: [],
     occupancy: flights.length,
     occupancyFlights: [...flights],
+    occupancyPoints: [],
     conflictsTotal: 0,
     conflictsResolved: 0,
     conflictFlights: [],
@@ -342,9 +348,15 @@ describe("the exported plan", () => {
     expect(f[8]).toBe("MERGED");
   });
 
-  it("carries the threshold that produced it", () => {
+  /** Column by NAME: the table gains columns as the planner learns to do more,
+   *  and a test pinned to an index fails for the wrong reason when it does. */
+  const col = (line: string, name: string) =>
+    line.split(",")[lines[0].split(",").indexOf(name)];
+
+  it("carries the thresholds that produced it", () => {
     expect(lines[0]).toContain("merge_below");
-    expect((lines[1].split(",")[9])).toBe("6");
+    expect(col(lines[1], "merge_below")).toBe("6");
+    expect(col(lines[1], "split_above")).toBe(String(DEFAULT_DYNAMIC_CONFIG.splitAbove));
   });
 
   it("states on every row that the published sectors are unchanged", () => {
@@ -354,11 +366,18 @@ describe("the exported plan", () => {
   });
 
   it("counts the positions saved against the baseline", () => {
-    const f = lines[1].split(",");
-    expect(f[10]).toBe("4"); // baseline sectors
+    expect(col(lines[1], "baseline_sectors")).toBe("4");
     // C and D are empty and adjacent, so they band-box too: A+B and C+D.
-    expect(f[11]).toBe("2"); // positions open
-    expect(f[12]).toBe("2"); // saved
+    expect(col(lines[1], "positions_open")).toBe("2");
+    expect(col(lines[1], "positions_saved")).toBe("2");
+  });
+
+  it("says whether the sector was over capacity, and what moved", () => {
+    expect(lines[0]).toContain("overloaded");
+    expect(lines[0]).toContain("boundary_change");
+    expect(col(lines[1], "overloaded")).toBe("no");
+    expect(col(lines[1], "boundary_change")).toBe("");
+    expect(col(lines[1], "hour_change")).toBe("merge");
   });
 
   it("writes the band-box periods as their own table", () => {
@@ -418,5 +437,495 @@ describe("planning over the published BACC sectors", () => {
     const morning = plan.hours.find((h) => h.hourUtc === H(9));
     expect(morning?.splitBack.length).toBeGreaterThan(0);
     expect(plan.spans.every((sp) => sp.toHourUtc <= H(9))).toBe(true);
+  });
+});
+
+// --- the busy half: re-cutting an overloaded sector -------------------------
+
+/** WEST 98-100E and EAST 100-102E, sharing the 100E boundary. */
+const areaBox = (west: number, south: number, size = 2) => [
+  [
+    { lat: south, lon: west },
+    { lat: south, lon: west + size },
+    { lat: south + size, lon: west + size },
+    { lat: south + size, lon: west },
+  ],
+];
+const SHAPES = new Map([
+  ["WEST", areaBox(98, 13)],
+  ["EAST", areaBox(100, 13)],
+]);
+const PAIR = new Map<string, ReadonlySet<string>>([
+  ["WEST", new Set(["EAST"])],
+  ["EAST", new Set(["WEST"])],
+]);
+
+/** `n` aircraft strung west to east across WEST. */
+const inWest = (n: number, hourUtc = H(9)): SectorHourRow => ({
+  ...row("WEST", Array.from({ length: n }, (_, i) => "W" + i), hourUtc),
+  occupancyPoints: Array.from({ length: n }, (_, i) => ({
+    flight: "W" + i,
+    lat: 14,
+    lon: 98.1 + (1.8 * i) / Math.max(1, n - 1),
+  })),
+});
+
+const areaCfg = (over: Partial<DynamicSectorConfig> = {}) =>
+  cfg({ splitAbove: 14, mergeBelow: 3, maxSectorsPerPosition: 2, ...over });
+
+describe("an overloaded sector has its airspace re-cut", () => {
+  const plan = (n: number, eastLoad = 0, over: Partial<DynamicSectorConfig> = {}) =>
+    planDynamicSectors(
+      [inWest(n), row("EAST", Array.from({ length: eastLoad }, (_, i) => "E" + i), H(9))],
+      PAIR,
+      areaCfg(over),
+      { shapes: SHAPES },
+    );
+
+  it("leaves a sector under capacity alone", () => {
+    const h = plan(10).hours[0];
+    expect(h.overloaded).toEqual([]);
+    expect(h.transfers).toEqual([]);
+    expect(h.change).toBe("none");
+  });
+
+  it("names the sector that is over capacity", () => {
+    expect(plan(16).hours[0].overloaded).toEqual([{ sector: "WEST", flights: 16 }]);
+  });
+
+  it("hands a slice to the neighbour with room", () => {
+    const t = plan(16).hours[0].transfers;
+    expect(t).toHaveLength(1);
+    expect(t[0].from).toBe("WEST");
+    expect(t[0].to).toBe("EAST");
+    expect(t[0].fromAfter).toBe(13);
+    expect(t[0].quadrant).toBe("east");
+    expect(t[0].areaNm2).toBeGreaterThan(0);
+    expect(t[0].boundary.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("calls the hour a split", () => {
+    expect(plan(16).hours[0].change).toBe("split");
+  });
+
+  it("refuses when the neighbour has no room, and says so", () => {
+    const h = plan(16, 13).hours[0];
+    expect(h.transfers).toEqual([]);
+    expect(h.blocked).toHaveLength(1);
+    expect(h.blocked[0].sector).toBe("WEST");
+    expect(h.blocked[0].reason).toMatch(/overload would move/);
+  });
+
+  it("reports an overload it cannot cut rather than staying silent", () => {
+    // No outlines supplied at all.
+    const bare = planDynamicSectors([inWest(16)], PAIR, areaCfg());
+    const h = bare.hours[0];
+    expect(h.overloaded).toHaveLength(1);
+    expect(h.transfers).toEqual([]);
+    expect(h.blocked[0].reason).toMatch(/outlines are not loaded/);
+  });
+
+  it("will not cut on a partial picture of where the traffic is", () => {
+    const noPoints = { ...inWest(16), occupancyPoints: [] };
+    const h = planDynamicSectors([noPoints], PAIR, areaCfg(), { shapes: SHAPES })
+      .hours[0];
+    expect(h.transfers).toEqual([]);
+    expect(h.blocked[0].reason).toMatch(/positions are known for only 0/);
+  });
+
+  it("refuses to cut around active restricted airspace", () => {
+    const h = planDynamicSectors([inWest(16)], PAIR, areaCfg(), {
+      shapes: SHAPES,
+      blockersAt: () => [{ ident: "VTR9", rings: areaBox(99.7, 13.8, 0.2) }],
+    }).hours[0];
+    expect(h.transfers).toEqual([]);
+    expect(h.blocked[0].reason).toMatch(/VTR9/);
+  });
+
+  it("does not re-cut a sector that is inside a band-box", () => {
+    // Both quiet enough to merge; neither can then be overloaded.
+    const quiet = planDynamicSectors(
+      [inWest(1), row("EAST", ["E0"], H(9))],
+      PAIR,
+      areaCfg({ mergeBelow: 6, splitAbove: 2 }),
+      { shapes: SHAPES },
+    ).hours[0];
+    expect(quiet.positions.some((p) => p.merged)).toBe(true);
+    expect(quiet.transfers).toEqual([]);
+  });
+});
+
+describe("a configuration change is an operational act", () => {
+  it("gives each change the notice its lead time asks for", () => {
+    const plan = planDynamicSectors(
+      [inWest(16, H(9)), inWest(2, H(10))],
+      PAIR,
+      areaCfg({ leadTimeMin: 20, minHoldHours: 1 }),
+      { shapes: SHAPES },
+    );
+    const split = plan.transitions.find((t) => t.kind === "split");
+    expect(split?.hourUtc).toBe(H(9));
+    expect(split?.notifyBy).toBe("2026-09-07T08:40Z");
+  });
+
+  it("says in words what has to change", () => {
+    const plan = planDynamicSectors([inWest(16)], PAIR, areaCfg(), {
+      shapes: SHAPES,
+    });
+    expect(plan.transitions[0].detail).toMatch(/WEST cedes its east airspace/);
+    expect(plan.transitions[0].detail).toMatch(/aircraft/);
+  });
+
+  it("lists restoring the published boundaries when the rush passes", () => {
+    const plan = planDynamicSectors(
+      [inWest(16, H(9)), inWest(4, H(10))],
+      PAIR,
+      areaCfg({ minHoldHours: 1 }),
+      { shapes: SHAPES },
+    );
+    expect(plan.transitions.some((t) => t.detail === "restore the published boundaries")).toBe(
+      true,
+    );
+  });
+
+  it("does not list an hour where nothing changed", () => {
+    const plan = planDynamicSectors(
+      [inWest(16, H(9)), inWest(16, H(10)), inWest(16, H(11))],
+      PAIR,
+      areaCfg(),
+      { shapes: SHAPES },
+    );
+    // One split, and no repeat of it for the two identical hours after.
+    expect(plan.transitions.filter((t) => t.kind === "split")).toHaveLength(1);
+  });
+
+  it("holds a band-box for the minimum before consolidating again", () => {
+    // Quiet, busy, quiet: with a 3 hour hold the middle hour must not re-merge
+    // the moment it goes quiet again.
+    const rows = [
+      row("WEST", ["a"], H(1)),
+      row("EAST", ["b"], H(1)),
+      row("WEST", ["a", "b", "c", "d"], H(2)),
+      row("EAST", ["e", "f", "g", "h"], H(2)),
+      row("WEST", ["a"], H(3)),
+      row("EAST", ["b"], H(3)),
+    ];
+    const held = planDynamicSectors(
+      rows,
+      PAIR,
+      areaCfg({ mergeBelow: 3, minHoldHours: 3 }),
+      { shapes: SHAPES },
+    );
+    const loose = planDynamicSectors(
+      rows,
+      PAIR,
+      areaCfg({ mergeBelow: 3, minHoldHours: 1 }),
+      { shapes: SHAPES },
+    );
+    const mergedAt = (p: typeof held, hh: number) =>
+      p.hours.find((h) => h.hourUtc === H(hh))?.positions.some((x) => x.merged);
+    expect(mergedAt(loose, 3)).toBe(true);
+    expect(mergedAt(held, 3)).toBe(false);
+  });
+});
+
+// --- who decides ------------------------------------------------------------
+
+/**
+ * Auto plans from the traffic; manual leaves the published configuration alone
+ * until someone asks otherwise. Either way an override is the operator's word,
+ * and the plan has to record that a person made the call.
+ */
+describe("auto, manual, and the operator's override", () => {
+  const quietAndBusy = [
+    inWest(1, H(8)),
+    row("EAST", ["e0"], H(8)),
+    inWest(16, H(9)),
+  ];
+  const run = (over: Partial<DynamicSectorConfig>) =>
+    planDynamicSectors(quietAndBusy, PAIR, areaCfg(over), { shapes: SHAPES });
+
+  const at = (p: ReturnType<typeof run>, hh: number) =>
+    p.hours.find((h) => h.hourUtc === H(hh));
+
+  it("auto merges the quiet hour and splits the busy one", () => {
+    const p = run({ mode: "auto", mergeBelow: 3 });
+    expect(at(p, 8)?.change).toBe("merge");
+    expect(at(p, 9)?.change).toBe("split");
+  });
+
+  it("manual keeps the published configuration in both", () => {
+    const p = run({ mode: "manual", mergeBelow: 3 });
+    expect(at(p, 8)?.change).toBe("none");
+    expect(at(p, 9)?.change).toBe("none");
+    expect(at(p, 8)?.positions.every((x) => !x.merged)).toBe(true);
+    expect(at(p, 9)?.transfers).toEqual([]);
+  });
+
+  it("still measures the overload in manual, it just does not act on it", () => {
+    // The count is a fact about the traffic; only the response is a choice, and
+    // a sector over capacity has to be said either way.
+    const p = run({ mode: "manual", mergeBelow: 3 });
+    expect(at(p, 9)?.overloaded).toEqual([{ sector: "WEST", flights: 16 }]);
+    expect(at(p, 9)?.transfers).toEqual([]);
+    expect(at(p, 9)?.blocked[0].reason).toMatch(/set not to re-cut/);
+  });
+
+  it("ignores a stored override while in auto — the traffic decides, or the mode is a lie", () => {
+    // The control is not even shown in auto. If the stored value still applied,
+    // a decision nobody could see would be steering the result.
+    const p = run({ mode: "auto", mergeBelow: 3, overrides: { [H(8)]: "keep" } });
+    expect(at(p, 8)?.change).toBe("merge");
+    expect(at(p, 8)?.decision).toBe("auto");
+    expect(at(p, 8)?.manual).toBe(false);
+  });
+
+  it("keeps the override for when manual comes back", () => {
+    // Switching to auto to see what the traffic would have done must not throw
+    // the operator's work away.
+    const cfg = { mergeBelow: 3, overrides: { [H(8)]: "keep" } } as const;
+    expect(at(run({ ...cfg, mode: "auto" }), 8)?.change).toBe("merge");
+    expect(at(run({ ...cfg, mode: "manual" }), 8)?.change).toBe("none");
+  });
+
+  it("takes an override against the mode, in manual", () => {
+    const p = run({ mode: "manual", mergeBelow: 3, overrides: { [H(9)]: "split" } });
+    expect(at(p, 9)?.change).toBe("split");
+    expect(at(p, 9)?.manual).toBe(true);
+    expect(at(p, 8)?.change).toBe("none");
+  });
+
+  it("can be told to merge only, and still names the overload it left", () => {
+    const p = run({ mode: "manual", mergeBelow: 3, overrides: { [H(9)]: "merge" } });
+    expect(at(p, 9)?.transfers).toEqual([]);
+    expect(at(p, 9)?.overloaded).toHaveLength(1);
+  });
+
+  it("can be told to split only, leaving quiet sectors apart", () => {
+    const p = run({ mode: "manual", mergeBelow: 3, overrides: { [H(8)]: "split" } });
+    expect(at(p, 8)?.positions.every((x) => !x.merged)).toBe(true);
+  });
+
+  it("records how every hour was decided, so the file can be audited", () => {
+    const p = run({ mode: "manual", mergeBelow: 3, overrides: { [H(8)]: "merge" } });
+    expect(p.hours.map((h) => h.decision)).toEqual(["merge", "keep"]);
+  });
+});
+
+describe("accepting a configuration", () => {
+  const proposal = planDynamicSectors([inWest(16)], PAIR, areaCfg(), {
+    shapes: SHAPES,
+  });
+
+  it("starts as a recommendation, not a decision", () => {
+    expect(proposal.appliedAt).toBeNull();
+    expect(dynamicSectorsCsv(proposal)).toContain("PROPOSED");
+  });
+
+  it("is stamped when the operator accepts it", () => {
+    const applied = applyPlan(proposal, Date.UTC(2026, 8, 12, 7, 30, 0));
+    expect(applied.appliedAt).toBe("2026-09-12T07:30:00Z");
+    const csv = dynamicSectorsCsv(applied);
+    expect(csv).toContain("APPLIED");
+    expect(csv).toContain("2026-09-12T07:30:00Z");
+  });
+
+  it("leaves the recommendation it came from untouched", () => {
+    applyPlan(proposal);
+    expect(proposal.appliedAt).toBeNull();
+  });
+
+  it("changes nothing about the configuration itself", () => {
+    const applied = applyPlan(proposal);
+    expect(applied.hours).toEqual(proposal.hours);
+    expect(applied.transitions).toEqual(proposal.transitions);
+  });
+});
+
+// --- the log ----------------------------------------------------------------
+
+/**
+ * The log is what someone reads afterwards to say what the configuration was
+ * and where. Every hour has to appear — including the quiet ones, which were a
+ * decision too — and every line that names airspace has to carry enough to draw
+ * it.
+ */
+describe("the configuration log", () => {
+  const plan = planDynamicSectors(
+    [
+      // 0800 quiet enough to band-box, 0900 over capacity, 1000 ordinary.
+      row("WEST", ["a"], H(8)),
+      row("EAST", ["b"], H(8)),
+      inWest(16, H(9)),
+      row("WEST", ["x", "y", "z"], H(10)),
+      row("EAST", ["p", "q", "r"], H(10)),
+    ],
+    PAIR,
+    areaCfg({ mergeBelow: 3, splitAbove: 14 }),
+    { shapes: SHAPES },
+  );
+  const log = dynamicLog(plan);
+
+  it("covers every hour, including the ones where nothing changed", () => {
+    expect([...new Set(log.map((e) => e.hourUtc))]).toEqual([H(8), H(9), H(10)]);
+  });
+
+  it("records a band-box, and which sectors it covers", () => {
+    const merge = log.find((e) => e.kind === "merge");
+    expect(merge?.hourUtc).toBe(H(8));
+    expect(merge?.label).toBe("EAST+WEST");
+    expect(merge?.sectors.sort()).toEqual(["EAST", "WEST"]);
+    expect(merge?.transfer).toBeNull();
+  });
+
+  it("records a re-cut, and carries the shape so the map can draw it", () => {
+    const split = log.find((e) => e.kind === "split");
+    expect(split?.hourUtc).toBe(H(9));
+    expect(split?.sectors).toEqual(["WEST", "EAST"]);
+    expect(split?.transfer?.boundary.length).toBeGreaterThanOrEqual(3);
+    expect(split?.detail).toMatch(/cedes its east airspace to EAST/);
+  });
+
+  it("says so when the published configuration simply stood", () => {
+    const keep = log.find((e) => e.hourUtc === H(10));
+    expect(keep?.kind).toBe("keep");
+    expect(keep?.sectors).toEqual([]);
+    expect(keep?.detail).toMatch(/published configuration stands/);
+  });
+
+  it("records who decided each line", () => {
+    const manual = planDynamicSectors(
+      [inWest(16, H(9))],
+      PAIR,
+      areaCfg({ mode: "manual", overrides: { [H(9)]: "keep" } }),
+      { shapes: SHAPES },
+    );
+    expect(dynamicLog(manual)[0].decidedBy).toBe("operator");
+    expect(log.every((e) => e.decidedBy === "auto")).toBe(true);
+  });
+
+  it("numbers the lines within an hour so the order is stable", () => {
+    const busy = log.filter((e) => e.hourUtc === H(9));
+    expect(busy.map((e) => e.seq)).toEqual(
+      busy.map((_, i) => i),
+    );
+  });
+
+  it("exports as a table with a row per line", () => {
+    const table = dynamicLogTable(plan);
+    expect(table[0]).toEqual([
+      "hour_utc",
+      "hour",
+      "action",
+      "what",
+      "sectors",
+      "detail",
+      "decided_by",
+    ]);
+    expect(table).toHaveLength(log.length + 1);
+    expect(dynamicLogCsv(plan)).toContain("MERGE");
+    expect(dynamicLogCsv(plan)).toContain("SPLIT");
+  });
+
+  it("logs an overload nobody could relieve, rather than passing over it", () => {
+    const stuck = planDynamicSectors(
+      [inWest(16, H(9)), row("EAST", Array.from({ length: 13 }, (_, i) => "e" + i), H(9))],
+      PAIR,
+      areaCfg(),
+      { shapes: SHAPES },
+    );
+    const over = dynamicLog(stuck).find((e) => e.kind === "overload");
+    expect(over?.label).toBe("WEST");
+    expect(over?.detail).toMatch(/holds 16/);
+  });
+});
+
+// --- is there time to brief it? ---------------------------------------------
+
+/**
+ * Lead time decides whether a recommendation can be acted on, so the check has
+ * to fire on the cases that really are impossible and stay quiet otherwise — a
+ * warning that cried wolf on an ordinary plan would be turned off by the second
+ * day.
+ */
+describe("lead time that leaves no room to brief", () => {
+  /** Quiet, busy, quiet: a change at each hour boundary. */
+  const swinging = [
+    row("WEST", ["a"], H(1)),
+    row("EAST", ["b"], H(1)),
+    inWest(16, H(2)),
+    row("WEST", ["a"], H(3)),
+    row("EAST", ["b"], H(3)),
+  ];
+  const at = (leadTimeMin: number) =>
+    leadTimeIssues(
+      planDynamicSectors(
+        swinging,
+        PAIR,
+        areaCfg({ leadTimeMin, mergeBelow: 3, minHoldHours: 1 }),
+        { shapes: SHAPES },
+      ),
+    );
+
+  it("says nothing when there is time", () => {
+    expect(at(20)).toEqual([]);
+  });
+
+  it("flags a change that would be briefed before the one it follows", () => {
+    // Changes are an hour apart; 90 minutes of notice puts the later brief
+    // half an hour BEFORE the earlier change takes effect.
+    const clash = at(90).find((i) =>
+      /at or before the .* change it follows/.test(i.reason),
+    );
+    expect(clash).toBeDefined();
+    expect(clash?.reason).toMatch(/60 min apart/);
+    expect(clash?.reason).toMatch(/lead time is 90 min/);
+  });
+
+  it("does not mistake two lines about ONE change for two changes", () => {
+    // An hour that both un-merges and moves a boundary produces two transition
+    // lines at the same time. They are one brief.
+    const sameHour = at(20);
+    expect(sameHour).toEqual([]);
+  });
+
+  it("is quiet at exactly the gap between changes, and not a minute more", () => {
+    // 60 min lead means the brief lands exactly ON the previous change, which
+    // is already too late; 59 leaves a minute.
+    expect(at(59)).toEqual([]);
+    expect(at(60).length).toBeGreaterThan(0);
+  });
+
+  it("flags a first change that needed notice before the sample began", () => {
+    const early = leadTimeIssues(
+      planDynamicSectors(
+        [row("WEST", ["a"], H(1)), row("EAST", ["b"], H(1)), inWest(16, H(2))],
+        PAIR,
+        areaCfg({ leadTimeMin: 45, mergeBelow: 3, minHoldHours: 1 }),
+        { shapes: SHAPES },
+      ),
+    );
+    // The 0200 change needs briefing at 0115, which is after 0100 — fine. Push
+    // the lead past the run's own start and it is not.
+    const impossible = leadTimeIssues(
+      planDynamicSectors(
+        [inWest(16, H(1))],
+        PAIR,
+        areaCfg({ leadTimeMin: 30, minHoldHours: 1 }),
+        { shapes: SHAPES },
+      ),
+    );
+    expect(early).toEqual([]);
+    expect(impossible.every((i) => i.reason.includes("before the sample"))).toBe(true);
+  });
+
+  it("says nothing at all when no notice is required", () => {
+    expect(at(0)).toEqual([]);
+  });
+
+  it("names the hour and the time the brief was due", () => {
+    const [issue] = at(90);
+    expect(issue.hourUtc).toMatch(/T0[0-9]:00Z/);
+    expect(issue.notifyBy).toMatch(/Z$/);
   });
 });

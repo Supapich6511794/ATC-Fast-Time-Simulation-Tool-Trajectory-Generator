@@ -34,6 +34,7 @@ import type { CdrConfig } from "@/lib/cdr/config";
 import type { ArrivalPlan, PlannedArrival } from "@/lib/cdr/arrivalPlan";
 import type { SpacingDriver } from "@/lib/cdr/arrivalSequence";
 import type { WakeCategory } from "@/lib/cdr/wake";
+import NavIcon from "@/components/nav/NavIcon";
 
 interface Props {
   plans: ArrivalPlan[];
@@ -417,7 +418,9 @@ export default function ArrivalPanel({
       aria-label="Arrival sequence"
     >
       <div className="cdr-panel-head">
-        <strong>🛬 Arrival sequence</strong>
+        <strong>
+          <NavIcon name="sequencing" size={14} /> Arrival sequence
+        </strong>
         <button
           type="button"
           className="cdr-panel-close"

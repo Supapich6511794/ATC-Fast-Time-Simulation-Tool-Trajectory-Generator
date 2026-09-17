@@ -22,6 +22,7 @@ import type { ConflictSector } from "@/lib/cdr/sector";
 import type { AppliedFix } from "@/lib/cdr/types";
 
 import SectorChip from "./SectorChip";
+import NavIcon from "@/components/nav/NavIcon";
 
 interface Props {
   planConflicts: PlanConflict[];
@@ -108,7 +109,9 @@ export default function ConflictPanel({
   return (
     <div className="cdr-panel cdr-dashboard" role="dialog" aria-label="Conflict dashboard">
       <div className="cdr-panel-head">
-        <strong>⚡ Conflict Dashboard</strong>
+        <strong>
+          <NavIcon name="conflicts" size={14} /> Conflict Dashboard
+        </strong>
         <span className="cdr-head-actions">
           {/* The panel shows the CURRENT picture; the log is the RUN — every
               conflict that happened, including the ones already fixed and

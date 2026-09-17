@@ -15,7 +15,11 @@ import {
   standardVsMergedCsv,
   trafficBySectorCsv,
 } from "./chartData";
-import { planDynamicSectors, type DynamicSectorConfig } from "./dynamicSectors";
+import {
+  DEFAULT_DYNAMIC_CONFIG,
+  planDynamicSectors,
+  type DynamicSectorConfig,
+} from "./dynamicSectors";
 import type { FlightEventRow, SectorHourRow } from "./flightEvents";
 
 const H = (hh: number) => "2026-09-07T" + String(hh).padStart(2, "0") + ":00Z";
@@ -29,6 +33,7 @@ function row(over: Partial<SectorHourRow> & { sector: string }): SectorHourRow {
     entryEvents: [],
     occupancy: 0,
     occupancyFlights: [],
+    occupancyPoints: [],
     conflictsTotal: 0,
     conflictsResolved: 0,
     conflictFlights: [],
@@ -84,6 +89,7 @@ describe("standard vs merged", () => {
     ["B", new Set(["A"])],
   ]);
   const cfg: DynamicSectorConfig = {
+    ...DEFAULT_DYNAMIC_CONFIG,
     layer: "bacc",
     mergeBelow: 6,
     maxSectorsPerPosition: 2,

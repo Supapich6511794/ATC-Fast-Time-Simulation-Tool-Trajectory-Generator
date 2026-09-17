@@ -397,6 +397,7 @@ describe("the one-hour export", () => {
     entryEvents: [entry("THA100", "00:05"), entry("BKP102", "00:06", 28000), entry("NOK104", "00:41")],
     occupancy: 3,
     occupancyFlights: ["BKP102", "NOK104", "THA100"],
+    occupancyPoints: [],
     conflictsTotal: 1,
     conflictsResolved: 0,
     conflictFlights: ["BKP102", "NOK104"],

@@ -22,6 +22,7 @@ import type { TrajectoryResult } from "@/lib/trajectory/types";
 import { totalSeconds } from "@/lib/useSimPlayback";
 import { departureOffsets, localClock, statusFromLocalT } from "@/lib/flightStatus";
 import { formatAirspace, type AirspaceMembership } from "@/lib/airspace";
+import NavIcon from "@/components/nav/NavIcon";
 
 export interface FlightFilter {
   search: string;
@@ -238,7 +239,8 @@ export default function FilterPanel({
   return (
     <aside className="filter-panel" aria-label="Filter flights">
       <header className="fp-head">
-        <span className="fp-title">🔎 Filter Flights</span>
+        <span className="fp-title">
+          <NavIcon name="filter" size={14} /> Filter Flights</span>
         <button
           type="button"
           className="fp-close"
@@ -522,7 +524,11 @@ export default function FilterPanel({
                 }
                 onClick={() => onToggleHidden(key)}
               >
-                {hidden ? "🚫" : "👁"}
+                {hidden ? (
+                  <NavIcon name="eye-off" size={14} />
+                ) : (
+                  <NavIcon name="eye" size={14} />
+                )}
               </button>
             </li>
           );

@@ -284,6 +284,13 @@ export interface ReportConflict {
 /** One aircraft crossing INTO a sector: who, exactly when, and how high. The
  *  aggregated counts cannot give the time back, and the time is the column a
  *  sector study reads first. */
+/** One aircraft's position inside a sector during an hour. */
+export interface OccupancyPoint {
+  flight: string;
+  lat: number;
+  lon: number;
+}
+
 export interface SectorEntry {
   flight: string;
   actype: string;
@@ -309,6 +316,11 @@ export interface SectorHourRow {
    *  read 0 entries and still be full of traffic. */
   occupancy: number;
   occupancyFlights: string[];
+  /** Where each of those aircraft sat inside the sector — the midpoint of its
+   *  stay. Only a re-cut of the airspace needs this (see ./dynamicArea): to
+   *  decide which slice of a sector to hand to a neighbour you have to know
+   *  which end of it the traffic is at, and a count cannot say. */
+  occupancyPoints: OccupancyPoint[];
   /** Conflicts starting in this sector in this hour, and how many of those had
    *  a resolution applied. `conflictsToSolve` is the workload figure: the
    *  aircraft a controller has to do something about. */
@@ -351,6 +363,7 @@ export function buildSectorHours(
         entryEvents: [],
         occupancy: 0,
         occupancyFlights: [],
+        occupancyPoints: [],
         conflictsTotal: 0,
         conflictsResolved: 0,
         conflictFlights: [],
@@ -361,10 +374,15 @@ export function buildSectorHours(
     return r;
   };
 
-  const markPresent = (r: SectorHourRow, callsign: string) => {
+  const markPresent = (
+    r: SectorHourRow,
+    callsign: string,
+    at?: { lat: number; lon: number },
+  ) => {
     if (r.occupancyFlights.includes(callsign)) return;
     r.occupancyFlights.push(callsign);
     r.occupancy += 1;
+    if (at) r.occupancyPoints.push({ flight: callsign, lat: at.lat, lon: at.lon });
   };
 
   for (const e of events) {
@@ -383,40 +401,65 @@ export function buildSectorHours(
   // Occupancy, from the ENTRY/EXIT pairs the same walk already produced. Each
   // pair is one continuous stay in one sector, so the aircraft belongs to every
   // hour that stay overlaps — including hours it neither entered nor left.
-  const stays = new Map<string, { layer: string; times: { ms: number; open: boolean }[] }>();
+  const stays = new Map<
+    string,
+    { layer: string; times: { ms: number; open: boolean; lat: number; lon: number }[] }
+  >();
   for (const e of events) {
     if (e.event !== "SECTOR_ENTRY" && e.event !== "SECTOR_EXIT") continue;
     if (!e.ident) continue;
     const k = e.flightKey + "\u0000" + e.callsign + "\u0000" + e.ident;
     const st = stays.get(k) ?? { layer: e.layer, times: [] };
-    st.times.push({ ms: Date.parse(e.timeUtc), open: e.event === "SECTOR_ENTRY" });
+    st.times.push({
+      ms: Date.parse(e.timeUtc),
+      open: e.event === "SECTOR_ENTRY",
+      lat: e.latDeg,
+      lon: e.lonDeg,
+    });
     stays.set(k, st);
   }
   for (const [k, st] of stays) {
     const [, callsign, sector] = k.split("\u0000");
     const times = [...st.times].sort((a, b) => a.ms - b.ms || (a.open ? -1 : 1));
     let openedAt: number | null = null;
+    let openedFrom: { lat: number; lon: number } | null = null;
     for (const t of times) {
       if (t.open) {
         // Two entries with no exit between them: keep the first. Re-anchoring
         // would silently drop the stay that was already running.
-        if (openedAt === null) openedAt = t.ms;
+        if (openedAt === null) {
+          openedAt = t.ms;
+          openedFrom = { lat: t.lat, lon: t.lon };
+        }
         continue;
       }
       if (openedAt === null) continue; // an exit with no entry — nothing to close
-      markPresent(row(sector, st.layer, hourBucket(openedAt)), callsign);
+      // Halfway between crossing in and crossing out: the best single point for
+      // "where in this sector was it", from what the events record.
+      const mid =
+        openedFrom === null
+          ? { lat: t.lat, lon: t.lon }
+          : { lat: (openedFrom.lat + t.lat) / 2, lon: (openedFrom.lon + t.lon) / 2 };
+      markPresent(row(sector, st.layer, hourBucket(openedAt)), callsign, mid);
       for (
         let h = Date.parse(hourBucket(openedAt)) + HOUR_MS;
         h <= t.ms;
         h += HOUR_MS
       ) {
-        markPresent(row(sector, st.layer, hourBucket(h)), callsign);
+        markPresent(row(sector, st.layer, hourBucket(h)), callsign, mid);
       }
       openedAt = null;
+      openedFrom = null;
     }
     // A stay still open at the end of the run (the flight lands inside the
     // sector, or the sample ends) still occupied it up to that last moment.
-    if (openedAt !== null) markPresent(row(sector, st.layer, hourBucket(openedAt)), callsign);
+    if (openedAt !== null) {
+      markPresent(
+        row(sector, st.layer, hourBucket(openedAt)),
+        callsign,
+        openedFrom ?? undefined,
+      );
+    }
   }
 
   for (const c of conflicts) {
