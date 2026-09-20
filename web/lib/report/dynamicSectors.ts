@@ -218,9 +218,14 @@ export interface DynamicTransition {
 export interface DynamicPlan {
   config: DynamicSectorConfig;
   /** When the operator accepted this configuration, ISO UTC. Null while it is
-   *  still a recommendation. Nothing about the plan itself changes on being
-   *  applied — what changes is that it stops being a suggestion, which the
-   *  exports and the map then say. */
+   *  still a recommendation.
+   *
+   *  Nothing about the PLAN changes on being applied — what changes is that it
+   *  comes into force: `lib/report/effectiveSectors.ts` reads this field, and
+   *  only an applied plan is layered over the published airspace, so from that
+   *  moment the simulation attributes traffic and conflicts to the positions
+   *  below rather than to the published sectors. A proposal deliberately does
+   *  not, or the numbers being read to judge it would already reflect it. */
   appliedAt: string | null;
   hours: DynamicHour[];
   spans: DynamicSpan[];
@@ -1153,9 +1158,12 @@ export function dynamicSectorsCsv(plan: DynamicPlan): string {
   return csv(head as string[], body);
 }
 
-/** The band-box periods on their own — the "when was this in force" table. */
-export function dynamicSpansCsv(plan: DynamicPlan): string {
-  return csv(
+/** The band-box periods on their own — the "when was this in force" table.
+ *  Split out from the .csv so the report tab can put the same rows on screen;
+ *  a table someone reads and a table someone downloads being built twice is
+ *  how the two come to disagree. */
+export function dynamicSpansTable(plan: DynamicPlan): (string | number)[][] {
+  return [
     [
       "position",
       "sectors",
@@ -1166,7 +1174,7 @@ export function dynamicSpansCsv(plan: DynamicPlan): string {
       "merge_below",
       "ended_by",
     ],
-    plan.spans.map((s) => [
+    ...plan.spans.map((s) => [
       s.label,
       s.sectors.join(" "),
       s.fromHourUtc,
@@ -1176,5 +1184,10 @@ export function dynamicSpansCsv(plan: DynamicPlan): string {
       plan.config.mergeBelow,
       s.endedBy,
     ]),
-  );
+  ];
+}
+
+export function dynamicSpansCsv(plan: DynamicPlan): string {
+  const [head, ...body] = dynamicSpansTable(plan);
+  return csv(head as string[], body);
 }

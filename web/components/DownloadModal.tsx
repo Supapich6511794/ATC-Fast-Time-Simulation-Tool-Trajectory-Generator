@@ -19,26 +19,38 @@ import {
   type Progress,
 } from "@/lib/downloadProgress";
 import type { TrajectoryResult } from "@/lib/trajectory/types";
+import NavIcon from "@/components/nav/NavIcon";
 
 /** Which run-level report to build. Shared with MapApp, which does the
  *  building — the modal only names them. */
 export type ReportKind = "events" | "sectors" | "dynamic";
 
-const REPORTS: { kind: ReportKind; label: string; sub: string }[] = [
+/** `files` is what each report actually writes, so the footer can say how many
+ *  downloads a tick adds — a report is a .csv plus its chart workbook, and the
+ *  dynamic one also writes the periods table. */
+const REPORTS: {
+  kind: ReportKind;
+  label: string;
+  sub: string;
+  files: number;
+}[] = [
   {
     kind: "events",
     label: "Flight events (.csv)",
     sub: "takeoff · waypoints · TOC/TOD · sector in/out · landing · + .xlsx: same table, plus a Chart tab of the trajectories",
+    files: 2,
   },
   {
     kind: "sectors",
     label: "Sector hours (.csv)",
     sub: "per sector per hour: entries, present, conflicts, resolved · + .xlsx: same table, plus a Chart tab of standard vs merged",
+    files: 2,
   },
   {
     kind: "dynamic",
     label: "Dynamic sectorization (.csv)",
     sub: "which sectors could be band-boxed and when they split back · + .xlsx: same table, plus a Chart tab of conflicts by sector",
+    files: 3,
   },
 ];
 
@@ -65,7 +77,11 @@ interface Props {
   /** Save one of the run-level report CSVs. These are built in the browser from
    *  the generated trajectories, the airspace polygons and the conflict log —
    *  unlike the per-route exports above, which the Python engine writes. */
-  onDownloadReport?: (kind: ReportKind) => void;
+  onDownloadReport?: (kind: ReportKind) => void | Promise<void>;
+  /** Open this report's chart in a second browser tab — nothing saved (the
+   *  rows are what Download is for). The dialog only names the report; the console builds it and
+   *  hands it over (see `lib/report/viewPayload.ts`). */
+  onViewReport?: (kind: ReportKind) => void;
   /** Which run report is building and how far along, null when idle. Reports
    *  are built in the browser over every flight in the sample, so a big traffic
    *  day takes seconds — without this the button looked dead. The kind is part
@@ -134,6 +150,7 @@ function DownloadModal({
   open,
   onClose,
   onDownloadReport,
+  onViewReport,
   reportProgress,
   results,
   downloads,
@@ -148,6 +165,13 @@ function DownloadModal({
   // download. "Select all" / "All" buttons remain one click away.
   const [routeSel, setRouteSel] = useState<Set<number>>(() => new Set());
   const [fmtSel, setFmtSel] = useState<Set<Format>>(() => new Set());
+  /** Run reports ticked for this download. They used to be three buttons that
+   *  each fired immediately, so asking for all three meant three clicks and
+   *  three waits with the dialog frozen in between — and the reports are built
+   *  in the browser over every flight, so each wait is seconds. Ticking them
+   *  puts them in the same basket as the route exports and the one Download
+   *  button at the bottom empties it. */
+  const [reportSel, setReportSel] = useState<Set<ReportKind>>(() => new Set());
 
   // Bundle mode — "separate" downloads each route as its own file
   // (zipped when several); "combined" merges every selected route into
@@ -181,6 +205,7 @@ function DownloadModal({
     if (open) {
       setRouteSel(new Set());
       setFmtSel(new Set());
+      setReportSel(new Set());
       setBundleMode("separate");
       setRouteQuery("");
       setRouteOpen(false);
@@ -375,9 +400,28 @@ function DownloadModal({
   // Files a download will produce. "Separate" = one file per route ×
   // format; "combined" merges every selected route into ONE file per
   // format, so its count is just the number of formats picked.
-  const canDownload = routeSel.size > 0 && fmtSel.size > 0;
-  const fileCount =
-    bundleMode === "combined" ? fmtSel.size : routeSel.size * fmtSel.size;
+  const toggleReport = (k: ReportKind) =>
+    setReportSel((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
+
+  // A run report is downloadable on its own: it describes the whole sample and
+  // needs neither a route nor a format picked.
+  const reportFiles = REPORTS.filter((r) => reportSel.has(r.kind)).reduce(
+    (n, r) => n + r.files,
+    0,
+  );
+  const routesReady = routeSel.size > 0 && fmtSel.size > 0;
+  const canDownload = routesReady || reportSel.size > 0;
+  const routeFiles = routesReady
+    ? bundleMode === "combined"
+      ? fmtSel.size
+      : routeSel.size * fmtSel.size
+    : 0;
+  const fileCount = routeFiles + reportFiles;
 
   // All hooks have run by this point — safe to short-circuit before the
   // JSX when the modal is closed.
@@ -489,7 +533,9 @@ function DownloadModal({
           },
     );
 
-  const runDownloadInner = async () => {
+  /** Everything the API renders: the per-route files. Returns without closing
+   *  the dialog — `runDownloadInner` closes once the reports are out too. */
+  const runRouteExports = async () => {
     const rIdx = Array.from(routeSel).sort((a, b) => a - b);
     const fmts = Array.from(fmtSel);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
@@ -536,7 +582,6 @@ function DownloadModal({
           onBytes,
         );
       }
-      onClose();
       return;
     }
 
@@ -547,7 +592,6 @@ function DownloadModal({
     if (totalFiles === 1) {
       const d = downloads[rIdx[0]];
       if (d) fireDownload(d[fmts[0]]);
-      onClose();
       return;
     }
 
@@ -580,6 +624,35 @@ function DownloadModal({
         }
       }
     }
+  };
+
+  /**
+   * The ticked run reports, one after another.
+   *
+   * Sequential on purpose. Each report is a walk over every flight in the
+   * sample, and running three of them at once would triple the peak memory of
+   * the tab for no wall-clock gain — the work is CPU-bound on one thread
+   * either way. `reportProgress` is a single slot for the same reason: it
+   * names the report being built, which only reads as progress if one is.
+   *
+   * A report that throws does not take the rest with it: the others are
+   * independent files, and the reader asked for all of them.
+   */
+  const runReports = async () => {
+    if (!onDownloadReport) return;
+    for (const r of REPORTS) {
+      if (!reportSel.has(r.kind)) continue;
+      try {
+        await onDownloadReport(r.kind);
+      } catch {
+        // Non-fatal — keep going through the rest of the basket.
+      }
+    }
+  };
+
+  const runDownloadInner = async () => {
+    if (routesReady) await runRouteExports();
+    await runReports();
     onClose();
   };
 
@@ -599,7 +672,9 @@ function DownloadModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="dlm-head">
-          <h3 id="dlm-title">⬇ Download trajectories</h3>
+          <h3 id="dlm-title">
+            <NavIcon name="export" size={15} /> Download trajectories
+          </h3>
           <button
             className="dlm-close"
             onClick={onClose}
@@ -836,32 +911,77 @@ function DownloadModal({
             they are written here in the browser rather than by the API. */}
         {onDownloadReport && (
           <div className="dlm-reports">
-            <p className="dlm-reports-h">Run reports</p>
-            {REPORTS.map((r) => (
-              <button
-                key={r.kind}
-                type="button"
-                className="dlm-report-btn"
-                onClick={() => onDownloadReport(r.kind)}
-                disabled={busy || results.length === 0 || reportProgress != null}
-                title={
-                  results.length === 0
-                    ? "Generate some flights first"
-                    : "Save " + r.label
-                }
-              >
-                <span className="dlm-report-label">
-                  {reportProgress?.kind === r.kind
-                    ? "⏳ " + reportProgress.percent + "%"
-                    : "⬇ " + r.label}
-                </span>
-                <span className="dlm-report-sub">
-                  {reportProgress?.kind === r.kind
-                    ? "Building over every flight…"
-                    : r.sub}
-                </span>
-              </button>
-            ))}
+            <div className="dlm-section-head">
+              <span className="dlm-reports-h">Run reports</span>
+              <div className="dlm-quick">
+                <button
+                  onClick={() =>
+                    setReportSel(new Set(REPORTS.map((r) => r.kind)))
+                  }
+                  disabled={results.length === 0}
+                >
+                  All
+                </button>
+                <button onClick={() => setReportSel(new Set())}>None</button>
+              </div>
+            </div>
+            {REPORTS.map((r) => {
+              const checked = reportSel.has(r.kind);
+              const building = reportProgress?.kind === r.kind;
+              const noFlights = results.length === 0;
+              return (
+                /* A row, not one button: ticking a report for download and
+                   opening it to read are two different acts, and a button
+                   inside a button is not markup a browser will honour. */
+                <div className="dlm-report-row" key={r.kind}>
+                  <button
+                    type="button"
+                    className={`dlm-report-btn${checked ? " on" : ""}`}
+                    onClick={() => toggleReport(r.kind)}
+                    aria-pressed={checked}
+                    disabled={busy || noFlights}
+                    title={
+                      noFlights
+                        ? "Generate some flights first"
+                        : (checked ? "Leave out " : "Add ") + r.label
+                    }
+                  >
+                    <span className="dlm-report-label">
+                      <span className="dlm-fmt-check" aria-hidden="true">
+                        {checked ? "✓" : ""}
+                      </span>
+                      {r.label}
+                      <span className="dlm-report-files">
+                        {r.files} files
+                      </span>
+                    </span>
+                    <span className="dlm-report-sub">
+                      {building
+                        ? "Building over every flight… " +
+                          reportProgress.percent +
+                          "%"
+                        : r.sub}
+                    </span>
+                  </button>
+                  {onViewReport && (
+                    <button
+                      type="button"
+                      className="dlm-report-view"
+                      onClick={() => onViewReport(r.kind)}
+                      disabled={busy || noFlights}
+                      title={
+                        noFlights
+                          ? "Generate some flights first"
+                          : `Open the ${r.label} chart in a new tab — nothing saved`
+                      }
+                    >
+                      <NavIcon name="chart" size={13} />
+                      View
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -882,11 +1002,18 @@ function DownloadModal({
           )}
           <span className="dlm-foot-note">
             {busy
-              ? note
+              ? // A report is built here in the browser, so it has its own
+                // progress and none of the transfer bar's phases apply.
+                reportProgress
+                ? `Building ${
+                    REPORTS.find((r) => r.kind === reportProgress.kind)?.label ??
+                    "report"
+                  } — ${reportProgress.percent}%`
+                : note
               : !canDownload
-                ? "Pick at least one route and one format"
-                : bundleMode === "combined"
-                  ? `${routeSel.size} route${routeSel.size === 1 ? "" : "s"} merged → ${fileCount} file${fileCount === 1 ? "" : "s"} (one per format)`
+                ? "Pick a route and a format, or tick a run report"
+                : bundleMode === "combined" && routesReady
+                  ? `${routeSel.size} route${routeSel.size === 1 ? "" : "s"} merged → ${fileCount} file${fileCount === 1 ? "" : "s"}`
                   : `${fileCount} file${fileCount === 1 ? "" : "s"} will download`}
           </span>
           <div className="dlm-foot-btns">
@@ -898,11 +1025,17 @@ function DownloadModal({
               onClick={runDownload}
               disabled={!canDownload || busy}
             >
-              {busy
-                ? pct === null
-                  ? "⏳ Preparing…"
-                  : `⏳ ${pct}%`
-                : `⬇ Download ${canDownload ? `(${fileCount})` : ""}`}
+              {busy ? (
+                <>
+                  <span className="dlm-spin" aria-hidden="true" />
+                  {pct === null ? "Preparing…" : `${pct}%`}
+                </>
+              ) : (
+                <>
+                  <NavIcon name="export" size={14} />
+                  {`Download ${canDownload ? `(${fileCount})` : ""}`}
+                </>
+              )}
             </button>
           </div>
         </div>

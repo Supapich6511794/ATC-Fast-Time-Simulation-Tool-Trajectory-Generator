@@ -123,7 +123,7 @@ export default function ConflictPanel({
               onClick={onDownloadLog}
               title={`Save all ${logCount} conflicts seen this run, resolved or not`}
             >
-              ⬇ Log ({logCount})
+              <NavIcon name="export" size={13} /> Log ({logCount})
             </button>
           )}
           <button type="button" className="cdr-panel-close" onClick={onClose} aria-label="Close">

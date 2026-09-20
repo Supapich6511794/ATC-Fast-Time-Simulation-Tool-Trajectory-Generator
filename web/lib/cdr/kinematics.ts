@@ -294,7 +294,12 @@ export function applyManeuver(
     case "hold": {
       // Fly ONE racetrack loop at the fix (crossed at the pivot), then resume
       // the filed route — every subsequent point is DELAYED by the loop time.
-      const loop = holdLoop(pivot, maneuver.resolution.hold!, epoch0 + tMan * 1000);
+      const loop = holdLoop(
+        pivot,
+        maneuver.resolution.hold!,
+        epoch0 + tMan * 1000,
+        trackSampleSec(samples),
+      );
       const loopMs = loop.length
         ? new Date(loop[loop.length - 1].epoch_ts).getTime() - (epoch0 + tMan * 1000)
         : 0;
@@ -419,17 +424,35 @@ function recomputeStats(
  * Returns samples timed from `startMs`; the last point snaps to the fix so the
  * route resumes cleanly.
  */
+/**
+ * The flight's own sampling interval, as the MEDIAN gap between its samples.
+ *
+ * Median rather than mean: the generator snaps a short interval at each phase
+ * boundary, and a handful of 1.4-second gaps would drag an average well below
+ * the rate the track was actually produced at. A hold is part of the same
+ * track, so it is emitted at the same rate; hard-coding one meant a 5-second
+ * radar picture that suddenly ran at 6 for four minutes.
+ */
+function trackSampleSec(samples: { t: number }[]): number {
+  if (samples.length < 3) return 5;
+  const gaps: number[] = [];
+  for (let i = 1; i < samples.length; i++) gaps.push(samples[i].t - samples[i - 1].t);
+  gaps.sort((a, b) => a - b);
+  const mid = gaps[gaps.length >> 1];
+  return mid > 0.1 && mid < 60 ? mid : 5;
+}
+
 function holdLoop(
   fix: TrajectoryPoint,
   hold: NonNullable<ManeuverResolution["hold"]>,
   startMs: number,
+  sampleSec = 5,
 ): TrajectoryPoint[] {
   const gs = hold.gsKt > 50 ? hold.gsKt : 230;
   const legSec = Math.max(30, hold.legSec);
   const TURN_RATE = 3; // deg/s (standard rate)
   const turnSec = 180 / TURN_RATE; // 60 s per 180° turn
   const sign = hold.turn === "R" ? 1 : -1; // compass-right = clockwise = +
-  const STEP = 6; // s per sample
   const nmPerSec = gs / 3600;
   const phases = [
     { dur: turnSec, turning: true }, // turn onto the outbound leg
@@ -437,37 +460,70 @@ function holdLoop(
     { dur: turnSec, turning: true }, // turn back onto the inbound leg
     { dur: legSec, turning: false }, // inbound leg → back to the fix
   ];
+
+  // The loop is EMITTED at the flight's own sampling rate — it is part of the
+  // same track and must not claim a finer radar picture than the rest of it —
+  // but it is INTEGRATED on a much smaller step. Two different problems, and
+  // the old code used one 6-second step for both:
+  //
+  //   * 6 s at standard rate is 18° of heading between one emitted position and
+  //     the next, so the turn was drawn as a ten-sided polygon.
+  //   * Each step moved a whole step's distance along the heading it would be
+  //     facing at the END of it, which traces an arc wider than the one being
+  //     flown. Measured against the exact pattern, up to 711 m out of position,
+  //     and a racetrack 0.18 NM too big.
+  //
+  // The loop closed on the fix either way — the two 180° turns are opposite, so
+  // their errors cancel — which is why this was invisible.
+  const INTEGRATE = 0.5; // s
+  const emitEvery = Math.max(1, sampleSec);
+
   let hdg = hold.inboundCourseDeg; // heading as it crosses the fix inbound
   let lat = fix.lat;
   let lon = fix.lon;
   let t = 0;
+  let nextEmit = emitEvery;
   const out: TrajectoryPoint[] = [];
+
+  const emit = () =>
+    out.push({
+      lat,
+      lon,
+      epoch_ts: iso(startMs + t * 1000),
+      altitude_ft: fix.altitude_ft,
+      gs_kt: gs,
+      tas_kt: fix.tas_kt,
+      track_deg: hdg,
+      phase: fix.phase,
+    });
+
   for (const ph of phases) {
     let elapsed = 0;
-    while (elapsed < ph.dur - 1e-6) {
-      const dt = Math.min(STEP, ph.dur - elapsed);
-      if (ph.turning) hdg = (hdg + sign * TURN_RATE * dt + 360) % 360;
+    while (elapsed < ph.dur - 1e-9) {
+      const dt = Math.min(INTEGRATE, ph.dur - elapsed);
+      // Midpoint rule: advance along the heading at the MIDDLE of the step, and
+      // only then finish the turn. Second-order accurate, so the traced arc is
+      // the arc it is meant to be and the racetrack closes on the fix by
+      // itself.
+      const mid = ph.turning ? hdg + (sign * TURN_RATE * dt) / 2 : hdg;
       const dNm = nmPerSec * dt;
-      const rad = (hdg * Math.PI) / 180;
+      const rad = (mid * Math.PI) / 180;
       lat += (dNm * Math.cos(rad)) / 60;
       lon += (dNm * Math.sin(rad)) / (60 * Math.cos((lat * Math.PI) / 180));
+      if (ph.turning) hdg = (hdg + sign * TURN_RATE * dt + 360) % 360;
       t += dt;
       elapsed += dt;
-      out.push({
-        lat,
-        lon,
-        epoch_ts: iso(startMs + t * 1000),
-        altitude_ft: fix.altitude_ft,
-        gs_kt: gs,
-        tas_kt: fix.tas_kt,
-        track_deg: hdg,
-        phase: fix.phase,
-      });
+      if (t >= nextEmit - 1e-9) {
+        emit();
+        nextEmit += emitEvery;
+      }
     }
   }
-  if (out.length) {
-    out[out.length - 1] = { ...out[out.length - 1], lat: fix.lat, lon: fix.lon };
-  }
+  // The last sample is the fix itself, so the route resumes from exactly where
+  // it left off. With the midpoint rule the loop already closes to within a
+  // couple of metres, so this is a rounding-level correction.
+  if (out.length === 0 || t > nextEmit - emitEvery + 1e-9) emit();
+  out[out.length - 1] = { ...out[out.length - 1], lat: fix.lat, lon: fix.lon };
   return out;
 }
 

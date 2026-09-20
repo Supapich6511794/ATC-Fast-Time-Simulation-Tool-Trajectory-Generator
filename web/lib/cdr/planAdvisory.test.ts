@@ -313,6 +313,31 @@ describe("planResolutions — blocked-by diagnostics", () => {
     expect(shadow.tightestNm).toBeLessThan(5); // it really was a near-miss
   });
 
+  it("never blames the other half of the pair for blocking a fix", () => {
+    // A blocker is an aircraft the controller can go and resolve FIRST. The
+    // conflict partner is not one: it is the conflict being worked. Candidates
+    // that leave it unresolved are dropped, as before — but tallying it turned
+    // into "Resolve UAE114 first" on a UAE114 conflict, which sends the reader
+    // in a circle, and into a "secondary conflict" that is neither secondary
+    // nor cascading.
+    const { flights, trajById } = headOnWithShadows([
+      { id: "SHADOW", altFt: 37000 },
+    ]);
+    const [conflict] = scanFlightPlanConflicts(flights, cfg);
+    const res = planResolutions({
+      conflict,
+      flights,
+      trajById,
+      simT: 0,
+      cfg,
+      restricted: [],
+    });
+    const pairIds = [conflict.a, conflict.b];
+    expect(res.blockers.map((b) => b.id).filter((id) => pairIds.includes(id))).toEqual(
+      [],
+    );
+  });
+
   it("hands back a flight key, not just a name to read", () => {
     // "Resolve SHADOW first" is advice until the panel can OPEN SHADOW, and a
     // callsign is not a handle: the id is what the conflict lists are keyed by.

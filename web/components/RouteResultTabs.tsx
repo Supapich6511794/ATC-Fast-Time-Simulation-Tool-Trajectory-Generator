@@ -132,7 +132,17 @@ export default function RouteResultTabs({
   // never the sample's own phase label. So the PHASE column always matches the
   // FL column even when the samples carry an unreliable phase (e.g. a flight
   // whose samples are all tagged "climb", or with no TOC/TOD computed).
+  //
+  // Built only while a summary is actually on screen. It parses every sample's
+  // timestamp and scans every sample for every fix, and the "all routes" page
+  // mounts one of these per flight — collapsed, showing a header — so doing it
+  // unconditionally spent seconds on a whole traffic day before anything had
+  // been opened.
+  const summaryShown = collapsible
+    ? !collapsed && (sectionMode === "both" || cardSec === "summary")
+    : stacked || tab === "summary";
   const waypointRows = useMemo(() => {
+    if (!summaryShown) return [];
     const pts = trajectory.points;
     if (pts.length === 0) return [];
     const tMs = pts.map((p) => new Date(p.epoch_ts).getTime());
@@ -166,7 +176,7 @@ export default function RouteResultTabs({
         phase,
       };
     });
-  }, [trajectory.route, trajectory.points]);
+  }, [summaryShown, trajectory.route, trajectory.points]);
 
   /** Vertical-profile section — stat boxes, chart, speed schedule, phases. */
   const renderVertical = (withTitle: boolean) => (

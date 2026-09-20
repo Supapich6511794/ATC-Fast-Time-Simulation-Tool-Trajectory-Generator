@@ -9,6 +9,10 @@
 
 import { memo } from "react";
 
+// The SAME function the map paints with (lib/displayColors), so the swatch read
+// here is the literal colour drawn on the line and the aircraft.
+import { altitudeColor } from "@/lib/displayColors";
+
 const STOPS = [
   { ft: 40000, label: "FL400+" },
   { ft: 30000, label: "FL300" },
@@ -16,15 +20,6 @@ const STOPS = [
   { ft: 10000, label: "10k ft" },
   { ft: 0, label: "0" },
 ];
-
-/** Mirror of LeafletMap.altitudeColor — kept in lock-step on purpose so
- *  the swatch the user reads here is the literal line colour they see. */
-function altitudeColor(altFt: number): string {
-  const f = Math.max(0, Math.min(1, altFt / 40000));
-  const hue = 50 + f * 160;
-  const light = 72 - f * 34;
-  return `hsl(${hue.toFixed(0)}, 92%, ${light.toFixed(0)}%)`;
-}
 
 // Memoised: it takes no props, so it never needs to re-render with the
 // parent (MapApp re-renders ~60×/sec while the aircraft animation plays).
@@ -41,9 +36,13 @@ function AltitudeLegend() {
     <div className="alt-legend" aria-label="Altitude colour scale">
       <span className="alt-legend-title">Altitude</span>
       <div className="alt-legend-body">
+        {/* backgroundImage, NOT the `background` shorthand: the shorthand resets
+            every background longhand to its initial value, and at inline
+            specificity that would beat the `background-origin` / `-repeat` the
+            stylesheet sets to keep the gradient off the border. */}
         <div
           className="alt-legend-bar"
-          style={{ background: `linear-gradient(to bottom, ${gradient})` }}
+          style={{ backgroundImage: `linear-gradient(to bottom, ${gradient})` }}
         />
         <ul className="alt-legend-ticks">
           {STOPS.map((s) => (

@@ -327,22 +327,33 @@ function searchEnvelope(
       const afterFlight = flightFrom(targetId, modified, offset);
 
       // 3-D clearance vs EVERY other flight (level changes clear vertically).
-      let offender: PlanFlight | undefined;
-      let tightestNm = Infinity;
+      //
+      // The intruder is checked like everyone else — a candidate that leaves
+      // the original conflict standing is no fix — but it is tallied
+      // separately, because the two failures mean different things. See the
+      // blocker note below.
+      let offender: PlanFlight | undefined; // third party, tightest first
+      let tightestNm = Infinity; // against anything, for the blocker readout
+      let thirdTightestNm = Infinity;
       let clear = true;
       for (const o of others) {
         const c = pairConflict(afterFlight, o, cfg);
-        if (c) {
-          clear = false;
-          if (c.dCpaNm < tightestNm) {
-            tightestNm = c.dCpaNm;
-            offender = o;
-          }
+        if (!c) continue;
+        clear = false;
+        if (c.dCpaNm < tightestNm) tightestNm = c.dCpaNm;
+        if (o.id !== intruderId && c.dCpaNm < thirdTightestNm) {
+          thirdTightestNm = c.dCpaNm;
+          offender = o;
         }
       }
       // Rejected — but WHY matters: "no fix" almost always means some third
       // aircraft is in the way, and the controller can only act on that if we
-      // say who. Tally the offender before dropping the candidate.
+      // say who. Tally that aircraft before dropping the candidate.
+      //
+      // ONLY a third aircraft. The other half of the pair is not a blocker: the
+      // panel turns this tally into "resolve X first", and X being the aircraft
+      // this conflict IS WITH sends the controller in a circle — there is
+      // nothing to go and resolve first, the candidate simply did not work.
       if (!clear) {
         if (offender) {
           const b = blocked.get(offender.id) ?? {
@@ -352,7 +363,7 @@ function searchEnvelope(
             tightestNm: Infinity,
           };
           b.count += 1;
-          b.tightestNm = Math.min(b.tightestNm, tightestNm);
+          b.tightestNm = Math.min(b.tightestNm, thirdTightestNm);
           blocked.set(offender.id, b);
         }
         return null;
@@ -378,7 +389,8 @@ function searchEnvelope(
         trackDeg,
         newGsKt: type === "speed" ? resolution.gsKt : undefined,
         newAltFt: type === "flightlevel" ? resolution.altFt : undefined,
-        recheck: { clear: true, minSepNm: newDCpaNm, offenderCallsign: offender?.callsign },
+        // Only reached when the candidate is clear of everything, pair included.
+        recheck: { clear: true, minSepNm: newDCpaNm },
       });
       if (report.verdict === "reject") return null;
 

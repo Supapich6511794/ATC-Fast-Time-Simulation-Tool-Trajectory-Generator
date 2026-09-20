@@ -188,10 +188,30 @@ export function buildFlightEvents(
   });
 
   // --- filed waypoints: the sample that passes closest to each fix ----------
+  // Two passes. A great-circle distance for every sample of every fix is routes
+  // x samples trig calls per flight, which over a traffic day was the largest
+  // cost left once the airspace walk was fixed. So a flat squared distance
+  // (no trig) ranks the samples first, and the exact haversine is taken only
+  // over those within 10% of the best flat distance — a margin wide enough that
+  // the flat ranking's error (about 1% of a distance at 100 NM, so 2% of its
+  // square) cannot drop the haversine winner. Same answer, a handful of
+  // haversines per fix instead of one per sample.
+  const flat = new Float64Array(pts.length);
   for (const wp of flight.route) {
+    const lonScale = Math.cos((wp.lat * Math.PI) / 180);
+    let bestFlat = Infinity;
+    for (let i = 0; i < pts.length; i++) {
+      const dLat = pts[i].lat - wp.lat;
+      const dLon = (pts[i].lon - wp.lon) * lonScale;
+      const d2 = dLat * dLat + dLon * dLon;
+      flat[i] = d2;
+      if (d2 < bestFlat) bestFlat = d2;
+    }
+    const cutoff = bestFlat * 1.1 + 1e-12;
     let bestI = -1;
     let bestNm = Infinity;
     for (let i = 0; i < pts.length; i++) {
+      if (flat[i] > cutoff) continue;
       const d = haversineNm(pts[i], wp);
       if (d < bestNm) {
         bestNm = d;

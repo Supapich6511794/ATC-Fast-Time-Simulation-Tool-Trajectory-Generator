@@ -53,13 +53,6 @@ export const MAIN_NAV_ITEMS: readonly MainNavDef[] = [
     kind: "menu",
   },
   {
-    id: "filter",
-    icon: "filter",
-    label: "Filter",
-    hint: "Filter which flights are drawn",
-    kind: "action",
-  },
-  {
     id: "conflicts",
     icon: "conflicts",
     label: "Conflicts",

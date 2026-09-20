@@ -173,7 +173,7 @@ export default function ConflictLogPanel({ log, onClose, utc, onSelect }: Props)
                   aria-haspopup="menu"
                   aria-expanded={menu}
                 >
-                  ⤓ Download
+                  <NavIcon name="export" size={13} /> Download
                 </button>
                 {menu && (
                   <div className="log-dl-menu" role="menu">

@@ -59,8 +59,11 @@ import {
   estimateReferenceMin,
   estimateSimMin,
   fetchCat62Reference,
+  fetchFlightTimeCurve,
+  isSupportedCurve,
   lookupReferenceMin,
   type Cat62Table,
+  type FlightTimeCurveResult,
 } from "@/lib/cat62";
 import { kBestRoutes, type RouteOption } from "@/lib/routeFinder";
 import {
@@ -1486,11 +1489,21 @@ function GeneratorPanel({
           });
         }
       }
-      // RNAV first within each capability set, then by distance.
-      return [...byText.values()].map((e) => ({
-        ...e,
-        caps: [...e.caps].sort((a, b) => Number(b) - Number(a)),
-      }));
+      // A route filed ONLY as Non-RNAV is not offered: that capability is not
+      // in use yet. What stays is exactly two kinds of row — RNAV, and a route
+      // filed under BOTH (tagged RNAV + NON-RNAV, since it is the same string).
+      // Non-RNAV is still read above so the second kind can be recognised.
+      // A pair whose every published route is Non-RNAV therefore has nothing
+      // left here, and falls through to the computed best routes below, exactly
+      // as a pair with no published route does.
+      const offered = [...byText.values()].filter((e) => e.caps.includes(true));
+      if (offered.length > 0) {
+        // RNAV first within each capability set, then by distance.
+        return offered.map((e) => ({
+          ...e,
+          caps: [...e.caps].sort((a, b) => Number(b) - Number(a)),
+        }));
+      }
     }
     if (allFixes.length === 0 || !depLL || !desLL) return [];
     return kBestRoutes(allFixes, airwaysMap, depLL, desLL, { k: 6 });
@@ -1810,31 +1823,57 @@ function GeneratorPanel({
     };
   }, []);
 
+  // Flight-time curve for THIS airframe at THIS level. Refetched when
+  // either changes; the server derives it from the type's own Thai APM
+  // performance, so the picker's prediction matches what /api/generate
+  // will compute. A type with no Thai APM data of its own comes back
+  // unsupported and the picker simply shows no time — never another
+  // airframe's.
+  const [timeCurve, setTimeCurve] = useState<FlightTimeCurveResult | null>(
+    null,
+  );
+  useEffect(() => {
+    let cancelled = false;
+    if (!actype.trim()) {
+      setTimeCurve(null);
+      return;
+    }
+    fetchFlightTimeCurve(actype, rfl * 100)
+      .then((c) => !cancelled && setTimeCurve(c))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [actype, rfl]);
+
   // One target time for the whole pair: the real CAT62 reference if we
-  // have one, otherwise a distance-based estimate anchored on the
-  // shortest (recommended) route — so EVERY pair gets a PASS/FAIL, not
+  // have one, otherwise an estimate anchored on the shortest (recommended)
+  // route — so every pair with a usable airframe gets a PASS/FAIL, not
   // just the few with table entries.
   const threshold = cat62?.thresholdMin ?? 5;
   const pairRefMin = useMemo(() => {
     if (!cat62 || bestRoutes.length === 0) return null;
     const real = lookupReferenceMin(cat62, dep, des);
     if (real != null) return real;
-    return estimateReferenceMin(bestRoutes[0].distanceNm);
-  }, [cat62, dep, des, bestRoutes]);
+    if (!isSupportedCurve(timeCurve)) return null;
+    return estimateReferenceMin(timeCurve, bestRoutes[0].distanceNm);
+  }, [cat62, dep, des, bestRoutes, timeCurve]);
 
   // Annotate each candidate route with its predicted flight time +
   // PASS/FAIL against the pair target, then split passing / failing.
   const rankedRoutes = useMemo(
     () =>
       bestRoutes.map((r) => {
-        const simMin = estimateSimMin(r.distanceNm);
+        const simMin = isSupportedCurve(timeCurve)
+          ? estimateSimMin(timeCurve, r.distanceNm)
+          : null;
         const passed =
-          pairRefMin != null
+          simMin != null && pairRefMin != null
             ? Math.abs(simMin - pairRefMin) < threshold
             : null;
         return { ...r, simMin, passed };
       }),
-    [bestRoutes, pairRefMin, threshold],
+    [bestRoutes, pairRefMin, threshold, timeCurve],
   );
 
   const passingRoutes = rankedRoutes.filter((r) => r.passed === true);
@@ -2234,10 +2273,33 @@ function GeneratorPanel({
         ? builtRoute
         : routeStr.trim();
 
-  const previewFpl =
-    callsign && adep && ades && previewRoute
-      ? `${callsign} ${actype} ${adep} ${ades} ${previewRoute}`.trim()
-      : "";
+  /**
+   * The whole plan, not just the route portion.
+   *
+   * This used to be `callsign actype adep ades route` and nothing else, so a
+   * flight with a STAR, an arrival runway and an approach picked in the
+   * dropdowns immediately above previewed as though it had none of them — the
+   * values were being sent to the engine all along (see the request built in
+   * `generate`), they were simply missing from the line that claims to show
+   * what will be filed.
+   *
+   * The SID and STAR bracket the route, which is how Item 15 reads: procedure
+   * out, airways, procedure in. Runways and the approach are NOT part of an
+   * Item-15 string, so they follow as an annotation rather than being pretended
+   * into it. Every piece appears only when it is set, so a plan with no
+   * procedures still reads exactly as it did before.
+   */
+  const previewFpl = (() => {
+    if (!(callsign && adep && ades && previewRoute)) return "";
+    const item15 = [sid, previewRoute, star].filter(Boolean).join(" ");
+    const head = `${callsign} ${actype} ${adep} ${ades} ${item15}`.trim();
+    const tail = [
+      depRwy && `DEP ${depRwy}`,
+      arrRwy && `ARR ${arrRwy}`,
+      approach && `APP ${approach}`,
+    ].filter(Boolean);
+    return tail.length ? `${head}  ·  ${tail.join("  ·  ")}` : head;
+  })();
 
   // The single route the user is editing *right now* — the "section in
   // progress". Skipped if the edit string is already queued, to avoid
@@ -2924,7 +2986,7 @@ function GeneratorPanel({
                   <>⚠ Route &amp; area check unavailable — data did not load</>
                 ) : pdrPlan.loading || pdrPlan.scanning ? (
                   <>
-                    ⏳ Checking routes &amp; P/D/R areas…
+                    <span className="dlm-spin" aria-hidden="true" /> Checking routes &amp; P/D/R areas…
                     {pdrPlan.scanning && pdrPlanConflicts > 0 && (
                       <> ({pdrPlanConflicts} so far)</>
                     )}
@@ -3323,8 +3385,9 @@ function GeneratorPanel({
               </p>
             )}
 
-            {/* AIP — pick a published filed route. RNAV + Non-RNAV are listed
-                together; click to fill the route, add either or both. */}
+            {/* AIP — pick a published filed route. RNAV routes are listed, a
+                route filed under both RNAV and Non-RNAV carrying both tags;
+                click to fill the route, add either or both. */}
             {routeTab === "aip" &&
               pairReady &&
               (bestRoutes.length > 0 ? (
@@ -3333,7 +3396,7 @@ function GeneratorPanel({
                     {usingAip ? "AIP filed routes" : "Best routes"} ({dep} →{" "}
                     {des})
                     {usingAip
-                      ? " — RNAV + Non-RNAV"
+                      ? " — RNAV"
                       : hasReference
                         ? passingRoutes.length > 0
                           ? " — within 5 min of reference"
@@ -3363,7 +3426,11 @@ function GeneratorPanel({
                           type="button"
                           className={cls || undefined}
                           onClick={() => setRouteStr(r.text)}
-                          title={`${r.distanceNm} NM · ~${Math.round(r.simMin)} min — select, then pick SID/STAR and Add`}
+                          title={`${r.distanceNm} NM${
+                            r.simMin == null
+                              ? ""
+                              : ` · ~${Math.round(r.simMin)} min`
+                          } — select, then pick SID/STAR and Add`}
                         >
                           {r.caps?.includes(true) && (
                             <span className="rt-cap">RNAV</span>
@@ -3372,8 +3439,9 @@ function GeneratorPanel({
                             <span className="rt-cap non">NON-RNAV</span>
                           )}
                           {queued && <span className="rt-cap added">✓ queued</span>}
-                          {r.text} · {r.distanceNm} NM · ~
-                          {Math.round(r.simMin)} min{passTag}
+                          {r.text} · {r.distanceNm} NM
+                          {r.simMin != null && <> · ~{Math.round(r.simMin)} min</>}
+                          {passTag}
                         </button>
                       );
                     },

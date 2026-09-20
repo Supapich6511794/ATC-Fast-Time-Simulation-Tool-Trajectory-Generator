@@ -290,6 +290,122 @@ describe("applyManeuver", () => {
     expect(aircraftAt(samples, newDur - 1)!.track).toBeCloseTo(90, 0);
   });
 
+  it("hold: traces the racetrack at the flight's own sampling rate, smoothly", () => {
+    // The loop used to be emitted on a hard-coded 6-second step, which is both
+    // a different radar picture from the rest of the track and 18 degrees of
+    // heading between one position and the next — an arc drawn as a polygon.
+    const traj = eastbound(120, 35000);
+    const before = toSamples(traj.points);
+    const cadence = before[1].t - before[0].t;
+    const out = applyManeuver(
+      traj,
+      man({
+        type: "hold",
+        resolution: {
+          hold: {
+            ident: "FIX",
+            lat: 13,
+            lon: 100.5,
+            inboundCourseDeg: 90,
+            turn: "R",
+            legSec: 60,
+            gsKt: 230,
+          },
+        },
+      }),
+      40,
+    );
+    // Samples inside the loop, by time: the loop runs from the maneuver for
+    // about four minutes.
+    const epoch0 = new Date(out.points[0].epoch_ts).getTime();
+    const inLoop = out.points.filter((p) => {
+      const t = (new Date(p.epoch_ts).getTime() - epoch0) / 1000;
+      return t > 40 && t < 40 + 235;
+    });
+    expect(inLoop.length).toBeGreaterThan(10);
+
+    // Emitted at the track's own rate, not a rate of its own.
+    const gaps: number[] = [];
+    for (let i = 1; i < inLoop.length; i++) {
+      gaps.push(
+        (new Date(inLoop[i].epoch_ts).getTime() -
+          new Date(inLoop[i - 1].epoch_ts).getTime()) /
+          1000,
+      );
+    }
+    expect(Math.max(...gaps)).toBeLessThanOrEqual(cadence + 0.001);
+
+    // Standard rate is 3 deg/s, so one sampling interval can turn the aircraft
+    // by 3 * cadence and no more. At the old 6-second step this was 18.
+    const turns: number[] = [];
+    for (let i = 1; i < inLoop.length; i++) {
+      turns.push(
+        Math.abs(
+          ((inLoop[i].track_deg - inLoop[i - 1].track_deg + 540) % 360) - 180,
+        ),
+      );
+    }
+    expect(Math.max(...turns)).toBeLessThanOrEqual(3 * cadence + 0.5);
+  });
+
+  it("hold: traces a racetrack the size the geometry says it is", () => {
+    // The old code moved a whole 6-second step along the heading it would be
+    // facing at the END of that step, which traces an arc wider than the one
+    // being flown: measured against the exact pattern, up to 711 m out of
+    // position. The racetrack came out 0.18 NM too big.
+    //
+    // The extent is analytic, so this is a check against the geometry rather
+    // than against the previous output. Entering at the fix on the inbound
+    // course, the pattern is: 180 turn, outbound leg, 180 turn, inbound leg.
+    // The farthest the aircraft gets from the fix is on the SECOND turn, whose
+    // centre is `hypot(leg, r)` away and whose radius adds r.
+    const GS = 230;
+    const LEG_SEC = 60;
+    const r = GS / 3600 / (3 * (Math.PI / 180)); // v / omega, standard rate
+    const leg = (GS / 3600) * LEG_SEC;
+    const wantMax = Math.hypot(leg, r) + r;
+
+    const traj = eastbound(120, 35000);
+    // The racetrack is flown from where the AIRCRAFT is when the hold is
+    // applied, which is what the published fix's coordinates identify rather
+    // than replace. That pivot is the centre everything below is measured from.
+    const pivot = aircraftAt(toSamples(traj.points), 40)!;
+    const out = applyManeuver(
+      traj,
+      man({
+        type: "hold",
+        resolution: {
+          hold: {
+            ident: "FIX",
+            lat: pivot.lat,
+            lon: pivot.lon,
+            inboundCourseDeg: 90,
+            turn: "R",
+            legSec: LEG_SEC,
+            gsKt: GS,
+          },
+        },
+      }),
+      40,
+    );
+    const epoch0 = new Date(out.points[0].epoch_ts).getTime();
+    const inLoop = out.points.filter((p) => {
+      const t = (new Date(p.epoch_ts).getTime() - epoch0) / 1000;
+      return t > 40 && t < 40 + 240;
+    });
+    const gotMax = Math.max(
+      ...inLoop.map(
+        (p) =>
+          Math.hypot(
+            p.lat - pivot.lat,
+            (p.lon - pivot.lon) * Math.cos((pivot.lat * Math.PI) / 180),
+          ) * 60,
+      ),
+    );
+    // 0.05 NM: the old integrator missed by 0.18, the sampled one by 0.001.
+    expect(Math.abs(gotMax - wantMax)).toBeLessThan(0.05);
+  });
+
   it("speed: keeps the geographic path but re-times it for the new gs", () => {
     const traj = eastbound(60, 35000);
     const out = applyManeuver(

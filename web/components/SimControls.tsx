@@ -26,6 +26,32 @@ function mmss(sec: number): string {
   return `${String(m).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }
 
+/** The clock reads the dataset's own UTC, not wall time: `originMs` is the
+ *  first sample's timestamp, so the cursor shows the stamp the exported track
+ *  rows are keyed by. */
+function utcAt(originMs: number, sec: number): Date {
+  return new Date(originMs + Math.max(0, Math.round(sec)) * 1000);
+}
+
+/** Cursor clock — "2026-03-04 02:42:58 UTC". */
+function utcStamp(originMs: number, sec: number): string {
+  const iso = utcAt(originMs, sec).toISOString();
+  return `${iso.slice(0, 10)} ${iso.slice(11, 19)} UTC`;
+}
+
+/** Timeline extent — time of day only ("02:42:58Z"); the date is in the title,
+ *  which matters for a traffic day that runs past midnight. */
+function utcTimeOfDay(originMs: number, sec: number): string {
+  return `${utcAt(originMs, sec).toISOString().slice(11, 19)}Z`;
+}
+
+/** A span as "1 h 04 min" / "48 min", for the extent tooltip. */
+function duration(sec: number): string {
+  const m = Math.max(0, Math.round(sec / 60));
+  const h = Math.floor(m / 60);
+  return h > 0 ? `${h} h ${String(m % 60).padStart(2, "0")} min` : `${m} min`;
+}
+
 /** Speed picker. Drops DOWN: the playback strip sits at the top of the map,
  *  under the global bar. */
 function SpeedMenu({
@@ -339,6 +365,10 @@ export default function SimControls({
   // first-point value (the "always 6,000 ft" bug).
   const isAllRoutes = playbackIdx === "all";
   const ac = isAllRoutes ? null : sim.aircraft;
+  // UTC of the clock's t=0. In "all" mode that's the earliest departure across
+  // the set, otherwise the picked route's own first sample — either way it is
+  // whatever `useSimPlayback` was handed, so the readout matches the map.
+  const originMs = sim.originMs;
   const activeLabel = (() => {
     if (trajectories.length < 2) return null;
     if (playbackIdx === "all") return "Playing: all routes";
@@ -403,7 +433,16 @@ export default function SimControls({
         ↺
       </button>
 
-      <span className="sim-time">{mmss(sim.simT)}</span>
+      <span
+        className="sim-time sim-clock"
+        title={
+          originMs != null
+            ? `Replay cursor · ${duration(sim.simT)} into the timeline`
+            : "Elapsed replay time"
+        }
+      >
+        {originMs != null ? utcStamp(originMs, sim.simT) : mmss(sim.simT)}
+      </span>
 
       <input
         className="sim-scrub"
@@ -416,7 +455,16 @@ export default function SimControls({
         aria-label="Timeline"
       />
 
-      <span className="sim-time">{mmss(sim.total)}</span>
+      <span
+        className="sim-time sim-end"
+        title={
+          originMs != null
+            ? `Timeline ends ${utcStamp(originMs, sim.total)} · ${duration(sim.total)}`
+            : `Timeline length · ${duration(sim.total)}`
+        }
+      >
+        {originMs != null ? utcTimeOfDay(originMs, sim.total) : mmss(sim.total)}
+      </span>
 
       <SpeedMenu speed={sim.speed} setSpeed={sim.setSpeed} />
     </div>

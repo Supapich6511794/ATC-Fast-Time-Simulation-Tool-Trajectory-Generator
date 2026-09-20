@@ -14,6 +14,8 @@ import {
   flightTrajectoryCsv,
   standardVsMergedCsv,
   trafficBySectorCsv,
+  trafficBySectorXlsx,
+  trajectoryChartCallsigns,
 } from "./chartData";
 import {
   DEFAULT_DYNAMIC_CONFIG,
@@ -245,5 +247,86 @@ describe("flight trajectory", () => {
 
   it("survives having no events at all", () => {
     expect(flightTrajectoryCsv([])).toContain("\r\n");
+  });
+
+  it("names the flights it will draw before any of their events exist", () => {
+    // The report builds events for ONLY these — the chart plots 25 flights
+    // however large the sample is — so the rule has to agree with the chart's
+    // own, or the picture would be drawn from the wrong flights.
+    const callsigns = Array.from({ length: 40 }, (_, i) => "F" + String(39 - i).padStart(3, "0"));
+    const keep = trajectoryChartCallsigns(callsigns);
+    expect(keep.size).toBe(25);
+    expect([...keep].sort()[0]).toBe("F000");
+    expect(keep.has("F024")).toBe(true);
+    expect(keep.has("F025")).toBe(false);
+    expect(trajectoryChartCallsigns(callsigns, 3)).toEqual(
+      new Set(["F000", "F001", "F002"]),
+    );
+  });
+
+  it("draws the same picture from the chosen flights alone as from the whole day", () => {
+    const day = Array.from({ length: 60 }, (_, i) =>
+      ev("F" + String((i * 7) % 60).padStart(3, "0"), [
+        [100 + i * 0.01, 13],
+        [101 + i * 0.01, 14],
+      ]),
+    ).flat();
+    const keep = trajectoryChartCallsigns(day.map((e) => e.callsign));
+    const subset = day.filter((e) => keep.has(e.callsign));
+    expect(subset.length).toBeLessThan(day.length);
+    expect(flightTrajectoryCsv(subset)).toBe(flightTrajectoryCsv(day));
+  });
+
+  it("keeps every route of a callsign that flies more than one", () => {
+    // Two routes under one callsign are ONE series on the chart, so dropping
+    // either from the subset would change the line drawn.
+    const twoRoutes = [
+      ...ev("AAA1", [[100, 13]]),
+      ...ev("AAA1", [[101, 14]]).map((e) => ({ ...e, flightKey: "AAA1_R2" })),
+      ...ev("ZZZ9", [[102, 15]]),
+    ];
+    const keep = trajectoryChartCallsigns(twoRoutes.map((e) => e.callsign), 1);
+    expect(twoRoutes.filter((e) => keep.has(e.callsign))).toHaveLength(2);
+  });
+});
+
+// --- 5. "This hour" means this hour -----------------------------------------
+
+/**
+ * The sector panel's button is labelled "This hour", and BOTH sheets of the
+ * workbook it writes have to mean it. The report sheet used to be the whole
+ * run while only the chart was filtered, so the tab Excel opens on was a day
+ * of numbers the reader had not asked for and could not tell apart — every
+ * row looks alike once the hour column scrolls out of view.
+ *
+ * The parts are STORED rather than deflated (see `xlsx.ts`), so the strings
+ * are readable in the bytes and a sector that belongs to another hour can be
+ * looked for directly.
+ */
+describe("the this-hour workbook", () => {
+  const rows: SectorHourRow[] = [
+    row({ sector: "SECTOR_NOW_A", hourUtc: H(3), entries: 9 }),
+    row({ sector: "SECTOR_NOW_B", hourUtc: H(3), entries: 4 }),
+    row({ sector: "SECTOR_LATER", hourUtc: H(7), entries: 40 }),
+  ];
+  const text = new TextDecoder().decode(
+    trafficBySectorXlsx(rows, "bacc", H(3)),
+  );
+
+  it("carries the sectors of the hour that was asked for", () => {
+    expect(text).toContain("SECTOR_NOW_A");
+    expect(text).toContain("SECTOR_NOW_B");
+  });
+
+  it("carries no other hour, on either sheet", () => {
+    expect(text).not.toContain("SECTOR_LATER");
+  });
+
+  it("leaves a different hour with its own rows", () => {
+    const later = new TextDecoder().decode(
+      trafficBySectorXlsx(rows, "bacc", H(7)),
+    );
+    expect(later).toContain("SECTOR_LATER");
+    expect(later).not.toContain("SECTOR_NOW_A");
   });
 });

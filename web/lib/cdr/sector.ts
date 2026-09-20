@@ -40,11 +40,19 @@ export interface SectorPoint {
   altFt: number | null;
 }
 
-/** Resolves a position to the airspace that contains it. */
+/**
+ * Resolves a position to the airspace that contains it.
+ *
+ * `atMs` is passed because WHO owns a piece of airspace is not fixed: an
+ * applied dynamic-sectorisation plan band-boxes sectors and moves boundaries
+ * for an hour at a time, so the same point has different owners at different
+ * times. Resolvers that only read the published map ignore it.
+ */
 export type AirspaceResolver = (
   lat: number,
   lon: number,
   altFt: number | null,
+  atMs?: number,
 ) => AirspaceMembership;
 
 /** The ATS unit picture for one conflict. */
@@ -91,17 +99,24 @@ export function unitName(label: string, layer: SectorKey | null): string {
  */
 export function conflictSector(
   ids: { a: string; b: string },
-  cpa: { a: SectorPoint | null; b: SectorPoint | null },
-  now: { a: SectorPoint | null; b: SectorPoint | null },
+  cpa: { a: SectorPoint | null; b: SectorPoint | null; atMs?: number },
+  now: { a: SectorPoint | null; b: SectorPoint | null; atMs?: number },
   resolve: AirspaceResolver,
 ): ConflictSector {
-  const at = (p: SectorPoint | null): AirspaceMembership | undefined =>
-    p ? resolve(p.lat, p.lon, p.altFt) : undefined;
+  // Each group carries its own instant: the CPA points are resolved at the CPA
+  // and the live ones at the clock. With a dynamic plan in force those can fall
+  // in different hours and be worked by different positions, which is exactly
+  // the case `coordination` below has to get right.
+  const at = (
+    p: SectorPoint | null,
+    atMs?: number,
+  ): AirspaceMembership | undefined =>
+    p ? resolve(p.lat, p.lon, p.altFt, atMs) : undefined;
   // The ATS unit only — a danger area is not somebody who can be called.
   const unitOf = (m: AirspaceMembership | undefined): AirspaceMembership | undefined =>
     m && { ...m, pdr: undefined };
-  const name = (p: SectorPoint | null): string =>
-    formatAirspace(unitOf(at(p)), "compact");
+  const name = (p: SectorPoint | null, atMs?: number): string =>
+    formatAirspace(unitOf(at(p, atMs)), "compact");
 
   // The conflict's own position: BETWEEN the two aircraft at the CPA, at the
   // mean of their levels. Taking either aircraft on its own would hand the
@@ -120,12 +135,12 @@ export function conflictSector(
   } else {
     mid = cpa.a ?? cpa.b;
   }
-  const full = at(mid);
+  const full = at(mid, cpa.atMs);
   const m = unitOf(full);
 
   const byFlight: Record<string, string> = {};
-  if (now.a) byFlight[ids.a] = name(now.a);
-  if (now.b) byFlight[ids.b] = name(now.b);
+  if (now.a) byFlight[ids.a] = name(now.a, now.atMs);
+  if (now.b) byFlight[ids.b] = name(now.b, now.atMs);
 
   // Only a real disagreement counts. Two aircraft neither of which is inside a
   // known volume are not "in different sectors" — they are both off the map,

@@ -130,11 +130,28 @@ export interface ConstraintInput {
   trackDeg: number;
   newGsKt?: number;
   newAltFt?: number;
-  /** Result of re-checking the maneuvered trajectory against ALL other traffic
-   *  (caller-computed, 3-D so a level change that separates vertically counts as
-   *  clear even though it stays horizontally close): whether it stays clear, the
-   *  tightest horizontal separation for display, and the closest offender. */
-  recheck?: { clear: boolean; minSepNm: number; offenderCallsign?: string };
+  /**
+   * Result of re-checking the maneuvered trajectory against ALL other traffic
+   * (caller-computed, 3-D so a level change that separates vertically counts as
+   * clear even though it stays horizontally close).
+   *
+   * The two failures are reported SEPARATELY because they are different
+   * findings, and calling both "secondary conflict" was simply wrong: the other
+   * half of the pair being still in conflict means this maneuver did not do the
+   * job it was proposed for, while a THIRD aircraft in conflict means the
+   * maneuver would create a new problem. The first is not secondary and not
+   * cascading, and there is nothing to "resolve first" about it.
+   */
+  recheck?: {
+    clear: boolean;
+    /** Tightest horizontal separation against anything, for the pass message. */
+    minSepNm: number;
+    /** The conflict this fix is FOR, when the maneuver leaves it unresolved. */
+    unresolved?: { callsign?: string; dCpaNm: number };
+    /** Traffic other than the pair that the maneuver would newly conflict with.
+     *  `alsoCount` is how many further aircraft beyond this one. */
+    secondary?: { callsign?: string; dCpaNm: number; alsoCount?: number };
+  };
 }
 
 // Rough jet envelope — approximate, since exact per-type Vmo/Mmo lives in the
@@ -236,13 +253,44 @@ export function evaluateConstraints(input: ConstraintInput): ConstraintReport {
         source: "ICAO Doc 4444 Ch.5",
       });
     } else {
-      checks.push({
-        category: "Conflict",
-        label: "Secondary conflict",
-        status: "fail",
-        detail: `Loses separation with ${recheck.offenderCallsign ?? "other traffic"} (CPA ${recheck.minSepNm.toFixed(1)} NM < ${need} NM).`,
-        source: "ICAO Doc 4444 Ch.5",
-      });
+      // The pair first: it is the question the reader came here with.
+      if (recheck.unresolved) {
+        const who = recheck.unresolved.callsign;
+        checks.push({
+          category: "Conflict",
+          label: who ? `Conflict persists with ${who}` : "Conflict not resolved",
+          status: "fail",
+          detail:
+            `This maneuver does not resolve the conflict it is for — CPA still ` +
+            `${recheck.unresolved.dCpaNm.toFixed(1)} NM < ${need} NM.`,
+          source: "ICAO Doc 4444 Ch.5",
+        });
+      }
+      if (recheck.secondary) {
+        const more = recheck.secondary.alsoCount ?? 0;
+        checks.push({
+          category: "Conflict",
+          label: "Secondary conflict",
+          status: "fail",
+          detail:
+            `Would newly lose separation with ` +
+            `${recheck.secondary.callsign ?? "other traffic"} ` +
+            `(CPA ${recheck.secondary.dCpaNm.toFixed(1)} NM < ${need} NM)` +
+            `${more > 0 ? ` and ${more} more` : ""}.`,
+          source: "ICAO Doc 4444 Ch.5",
+        });
+      }
+      // Neither named: the caller knows it is not clear but not who. Say that
+      // rather than inventing a category for it.
+      if (!recheck.unresolved && !recheck.secondary) {
+        checks.push({
+          category: "Conflict",
+          label: "Not clear of other traffic",
+          status: "fail",
+          detail: `Tightest CPA ${recheck.minSepNm.toFixed(1)} NM < ${need} NM.`,
+          source: "ICAO Doc 4444 Ch.5",
+        });
+      }
     }
   }
 

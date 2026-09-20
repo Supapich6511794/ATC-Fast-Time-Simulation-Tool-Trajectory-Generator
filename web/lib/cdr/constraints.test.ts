@@ -111,11 +111,67 @@ describe("evaluateConstraints", () => {
   });
 
   it("rejects a secondary conflict from the re-check", () => {
-    const r = evaluateConstraints(base({ recheck: { clear: false, minSepNm: 2.5, offenderCallsign: "AIQ9" } }));
+    const r = evaluateConstraints(
+      base({
+        recheck: {
+          clear: false,
+          minSepNm: 2.5,
+          secondary: { callsign: "AIQ9", dCpaNm: 2.5 },
+        },
+      }),
+    );
     expect(r.verdict).toBe("reject");
     const conflict = r.checks.find((c) => c.category === "Conflict")!;
     expect(conflict.status).toBe("fail");
+    expect(conflict.label).toBe("Secondary conflict");
     expect(conflict.detail).toContain("AIQ9");
+    expect(conflict.detail).toContain("newly");
+  });
+
+  it("does not call the pair partner a secondary conflict", () => {
+    // The aircraft this fix is FOR is not a cascading conflict: a secondary
+    // conflict is one the maneuver CREATES, and the partner is the one it was
+    // proposed to remove. Reporting it as secondary told the controller to go
+    // and resolve the conflict they were already resolving.
+    const r = evaluateConstraints(
+      base({
+        recheck: {
+          clear: false,
+          minSepNm: 0,
+          unresolved: { callsign: "UAE114", dCpaNm: 0 },
+        },
+      }),
+    );
+    expect(r.verdict).toBe("reject");
+    const conflict = r.checks.find((c) => c.category === "Conflict")!;
+    expect(conflict.label).toBe("Conflict persists with UAE114");
+    expect(conflict.label).not.toContain("Secondary");
+    expect(conflict.detail).toContain("does not resolve");
+  });
+
+  it("reports both when the fix neither resolves the pair nor clears a third", () => {
+    const r = evaluateConstraints(
+      base({
+        recheck: {
+          clear: false,
+          minSepNm: 0,
+          unresolved: { callsign: "UAE114", dCpaNm: 0 },
+          secondary: { callsign: "AIQ9", dCpaNm: 3.1, alsoCount: 2 },
+        },
+      }),
+    );
+    const conflicts = r.checks.filter((c) => c.category === "Conflict");
+    expect(conflicts).toHaveLength(2);
+    expect(conflicts[0].label).toContain("UAE114");
+    expect(conflicts[1].label).toBe("Secondary conflict");
+    expect(conflicts[1].detail).toContain("2 more");
+  });
+
+  it("still says something useful when the caller names nobody", () => {
+    const r = evaluateConstraints(base({ recheck: { clear: false, minSepNm: 2.5 } }));
+    expect(r.verdict).toBe("reject");
+    const conflict = r.checks.find((c) => c.category === "Conflict")!;
+    expect(conflict.label).toBe("Not clear of other traffic");
   });
 
   it("warns on the semicircular rule (level against the direction of flight)", () => {

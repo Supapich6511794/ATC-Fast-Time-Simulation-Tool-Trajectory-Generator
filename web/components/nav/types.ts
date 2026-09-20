@@ -31,7 +31,6 @@ export type MainNavId =
   | "home"
   | "tool"
   | "trajectory"
-  | "filter"
   | "conflicts"
   | "sector"
   | "sequencing"

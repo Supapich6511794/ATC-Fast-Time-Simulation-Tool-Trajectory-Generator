@@ -52,6 +52,11 @@ interface Props {
   plan: DynamicPlan | null;
   /** True once the shown plan has been accepted by the operator. */
   applied: boolean;
+  /** The positions the applied configuration has open AT THE SIM CLOCK. Empty
+   *  when nothing is applied, or when this hour is worked as published. What
+   *  makes "applied" mean something the reader can see: these are the units the
+   *  simulation is now attributing traffic and conflicts to. */
+  inForce?: string[];
   /** Run the planner over the whole sample. */
   onRun: () => void;
   /** Accept what is on screen, or hand it back. */
@@ -156,6 +161,7 @@ const hhmm = (iso: string) => {
 export default function DynamicSectorPanel({
   plan,
   applied,
+  inForce,
   onRun,
   onApply,
   onRevert,
@@ -441,6 +447,16 @@ export default function DynamicSectorPanel({
                 <span className="dynsec-accept-state">
                   ✔ Configuration applied
                   {plan.appliedAt ? " at " + hhmm(plan.appliedAt) : ""}
+                  {inForce && inForce.length > 0 ? (
+                    <em className="dynsec-inforce">
+                      In force now: {inForce.join(", ")} — conflicts and traffic
+                      counts are attributed to these positions
+                    </em>
+                  ) : (
+                    <em className="dynsec-inforce">
+                      This hour is worked as published
+                    </em>
+                  )}
                 </span>
                 <button type="button" className="dynsec-revert" onClick={onRevert}>
                   ↩ Revert to published

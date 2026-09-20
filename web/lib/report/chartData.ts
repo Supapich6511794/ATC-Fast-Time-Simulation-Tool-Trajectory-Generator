@@ -23,6 +23,12 @@
  * question they answer — *which* sector — readable at a glance; the two
  * time/space charts keep their natural order, because a trajectory or a day
  * re-sorted by value is meaningless.
+ *
+ * Three of the four are BAR charts: their X axis is a set of buckets — sectors,
+ * or hours that were counted — and a line drawn between two buckets asserts a
+ * path between them that nothing travelled. The trajectory chart is the
+ * exception and stays a scatter, because there the X axis really is a number:
+ * longitude. A bar chart of latitude against longitude is not a map.
  */
 
 import {
@@ -78,7 +84,7 @@ function csvField(v: string | number): string {
 }
 
 /** The same table the workbook holds, in the plainer container. */
-function rowsCsv(rows: Cell[][]): string {
+export function rowsCsv(rows: Cell[][]): string {
   return (
     "﻿" +
     rows.map((r) => r.map((v) => csvField(v ?? "")).join(",")).join(CRLF) +
@@ -123,8 +129,11 @@ export function conflictBySectorRows(rows: SectorHourRow[], layer: string): Cell
   ];
 }
 
+/** Bars, not a line: the X axis is a list of sectors, and a line between two
+ *  of them draws a slope that does not exist — nothing travels from S1S to
+ *  SMU. Sorted busiest-first, so the columns read as a ranking. */
 export const CONFLICT_BY_SECTOR_CHART: ChartSpec = {
-  kind: "line",
+  kind: "bar",
   title: "Conflicts by sector",
   xTitle: "Sector",
   yTitle: "Conflicts",
@@ -196,8 +205,11 @@ export function standardVsMergedRows(plan: DynamicPlan): Cell[][] {
   ];
 }
 
+/** Bars: each hour is a bucket that was counted, not a reading on a continuous
+ *  curve, and the question is how the two counts compare WITHIN an hour — which
+ *  is a pair of columns side by side. */
 export const STANDARD_VS_MERGED_CHART: ChartSpec = {
-  kind: "line",
+  kind: "bar",
   title: "Standard vs merged positions",
   xTitle: "Hour (UTC)",
   yTitle: "Sectors / positions",
@@ -251,8 +263,9 @@ export function trafficBySectorRows(
   ];
 }
 
+/** Bars — same reason as the conflict chart: sectors are categories. */
 export const TRAFFIC_BY_SECTOR_CHART: ChartSpec = {
-  kind: "line",
+  kind: "bar",
   title: "Traffic by sector",
   xTitle: "Sector",
   yTitle: "Aircraft",
@@ -268,14 +281,24 @@ export function trafficBySectorCsv(
   return rowsCsv(trafficBySectorRows(rows, layer, hourUtc));
 }
 
+/**
+ * The workbook behind the sector panel's "This hour" button.
+ *
+ * Both sheets are THIS HOUR. The report sheet used to be `sectorHoursTable(rows)`
+ * — the whole run, every sector, every hour — while only the chart was filtered,
+ * so a button labelled "This hour" handed over a day. Anyone who opened the
+ * first tab, which is the one Excel lands on, was reading numbers for hours
+ * they had not asked about and could not tell apart.
+ */
 export function trafficBySectorXlsx(
   rows: SectorHourRow[],
   layer: string,
   hourUtc: string,
 ): Uint8Array {
+  const thisHour = rows.filter((r) => r.layer === layer && r.hourUtc === hourUtc);
   return reportWithChart(
     "Sector hours",
-    sectorHoursTable(rows),
+    sectorHoursTable(thisHour),
     trafficBySectorRows(rows, layer, hourUtc),
     {
       ...TRAFFIC_BY_SECTOR_CHART,
@@ -289,6 +312,22 @@ export function trafficBySectorXlsx(
 /** Most flights to put in one trajectory chart. Excel draws a scatter series
  *  per flight and the legend, not the maths, is what gives out first. */
 export const TRAJECTORY_MAX_FLIGHTS = 25;
+
+/**
+ * The callsigns a trajectory chart draws: the first `maxFlights` in callsign
+ * order. One rule, used by `flightTrajectoryRows` AND by anyone who wants to
+ * know which flights to build events for before drawing it — the chart plots
+ * 25 flights however big the sample is, so walking a whole traffic day to draw
+ * it is 2,000 flights of work for a picture of 25.
+ */
+export function trajectoryChartCallsigns(
+  callsigns: Iterable<string>,
+  maxFlights = TRAJECTORY_MAX_FLIGHTS,
+): Set<string> {
+  return new Set(
+    [...new Set(callsigns)].sort((a, b) => a.localeCompare(b)).slice(0, maxFlights),
+  );
+}
 
 /**
  * Flight tracks as X/Y pairs, one pair of columns per flight.
@@ -313,9 +352,10 @@ export function flightTrajectoryRows(
     if (list) list.push(e);
     else byFlight.set(e.callsign, [e]);
   }
+  const keep = trajectoryChartCallsigns(byFlight.keys(), maxFlights);
   const flights = [...byFlight.entries()]
+    .filter(([callsign]) => keep.has(callsign))
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .slice(0, maxFlights)
     .map(
       ([callsign, rows]) =>
         [

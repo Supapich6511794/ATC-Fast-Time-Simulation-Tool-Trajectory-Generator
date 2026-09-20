@@ -19,12 +19,17 @@
 
 import { memo, useEffect, useRef, useState } from "react";
 import NavIcon from "@/components/nav/NavIcon";
+import { DEFAULT_COLOR_BY, type ColorBy } from "@/lib/displayColors";
 
 export interface TrailOpts {
   /** Draw the route path behind each aircraft. */
   show: boolean;
-  /** Tint the path by altitude (flight level) instead of a flat colour. */
+  /** Tint the path by altitude (flight level) instead of a flat colour. Only
+   *  meaningful while `colorBy` is "altitude": by aircraft type the path is
+   *  one flat colour per type whatever this says. */
   flColor: boolean;
+  /** Tool menu → "Display by": what colours the aircraft symbol AND its trail. */
+  colorBy: ColorBy;
   /** Trail window in flight-time seconds: 0 = "No decay" = the whole route
    *  drawn statically; a positive value = a recent trail of that length that
    *  follows the aircraft as it flies. */
@@ -37,6 +42,7 @@ export interface TrailOpts {
 export const DEFAULT_TRAIL_OPTS: TrailOpts = {
   show: true,
   flColor: true,
+  colorBy: DEFAULT_COLOR_BY,
   decaySec: 0,
   weight: 2,
 };
@@ -82,16 +88,31 @@ export function TrailsPanelBody({
 }: TrailsPanelProps) {
   return (
     <>
-      {CHECKS.map((r) => (
-        <label key={r.key} className="flight-tags-row">
-          <input
-            type="checkbox"
-            checked={opts[r.key]}
-            onChange={(e) => onChange({ ...opts, [r.key]: e.target.checked })}
-          />
-          <span>{r.label}</span>
-        </label>
-      ))}
+      {CHECKS.map((r) => {
+        // By aircraft type the trail is one flat colour per type, so a
+        // flight-level gradient has nothing to switch: say why it is greyed
+        // out rather than letting the box be ticked to no effect.
+        const inert = r.key === "flColor" && opts.colorBy === "type";
+        return (
+          <label
+            key={r.key}
+            className={`flight-tags-row${inert ? " inert" : ""}`}
+            title={
+              inert
+                ? "Trails follow Display by → Aircraft type. Switch to Altitude to colour them by flight level."
+                : undefined
+            }
+          >
+            <input
+              type="checkbox"
+              checked={opts[r.key]}
+              disabled={inert}
+              onChange={(e) => onChange({ ...opts, [r.key]: e.target.checked })}
+            />
+            <span>{r.label}</span>
+          </label>
+        );
+      })}
       <label className="flight-tags-row">
         <input
           type="checkbox"

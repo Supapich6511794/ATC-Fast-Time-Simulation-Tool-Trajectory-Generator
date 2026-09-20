@@ -36,6 +36,9 @@ interface Props {
    *  put it on the map so it can be re-planned. Omitted = the readout stays
    *  plain text, as it was before. */
   onWorkBlocker?: (b: Blocker, conflictId: string | null) => void;
+  /** Open the blocker's FLIGHT PLAN in the generator — the other way out, when
+   *  no maneuver on either aircraft clears it and the routing has to change. */
+  onEditBlockerPlan?: (b: Blocker) => void;
   /** The suggestions came from the wider fallback envelope — the maneuvers are
    *  bigger than the engine would normally propose. */
   widened?: boolean;
@@ -76,6 +79,7 @@ export default function SuggestionCards({
   blockers,
   blockerConflictOf,
   onWorkBlocker,
+  onEditBlockerPlan,
   widened,
 }: Props) {
   if (suggestions.length === 0) {
@@ -99,22 +103,35 @@ export default function SuggestionCards({
               {blockers && blockers.length > 1 && ` +${blockers.length - 1} more`}.
               {!onWorkBlocker && ` Resolve ${worst.callsign} first.`}
             </p>
-            {onWorkBlocker && (
-              <button
-                type="button"
-                className="cdr-adv-blocked-btn"
-                onClick={() => onWorkBlocker(worst, blockerConflict)}
-                title={
-                  blockerConflict
-                    ? `Open ${worst.callsign}'s own conflict and resolve it — this pair should clear once it moves`
-                    : `${worst.callsign} is not in conflict itself; show it on the map to re-plan it`
-                }
-              >
-                {blockerConflict
-                  ? `Resolve ${worst.callsign} first →`
-                  : `Show ${worst.callsign} →`}
-              </button>
-            )}
+            {/* Move it, or change what it is doing. A blocker that is in no
+                conflict of its own still has to be got out of the way, and
+                naming it without offering either was a dead end. */}
+            <div className="cdr-adv-blocked-btns">
+              {onWorkBlocker && (
+                <button
+                  type="button"
+                  className="cdr-adv-blocked-btn"
+                  onClick={() => onWorkBlocker(worst, blockerConflict)}
+                  title={
+                    blockerConflict
+                      ? `Open ${worst.callsign}'s own conflict and resolve it — this pair should clear once it moves`
+                      : `Level, heading, speed or hold on ${worst.callsign}, checked against all traffic`
+                  }
+                >
+                  Fix {worst.callsign} →
+                </button>
+              )}
+              {onEditBlockerPlan && (
+                <button
+                  type="button"
+                  className="cdr-adv-blocked-btn ghost"
+                  onClick={() => onEditBlockerPlan(worst)}
+                  title={`Open ${worst.callsign}'s filed route in the generator`}
+                >
+                  Edit {worst.callsign}&rsquo;s plan
+                </button>
+              )}
+            </div>
           </>
         )}
       </div>

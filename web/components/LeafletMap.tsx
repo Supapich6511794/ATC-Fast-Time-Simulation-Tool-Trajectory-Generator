@@ -38,11 +38,18 @@ import {
   useMapEvents,
 } from "react-leaflet";
 
+import {
+  aircraftColor,
+  altitudeColor,
+  DEFAULT_COLOR_BY,
+  type ColorBy,
+} from "@/lib/displayColors";
 import { greatCircleNm } from "@/lib/geoDistance";
 import { BASEMAPS, type Basemap } from "@/lib/mapPrefs";
 import type { PreviewPoint } from "@/lib/routePreview";
 import type { TrajectoryPoint, TrajectoryResult } from "@/lib/trajectory/types";
 import { aircraftAt, toSamples } from "@/lib/useSimPlayback";
+import { smoothTrack, subdivisionFor } from "@/lib/trailCurve";
 import { formatAirspace, type AirspaceMembership } from "@/lib/airspace";
 import type {
   AirwayCollection,
@@ -144,6 +151,11 @@ interface Props {
    *  of that many flight-time seconds following the aircraft. */
   showTrails?: boolean;
   flColorTrails?: boolean;
+  /** Tool menu → "Display by". Paints the aircraft symbol AND its trail from
+   *  the same scale: "altitude" tints both by flight level (the symbol follows
+   *  the aircraft up and down; the trail honours `flColorTrails`), "type" gives
+   *  each aircraft type one colour for the symbol and the whole line. */
+  colorBy?: ColorBy;
   trailDecaySec?: number;
   /** Stroke weight (px) of the coloured route/trail line; the dark casing is
    *  drawn 2 px wider. Set from the Trails menu's thickness slider. */
@@ -539,45 +551,6 @@ function FitBounds({
   return null;
 }
 
-/** Aircraft-type → icon fill colour, so each type flies a distinct colour.
- *  Common Thai-fleet types get hand-picked hues; any other type falls back
- *  to a deterministic hash so it still gets a stable, distinct colour. */
-const AIRCRAFT_COLORS: Record<string, string> = {
-  // Boeing
-  B737: "#22d3ee",
-  B738: "#22d3ee",
-  B739: "#0ea5e9",
-  B763: "#34d399",
-  B77W: "#fb7185",
-  B772: "#f43f5e",
-  B789: "#38bdf8",
-  B788: "#60a5fa",
-  // Airbus
-  A319: "#fde047",
-  A320: "#f472b6",
-  A321: "#a3e635",
-  A332: "#fb923c",
-  A333: "#fbbf24",
-  A359: "#c084fc",
-  A35K: "#a855f7",
-  A388: "#f87171",
-  // Turboprops / regional
-  AT72: "#2dd4bf",
-  AT76: "#2dd4bf",
-  DH8D: "#86efac",
-};
-
-function aircraftColor(type: string | undefined): string {
-  const t = (type ?? "").toUpperCase().trim();
-  if (AIRCRAFT_COLORS[t]) return AIRCRAFT_COLORS[t];
-  if (!t) return "#22d3ee";
-  // Deterministic fallback: hash the type code → a stable hue so unknown
-  // types are still visually separable (and consistent across frames).
-  let h = 0;
-  for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) % 360;
-  return `hsl(${h}, 85%, 62%)`;
-}
-
 /** Case-insensitive substring match of an aircraft type against the
  *  top-center filter query. An empty query matches everything (so "A32"
  *  matches A320/A321, "B789" matches just the 789). */
@@ -703,22 +676,6 @@ function reciprocalRwy(ident: string): string {
   const side = m[2].toUpperCase();
   const rec = side === "L" ? "R" : side === "R" ? "L" : side;
   return `RW${String(num).padStart(2, "0")}${rec}`;
-}
-
-/** Altitude → polyline colour: brighter (yellow) at low altitudes,
- *  saturated cyan/blue at cruise. The same scale is used for every
- *  generated route so the user reads altitude consistently — different
- *  *routes* are still distinguishable by their physical path and the
- *  R1/R2/R3 badge near the start dot. */
-function altitudeColor(altFt: number | null): string {
-  if (altFt == null || !Number.isFinite(altFt)) return "#94a3b8";
-  // Normalise 0–FL400 onto 0–1; clamp so any altitude maps to a colour.
-  const f = Math.max(0, Math.min(1, altFt / 40000));
-  // Hue sweeps warm-yellow (50°) → cyan-blue (210°) as altitude climbs;
-  // lightness drops 72 % → 38 % so low altitudes literally look brighter.
-  const hue = 50 + f * 160;
-  const light = 72 - f * 34;
-  return `hsl(${hue.toFixed(0)}, 92%, ${light.toFixed(0)}%)`;
 }
 
 /** A stable, distinct colour for a named sector — the sector's identity hashed
@@ -858,6 +815,7 @@ export default function LeafletMap({
   trajectories,
   showTrails = true,
   flColorTrails = true,
+  colorBy = DEFAULT_COLOR_BY,
   trailDecaySec = 0,
   trailWeight = 2,
   showProfilePins = false,
@@ -1587,15 +1545,27 @@ export default function LeafletMap({
     // With a tight budget the turn detector has to be coarser too, or a busy
     // route re-adds the samples the stride just dropped.
     const turnDeg = maxSeg >= 120 ? 2 : maxSeg >= 60 ? 4 : 8;
+    // Curve smoothing gets a budget of its OWN, counted in points rather than
+    // layers: it adds points inside the polylines that already exist, so it
+    // costs nothing in the currency `maxSeg` is spending. Budgeting it against
+    // `maxSeg` would have been exactly backwards — a single route decimates to
+    // ~120 segments, which uses that budget up, so the one case anybody zooms
+    // in on would have been the one case left as chords. Nothing at all for a
+    // whole traffic day: the shape of one turn is not what is being looked at
+    // with 599 tracks on screen.
+    const pointBudget =
+      trajectories.length <= 20 ? 900 : trajectories.length <= 100 ? 300 : 0;
     const styleSig = [
       multiRoute,
       showTrails,
       flColorTrails,
+      colorBy,
       trailDecaySec,
       trailWeight,
       showProfilePins,
       maxSeg,
       turnDeg,
+      pointBudget,
     ].join("|");
     const cache = routeLayerCache.current;
     const next = new Map<
@@ -1616,7 +1586,7 @@ export default function LeafletMap({
         next.set(cacheKey, hit);
         return hit.node;
       }
-      const node = buildRouteLayer(trajectory, ti, maxSeg, turnDeg);
+      const node = buildRouteLayer(trajectory, ti, maxSeg, turnDeg, pointBudget);
       next.set(cacheKey, { pts: trajectory.points, sig, node });
       return node;
     });
@@ -1628,11 +1598,18 @@ export default function LeafletMap({
       ti: number,
       MAX_SEG: number,
       TURN_DEG: number,
+      POINT_BUDGET: number,
     ): ReactNode {
         const pts = trajectory.points;
         const { route, meta } = trajectory;
         const color = ROUTE_COLORS[ti % ROUTE_COLORS.length];
         const kp = meta.flightKey;
+        // "Display by": how the trail line itself is painted. By type it is one
+        // flat line in the aircraft type's colour; by altitude it is the FL
+        // gradient, or (FL Color Trails off) the flat per-route colour.
+        const byType = colorBy === "type";
+        const flatColor = byType ? aircraftColor(meta.aircraftType) : color;
+        const gradient = !byType && flColorTrails;
 
         // Decimate the *drawn* line so a long route (points are sampled
         // every 4 s ⇒ ~750 pts for a 50-min leg) doesn't explode into
@@ -1681,10 +1658,15 @@ export default function LeafletMap({
           keep.add(best);
         }
         const drawIdx: number[] = [...keep].sort((a, b) => a - b);
-        const line: L.LatLngExpression[] = drawIdx.map((i) => [
-          pts[i].lat,
-          pts[i].lon,
-        ]);
+        // Stroke the kept samples as a CURVE rather than a run of chords. The
+        // samples are unchanged and every one of them is still on the line;
+        // only the space between them is filled in. See `lib/trailCurve.ts` —
+        // it matters most in a standard-rate turn, where 5-second sampling puts
+        // 15° between one position and the next.
+        const kept = drawIdx.map((i) => pts[i]);
+        const sub = subdivisionFor(kept.length, POINT_BUDGET);
+        const curve = smoothTrack(kept, sub);
+        const line: L.LatLngExpression[] = curve.map((c) => [c.lat, c.lon]);
 
         // Colour the line by altitude: one Polyline per decimated segment,
         // tinted by the segment's mean altitude. Round line caps overlap at
@@ -1692,17 +1674,21 @@ export default function LeafletMap({
         // which is why no extra per-segment sub-splitting is needed. Same
         // scale on every route.
         const altSegments: ReactNode[] = [];
-        for (let s = 0; s < drawIdx.length - 1; s++) {
+        // Only built when the gradient is what gets drawn — a flat line needs
+        // none of these layers, and there is one per decimated segment.
+        for (let s = 0; gradient && s < drawIdx.length - 1; s++) {
           const a = pts[drawIdx[s]];
           const b = pts[drawIdx[s + 1]];
           const altMid = ((a.altitude_ft ?? 0) + (b.altitude_ft ?? 0)) / 2;
+          // This segment's slice of the curve: `smoothTrack` emits exactly
+          // `sub` points per input segment after the first, so the layer count
+          // is unchanged — each coloured segment is simply curved now.
           altSegments.push(
             <Polyline
               key={`${kp}-alt-${s}`}
-              positions={[
-                [a.lat, a.lon],
-                [b.lat, b.lon],
-              ]}
+              positions={curve
+                .slice(s * sub, s * sub + sub + 1)
+                .map((c) => [c.lat, c.lon] as L.LatLngExpression)}
               interactive={false}
               pathOptions={{
                 color: altitudeColor(altMid),
@@ -1735,14 +1721,14 @@ export default function LeafletMap({
                     lineJoin: "round",
                   }}
                 />
-                {flColorTrails ? (
+                {gradient ? (
                   altSegments
                 ) : (
                   <Polyline
                     positions={line}
                     interactive={false}
                     pathOptions={{
-                      color,
+                      color: flatColor,
                       weight: trailWeight,
                       opacity: 0.95,
                       lineCap: "round",
@@ -1842,6 +1828,7 @@ export default function LeafletMap({
     typeFilter,
     showTrails,
     flColorTrails,
+    colorBy,
     trailDecaySec,
     trailWeight,
     showProfilePins,
@@ -1866,6 +1853,11 @@ export default function LeafletMap({
     8,
     Math.min(120, Math.floor(2400 / Math.max(1, airborneNow))),
   );
+  // Curve smoothing, in points rather than segments — see the note on the
+  // static line's `pointBudget`. Zero above a hundred aircraft, which leaves
+  // the per-frame cost of a busy day exactly where it was.
+  const trailPointBudget =
+    airborneNow <= 20 ? 900 : airborneNow <= 100 ? 300 : 0;
 
   /**
    * The Measure tool's readout: the two picked aircraft AT THE CURRENT CLOCK,
@@ -2081,11 +2073,24 @@ export default function LeafletMap({
             const keep = trailPts.filter(
               (_, i) => i % stepT === 0 || i === trailPts.length - 1,
             );
-            const trailColor = ROUTE_COLORS[ti % ROUTE_COLORS.length];
+            // Curve it, with whatever is left of this aircraft's budget after
+            // the decimation above — a short trail gets the smoothest line and
+            // one already at its cap is left as chords, so the smoothing never
+            // costs more than the budget that was there for it.
+            const subT = subdivisionFor(keep.length, trailPointBudget);
+            const curveT = smoothTrack(keep, subT);
+            // Same rule as the static line: by type = one flat line in the
+            // type's colour; by altitude = the gradient (or the per-route flat
+            // colour when FL Color Trails is off).
+            const trailByType = colorBy === "type";
+            const trailGradient = !trailByType && flColorTrails;
+            const trailColor = trailByType
+              ? aircraftColor(t.meta.aircraftType)
+              : ROUTE_COLORS[ti % ROUTE_COLORS.length];
             decayTrail = (
               <>
                 <Polyline
-                  positions={keep.map((s) => [s.lat, s.lon])}
+                  positions={curveT.map((s) => [s.lat, s.lon])}
                   interactive={false}
                   pathOptions={{
                     color: "#0f172a",
@@ -2095,7 +2100,7 @@ export default function LeafletMap({
                     lineJoin: "round",
                   }}
                 />
-                {flColorTrails ? (
+                {trailGradient ? (
                   keep.slice(0, -1).map((a, i) => {
                     const b = keep[i + 1];
                     const altMid =
@@ -2103,10 +2108,9 @@ export default function LeafletMap({
                     return (
                       <Polyline
                         key={`trail-${t.meta.flightKey}-${i}`}
-                        positions={[
-                          [a.lat, a.lon],
-                          [b.lat, b.lon],
-                        ]}
+                        positions={curveT
+                          .slice(i * subT, i * subT + subT + 1)
+                          .map((c) => [c.lat, c.lon] as L.LatLngExpression)}
                         interactive={false}
                         pathOptions={{
                           color: altitudeColor(altMid),
@@ -2120,7 +2124,7 @@ export default function LeafletMap({
                   })
                 ) : (
                   <Polyline
-                    positions={keep.map((s) => [s.lat, s.lon])}
+                    positions={curveT.map((s) => [s.lat, s.lon])}
                     interactive={false}
                     pathOptions={{
                       color: trailColor,
@@ -2187,7 +2191,9 @@ export default function LeafletMap({
               interactive={false}
               icon={planeIcon(
                 Math.round(ac.track),
-                aircraftColor(t.meta.aircraftType),
+                colorBy === "type"
+                  ? aircraftColor(t.meta.aircraftType)
+                  : altitudeColor(ac.altitudeFt),
                 t.meta.flightKey === followKey,
               )}
               zIndexOffset={t.meta.flightKey === followKey ? 1000 : 0}

@@ -13,6 +13,7 @@ import type L from "leaflet";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import AircraftTypeLegend from "@/components/AircraftTypeLegend";
 import AltitudeLegend from "@/components/AltitudeLegend";
 import DownloadModal, {
   type DownloadInfo,
@@ -123,9 +124,11 @@ import {
   buildAirspaceIndex,
   buildAirspaceSegments,
   formatAirspace,
+  type AirspaceIndex,
   type AirspaceMembership,
   type AirspaceSegment,
 } from "@/lib/airspace";
+import { yieldToMain } from "@/lib/yieldToMain";
 import {
   fetchHoldingPatterns,
   fetchHoldings,
@@ -139,6 +142,7 @@ import { useArrivals } from "@/lib/cdr/useArrivals";
 import { useCdr } from "@/lib/cdr/useCdr";
 import {
   DEFAULT_CDR_CONFIG,
+  horizontalMinimumNm,
   type CdrConfig,
   type DeepPartial,
 } from "@/lib/cdr/config";
@@ -149,6 +153,7 @@ import type { CdrEvent } from "@/lib/cdr/lifecycle";
 import { applyManeuver, maneuverTiming } from "@/lib/cdr/kinematics";
 import type { AppliedFix, Maneuver } from "@/lib/cdr/types";
 import {
+  pairSeparation,
   rescanFlightPlanConflicts,
   scanFlightPlanConflicts,
   type PlanConflict,
@@ -199,6 +204,13 @@ import {
   type SectorHourRow,
 } from "@/lib/report/flightEvents";
 import {
+  effectiveConfig,
+  effectiveEvents,
+  positionAt,
+  positionsInForce,
+  type EffectiveConfig,
+} from "@/lib/report/effectiveSectors";
+import {
   applyPlan,
   DEFAULT_DYNAMIC_CONFIG,
   dynamicSectorsCsv,
@@ -214,11 +226,26 @@ import {
 } from "@/lib/report/sectorAdjacency";
 import type { AreaTransfer, Rings } from "@/lib/report/dynamicArea";
 import {
+  CONFLICT_BY_SECTOR_CHART,
+  STANDARD_VS_MERGED_CHART,
+  conflictBySectorRows,
   conflictBySectorXlsx,
+  flightTrajectoryChart,
+  flightTrajectoryRows,
   flightTrajectoryXlsx,
+  standardVsMergedRows,
   standardVsMergedXlsx,
+  trajectoryChartCallsigns,
 } from "@/lib/report/chartData";
 import { XLSX_MIME } from "@/lib/report/xlsx";
+import {
+  HELLO_GIVE_UP_MS,
+  REPORT_CHANNEL,
+  isHello,
+  newNonce,
+  reportUrl,
+  type ReportPayload,
+} from "@/lib/report/viewPayload";
 
 const LeafletMap = dynamic(() => import("@/components/LeafletMap"), {
   ssr: false,
@@ -302,9 +329,83 @@ interface AutoPassState {
  *  multi-second freeze. Below it the fly-to is smooth and worth having. */
 const ANIMATED_PAN_MAX_FLIGHTS = 150;
 
-/** Flights per chunk when building a run report. Sized to stay inside a frame
- *  on a mid-range laptop; the loop yields between chunks. */
-const REPORT_CHUNK = 50;
+/** How long a run-report build works before it hands the browser a turn, in ms.
+ *  Roughly two frames: a visible console keeps painting its progress, and a
+ *  hidden one (the report tab is in front of it) loses almost nothing, because
+ *  the yield is `yieldToMain`, not a timer. */
+const REPORT_SLICE_MS = 30;
+
+/** Least gap between two progress updates, in ms. Every update re-renders the
+ *  whole console, and a slice is far shorter than a render is worth paying for. */
+const REPORT_PROGRESS_MS = 150;
+
+/** The airspace layers a report walks flights against. PDR is not one: an
+ *  aircraft is "in" an ATS unit, and a restricted area is not one. */
+const REPORT_LAYERS: SectorKey[] = ["bacc", "subsector", "ctr", "tma"];
+
+/** Is a cached walk still the walk of THESE flights against THESE polygons? */
+function isSameWalk(a: unknown[], b: unknown[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+/** A generated trajectory, in the shape the report's event builder reads. */
+function toReportFlight(t: TrajectoryResult): ReportFlight {
+  return {
+    flightKey: t.meta.flightKey,
+    callsign: t.meta.callsign,
+    actype: t.meta.aircraftType,
+    adep: t.meta.adep,
+    ades: t.meta.ades,
+    points: t.points,
+    route: t.route,
+    toc: t.profile?.toc
+      ? {
+          lat: t.profile.toc.lat,
+          lon: t.profile.toc.lon,
+          altitudeFt: t.profile.toc.altitudeFt,
+          epochTs: t.profile.toc.epochTs,
+        }
+      : null,
+    tod: t.profile?.tod
+      ? {
+          lat: t.profile.tod.lat,
+          lon: t.profile.tod.lon,
+          altitudeFt: t.profile.tod.altitudeFt,
+          epochTs: t.profile.tod.epochTs,
+        }
+      : null,
+  };
+}
+
+/**
+ * The airspace index a report is walked against.
+ *
+ * The sector polygons are loaded lazily, the first time the user toggles that
+ * map layer on — and they all start off. Reading `sectorData` alone meant the
+ * report usually had NO sector rows at all: no crossing times, and an empty
+ * sector-hours file, which reads as "this flight crossed no sectors" rather
+ * than "nobody switched the layer on". So a report owns its own load;
+ * `fetchSector` is memoised per file, so a layer already on costs nothing.
+ */
+async function loadReportAirspace(
+  sectorData: Partial<Record<SectorKey, SectorCollection>>,
+): Promise<AirspaceIndex> {
+  const collections: Partial<Record<SectorKey, SectorCollection>> = {
+    ...sectorData,
+  };
+  await Promise.all(
+    REPORT_LAYERS.filter((k) => !collections[k]).map((k) =>
+      fetchSector(k)
+        .then((c) => {
+          collections[k] = c;
+        })
+        // A layer that will not load leaves the report thinner rather than
+        // failing it: takeoff / waypoints / TOC / TOD still export.
+        .catch(() => undefined),
+    ),
+  );
+  return buildAirspaceIndex(collections);
+}
 
 export default function MapApp() {
   const [airways, setAirways] = useState<AirwayCollection | null>(null);
@@ -474,6 +575,12 @@ export default function MapApp() {
       ).sort(),
     [trajectories],
   );
+  // One type per flight (not de-duplicated) — the "Display by → Aircraft type"
+  // key counts how many of each are on the map.
+  const trajectoryTypes = useMemo(
+    () => trajectories.map((t) => t.meta.aircraftType),
+    [trajectories],
+  );
 
   // Per-route line visibility, keyed by flightKey (stable across removals,
   // unlike an index). A key in the set = that route is hidden on the map.
@@ -624,6 +731,17 @@ export default function MapApp() {
   // UI prefs.
   const [theme, setTheme] = useState<Theme>("dark");
   const [basemap, setBasemap] = useState<Basemap>("dark");
+
+  // Flipping the theme carries the CANVAS basemap with it. The two were
+  // independent, so switching to light left a black map inside a white console
+  // — the worst of both, and the reason light mode read as unfinished. Esri's
+  // Light Gray canvas is the same surveyed tile set as the dark one, so this
+  // is the same map in the other tone. Streets and Satellite are a decision
+  // about the map itself rather than about the console, so they stay put.
+  const applyTheme = useCallback((next: Theme) => {
+    setTheme(next);
+    setBasemap((b) => (b === "dark" || b === "light" ? next : b));
+  }, []);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Reference-layer toggles (shown by default on load).
@@ -1138,8 +1256,23 @@ export default function MapApp() {
     return m;
   }, [trajectories]);
 
+  /**
+   * Who owns a conflict.
+   *
+   * `effective` decides WHICH picture is asked for, and it matters because the
+   * two have different jobs. The live panels want the configuration in force —
+   * a band-box means one controller, so two aircraft in its members are not a
+   * coordination case any more. The report that FEEDS THE PLANNER wants the
+   * published sectors, because a planner measuring against its own last output
+   * would plan on top of itself; that table is the baseline and has to stay the
+   * AIP's.
+   */
   const sectorOfConflict = useCallback(
-    (c: { a: string; b: string }, tCpaAbsSec: number): ConflictSector | null => {
+    (
+      c: { a: string; b: string },
+      tCpaAbsSec: number,
+      { effective = true }: { effective?: boolean } = {},
+    ): ConflictSector | null => {
       if (!airspaceIndex.bacc) return null; // polygons not loaded yet
       const at = (id: string, absSec: number): SectorPoint | null => {
         // Indexed, not searched: the dashboard asks this for every row it
@@ -1152,11 +1285,28 @@ export default function MapApp() {
         return ac ? { lat: ac.lat, lon: ac.lon, altFt: ac.altitudeFt } : null;
       };
       const now = Math.round(simTRef.current);
+      // Published airspace in, EFFECTIVE position out. The index itself is
+      // never rewritten — it is the baseline the planner measures against — so
+      // an applied plan is layered on top here instead, per instant. With no
+      // plan applied `positionAt` is the identity and this is the published
+      // lookup it always was.
+      const resolve = (
+        lat: number,
+        lon: number,
+        altFt: number | null,
+        atMs?: number,
+      ) => {
+        const m = airspaceAt(airspaceIndex, lon, lat, altFt);
+        const cfg = effective ? effectiveRef.current : null;
+        if (!cfg || !m.bacc || atMs == null) return m;
+        return { ...m, bacc: positionAt(cfg, m.bacc, lon, lat, atMs) };
+      };
+      const abs = (sec: number) => timelineOriginMsRef.current + sec * 1000;
       return conflictSector(
         c,
-        { a: at(c.a, tCpaAbsSec), b: at(c.b, tCpaAbsSec) },
-        { a: at(c.a, now), b: at(c.b, now) },
-        (lat, lon, altFt) => airspaceAt(airspaceIndex, lon, lat, altFt),
+        { a: at(c.a, tCpaAbsSec), b: at(c.b, tCpaAbsSec), atMs: abs(tCpaAbsSec) },
+        { a: at(c.a, now), b: at(c.b, now), atMs: abs(now) },
+        resolve,
       );
     },
     [airspaceIndex, idxByFlightKey, samplesByIdx, routeOffsets],
@@ -1429,6 +1579,35 @@ export default function MapApp() {
   // without being re-created every animation frame.
   const simTRef = useRef(sim.simT);
   simTRef.current = sim.simT;
+
+  /** The airspace configuration an applied dynamic plan puts in force, and the
+   *  UTC the sim clock is measured from. Refs because `sectorOfConflict` is
+   *  defined above both of them and is rebuilt on most renders — reading them
+   *  through a ref keeps it off the dependency list rather than re-creating it
+   *  (and every panel that depends on it) whenever the plan or the clock moves.
+   *  Assigned where each value is computed, further down. */
+  const effectiveRef = useRef<EffectiveConfig | null>(null);
+  const timelineOriginMsRef = useRef(0);
+
+  /**
+   * Published sectors -> applied plan -> the configuration actually in force.
+   *
+   * Derived, never written back: `airspaceIndex` and the sector GeoJSON stay
+   * exactly what the AIP publishes, because that is the baseline the planner
+   * measures against — rewriting it from a plan would have the next run plan
+   * against its own output. Only an APPLIED plan counts, so a proposal on
+   * screen cannot quietly change the numbers being read to judge it.
+   *
+   * Declared up here rather than beside the panel that produces the plan: the
+   * report builder and the sector-hour effect both key off it, and both run
+   * before that point in the file.
+   */
+  const [dynamicPlan, setDynamicPlan] = useState<DynamicPlan | null>(null);
+  const effectiveSectors = useMemo(
+    () => effectiveConfig(dynamicPlan),
+    [dynamicPlan],
+  );
+  effectiveRef.current = effectiveSectors;
 
   /** Issue an arrival-spacing instruction. Only SPEED is flyable from here: it
    *  keeps the ground track, so the trajectory is simply re-timed from the
@@ -1711,6 +1890,7 @@ export default function MapApp() {
     }
     return Number.isFinite(origin) ? origin : 0;
   }, [trajectories]);
+  timelineOriginMsRef.current = timelineOriginMs;
 
   /** Shared-clock seconds -> the UTC stamp the log is read in. The log is a
    *  record of real times, not of sim offsets: "02:14:20Z" is what goes in a
@@ -1924,10 +2104,16 @@ export default function MapApp() {
   /**
    * Draw one restricted area in red and fly the map to it.
    *
-   * The panel is closed on the way: it is 680 px wide over the left of the map,
-   * so leaving it open would often hide the very area being shown. The red
-   * outline stays until it is dismissed from the chip, so the map can be panned
-   * around the area afterwards.
+   * The panel STAYS OPEN. It used to be closed on the way — it is 680 px wide
+   * over the left of the map, so leaving it open would often hide the very area
+   * being shown — but closing it also took away the list of findings that the
+   * area is evidence for, and re-opening it meant finding the flight again. The
+   * fix for "the panel covers the area" is to not fly the area under the panel:
+   * the left padding below is the panel's own width, so the target lands in the
+   * strip of map that is actually visible. It closes when the reader closes it.
+   *
+   * The red outline stays until it is dismissed from the chip, so the map can be
+   * panned around the area afterwards.
    */
   const handleFocusArea = useCallback(
     (area: PdrArea) => {
@@ -1938,7 +2124,6 @@ export default function MapApp() {
         next = without.length === prev.length ? [...prev, area] : without;
         return next;
       });
-      setCdrView(null);
       // Nothing to move to when the click switched the area OFF.
       if (!mapInstance || !next.some((a) => a.ident === area.ident)) return;
 
@@ -1946,6 +2131,26 @@ export default function MapApp() {
       // the union zooms further out with each pick, so the area you asked to see
       // gets smaller the more you look at.
       const [minLon, minLat, maxLon, maxLat] = area.bbox;
+
+      // How much of the MAP the panel actually covers. Measured, not assumed:
+      // the panel's width is a CSS clamp against the viewport, so on a narrow
+      // window it is most of the screen. Both rectangles are read in viewport
+      // coordinates and then differenced, because Leaflet's padding is relative
+      // to the map container — which starts after the generator rail, so the
+      // panel's raw `right` would over-pad by the width of that rail.
+      //
+      // Floored at 80 (the plain margin, when no panel is up) and capped so at
+      // least 240 px of map is left to put the area in: padding wider than the
+      // box gives Leaflet nothing to fit the bounds into.
+      const mapBox = mapInstance.getContainer().getBoundingClientRect();
+      const panel = document.querySelector<HTMLElement>(".cdr-panel");
+      const covered = panel
+        ? panel.getBoundingClientRect().right - mapBox.left + 24
+        : 0;
+      const leftPad = Math.min(
+        Math.max(covered, 80),
+        Math.max(80, mapBox.width - 240),
+      );
 
       // Animate — but only while it is affordable. Leaflet's canvas renderer
       // redraws every vector layer on each frame of a pan, and this canvas
@@ -1958,7 +2163,13 @@ export default function MapApp() {
           [minLat, minLon],
           [maxLat, maxLon],
         ],
-        { padding: [80, 80], maxZoom: 10, animate, duration: 0.6 },
+        {
+          paddingTopLeft: [leftPad, 80],
+          paddingBottomRight: [80, 80],
+          maxZoom: 10,
+          animate,
+          duration: 0.6,
+        },
       );
     },
     [mapInstance, trajectories.length],
@@ -1981,10 +2192,17 @@ export default function MapApp() {
     DEFAULT_DYNAMIC_CONFIG,
   );
 
+  /**
+   * The walk of every flight against the airspace — the expensive half of a
+   * report — and what is derived from the airspace alone. Keyed on the flights
+   * and the loaded polygons ONLY. The conflict log is deliberately not in the
+   * key: it grows every time a conflict is logged during a replay, and keying
+   * the walk on it re-walked every flight for a change that only moves a
+   * conflict count. Counting is the cheap half and is cached separately below.
+   */
   const reportCacheRef = useRef<{
     key: unknown[];
     events: FlightEventRow[];
-    sectorHours: SectorHourRow[];
     /** Which sectors touch which, per layer. Geometry, not traffic — but it is
      *  built from the same airspace index this walk already loads, so it is
      *  cached with it rather than re-derived on every threshold change. */
@@ -1994,119 +2212,149 @@ export default function MapApp() {
     shapes: Record<string, ReadonlyMap<string, Rings>>;
   } | null>(null);
 
+  /**
+   * The effective table, cached against the configuration that produced it.
+   *
+   * Separate from the baseline cache on purpose. The baseline is the AIP's and
+   * changes only when the traffic does; this changes whenever a configuration
+   * is applied or reverted, and re-keying the baseline for it is what fed the
+   * loop described in `buildReportData`. Built off the baseline's own event
+   * walk, so applying a plan costs a re-label and a re-count, never a second
+   * walk over every flight against the airspace.
+   */
+  /** The baseline sector-hour table: the walk's events with the conflict log
+   *  counted onto them. Re-counted when the log changes, never re-walked. */
+  const baselineHoursRef = useRef<{
+    events: FlightEventRow[];
+    log: typeof conflictLog;
+    rows: SectorHourRow[];
+  } | null>(null);
+
+  const effectiveCacheRef = useRef<{
+    events: FlightEventRow[];
+    cfg: EffectiveConfig | null;
+    /** The log the conflicts were counted from — the same walk serves every log,
+     *  so the events alone no longer say whether this table is current. */
+    log: typeof conflictLog;
+    rows: SectorHourRow[] | null;
+  } | null>(null);
+
   const buildReportData = useCallback(
     async (kind: ReportKind) => {
-      const cacheKey: unknown[] = [trajectories, conflictLog, sectorData];
+      // A conflict's sector: the unit recorded on the applied fix when it was
+      // resolved there, else the unit that owns the CPA.
+      //
+      // Built twice, against the two pictures. The PUBLISHED set keys the
+      // baseline table the planner reads; the EFFECTIVE set keys the table the
+      // simulation reports. Using one set for both is what went wrong first
+      // time: conflicts labelled "1N+3N" against rows keyed "1N" attribute to
+      // nothing, and the planner's own input quietly lost its conflict counts.
+      const conflictsAs = (effective: boolean): ReportConflict[] =>
+        conflictLog.map((e) => ({
+          id: e.id,
+          aCallsign: e.aCallsign,
+          bCallsign: e.bCallsign,
+          startMs: timelineOriginMs + e.fromSec * 1000,
+          sector:
+            e.resolution?.sector ??
+            sectorOfConflict({ a: e.a, b: e.b }, e.tCpaSec, { effective })
+              ?.label ??
+            null,
+          resolved: !!e.resolution,
+        }));
+      const conflicts = conflictsAs(false);
+
+      /** The same walk, told of the positions actually working the traffic.
+       *  Null when nothing is in force, which is what every consumer falls
+       *  back to the baseline on. */
+      const effectiveFrom = (evs: FlightEventRow[]): SectorHourRow[] | null => {
+        const cfg = effectiveRef.current;
+        if (!cfg) return null;
+        const hit = effectiveCacheRef.current;
+        if (hit && hit.events === evs && hit.cfg === cfg && hit.log === conflictLog)
+          return hit.rows;
+        const rows = buildSectorHours(effectiveEvents(evs, cfg), conflictsAs(true));
+        effectiveCacheRef.current = { events: evs, cfg, log: conflictLog, rows };
+        return rows;
+      };
+
+      /** The published-sector table for a walk: reused while the log is the same
+       *  one, re-counted (milliseconds) when it has grown. */
+      const baselineHours = (evs: FlightEventRow[]): SectorHourRow[] => {
+        const hit = baselineHoursRef.current;
+        if (hit && hit.events === evs && hit.log === conflictLog) return hit.rows;
+        const rows = buildSectorHours(evs, conflicts);
+        baselineHoursRef.current = { events: evs, log: conflictLog, rows };
+        return rows;
+      };
+
+      // The BASELINE key, and deliberately without the configuration in force.
+      //
+      // The baseline is the AIP's own picture and does not depend on any plan,
+      // so it must keep its identity when one is applied. Adding the
+      // configuration here fed a loop: applying re-built the baseline, the new
+      // array identity tripped the "settings changed, re-plan" effect, that
+      // cleared the acceptance, which cleared the configuration — and the Apply
+      // button appeared to do nothing. The effective table is cached separately
+      // below, off this same walk.
+      const cacheKey: unknown[] = [trajectories, sectorData];
       const hit = reportCacheRef.current;
-      if (
-        hit &&
-        hit.key.length === cacheKey.length &&
-        hit.key.every((v, i) => v === cacheKey[i])
-      ) {
+      if (hit && isSameWalk(hit.key, cacheKey)) {
         return {
           events: hit.events,
-          sectorHours: hit.sectorHours,
+          sectorHours: baselineHours(hit.events),
+          effectiveSectorHours: effectiveFrom(hit.events),
           adjacency: hit.adjacency,
           shapes: hit.shapes,
         };
       }
-      // The sector polygons are loaded lazily, the first time the user toggles
-      // that map layer on — and they all start off. Reading `sectorData` here
-      // meant the report usually had NO sector rows at all: no crossing times,
-      // and an empty sector-hours file, which reads as "this flight crossed no
-      // sectors" rather than "nobody switched the layer on". The report owns
-      // its own load; `fetchSector` is memoised per file, so a layer already on
-      // costs nothing.
-      const ATS_LAYERS: SectorKey[] = ["bacc", "subsector", "ctr", "tma"];
-      const collections: Partial<Record<SectorKey, SectorCollection>> = {
-        ...sectorData,
-      };
-      await Promise.all(
-        ATS_LAYERS.filter((k) => !collections[k]).map((k) =>
-          fetchSector(k)
-            .then((c) => {
-              collections[k] = c;
-            })
-            // A layer that will not load leaves the report thinner rather than
-            // failing it: takeoff / waypoints / TOC / TOD still export.
-            .catch(() => undefined),
-        ),
-      );
-      const index = buildAirspaceIndex(collections);
+      const index = await loadReportAirspace(sectorData);
+      const flights = trajectories.map(toReportFlight);
 
-      const flights: ReportFlight[] = trajectories.map((t) => ({
-        flightKey: t.meta.flightKey,
-        callsign: t.meta.callsign,
-        actype: t.meta.aircraftType,
-        adep: t.meta.adep,
-        ades: t.meta.ades,
-        points: t.points,
-        route: t.route,
-        toc: t.profile?.toc
-          ? {
-              lat: t.profile.toc.lat,
-              lon: t.profile.toc.lon,
-              altitudeFt: t.profile.toc.altitudeFt,
-              epochTs: t.profile.toc.epochTs,
-            }
-          : null,
-        tod: t.profile?.tod
-          ? {
-              lat: t.profile.tod.lat,
-              lon: t.profile.tod.lon,
-              altitudeFt: t.profile.tod.altitudeFt,
-              epochTs: t.profile.tod.epochTs,
-            }
-          : null,
-      }));
-
-      // Built in chunks, yielding to the browser between them. Every flight is
+      // Built in slices, yielding to the browser between them. Every flight is
       // walked point by point against every airspace volume, so a full traffic
       // sample is seconds of work — done in one synchronous pass it locked the
       // tab from the moment the button was pressed until the file appeared,
       // with no way to tell the two apart from a crash.
+      //
+      // The yield is `yieldToMain`, NOT `setTimeout(0)`: "View" opens the report
+      // in front of this tab, so this tab is hidden while it builds, and a
+      // hidden tab's timers are held back to about one wake-up a second — a
+      // traffic day was ~45 slices, i.e. the better part of a minute of waiting
+      // for ~2 s of work.
       const events: ReturnType<typeof buildFlightEvents> = [];
-      for (let i = 0; i < flights.length; i += REPORT_CHUNK) {
-        for (const f of flights.slice(i, i + REPORT_CHUNK)) {
-          events.push(...buildFlightEvents(f, index));
+      let sliceStart = performance.now();
+      let shownAt = sliceStart;
+      for (let i = 0; i < flights.length; i++) {
+        events.push(...buildFlightEvents(flights[i], index));
+        const now = performance.now();
+        if (now - sliceStart < REPORT_SLICE_MS) continue;
+        if (now - shownAt >= REPORT_PROGRESS_MS) {
+          setReportProgress({
+            kind,
+            percent: Math.min(100, Math.round(((i + 1) / flights.length) * 100)),
+          });
+          shownAt = now;
         }
-        setReportProgress({
-          kind,
-          percent: Math.min(
-            100,
-            Math.round(((i + REPORT_CHUNK) / flights.length) * 100),
-          ),
-        });
-        await new Promise((r) => setTimeout(r, 0));
+        await yieldToMain();
+        sliceStart = performance.now();
       }
       setReportProgress(null);
-      // A conflict's sector: the unit recorded on the applied fix when it was
-      // resolved there, else the unit that owns the CPA.
-      const conflicts: ReportConflict[] = conflictLog.map((e) => ({
-        id: e.id,
-        aCallsign: e.aCallsign,
-        bCallsign: e.bCallsign,
-        startMs: timelineOriginMs + e.fromSec * 1000,
-        sector:
-          e.resolution?.sector ??
-          sectorOfConflict({ a: e.a, b: e.b }, e.tCpaSec)?.label ??
-          null,
-        resolved: !!e.resolution,
-      }));
       const adjacency: Record<string, SectorAdjacency> = {};
       const shapes: Record<string, ReadonlyMap<string, Rings>> = {};
-      for (const k of ATS_LAYERS) {
+      for (const k of REPORT_LAYERS) {
         adjacency[k] = buildSectorAdjacency(index, k);
         shapes[k] = sectorShapes(index, k);
       }
-      const built = {
-        events,
-        sectorHours: buildSectorHours(events, conflicts),
-        adjacency,
-        shapes,
-      };
+      const built = { events, adjacency, shapes };
       reportCacheRef.current = { key: cacheKey, ...built };
-      return built;
+      return {
+        ...built,
+        /** The AIP's own picture. The planner measures against this and must
+         *  keep measuring against this, whatever configuration is in force. */
+        sectorHours: baselineHours(events),
+        effectiveSectorHours: effectiveFrom(events),
+      };
     },
     [trajectories, sectorData, conflictLog, timelineOriginMs, sectorOfConflict],
   );
@@ -2134,8 +2382,14 @@ export default function MapApp() {
           XLSX_MIME,
         );
       } else if (kind === "sectors") {
+        // The traffic table reports the CONFIGURATION IN FORCE: with a plan
+        // applied its rows are keyed by position ("1N+3N"), because that is who
+        // worked the traffic. The chart beside it stays on the baseline — it
+        // plots the plan against the published sectors it was measured from,
+        // and measuring it against itself would flatten the very saving it is
+        // there to show.
         saveTextFile(
-          sectorHoursCsv(data.sectorHours),
+          sectorHoursCsv(data.effectiveSectorHours ?? data.sectorHours),
           "sector_hours_" + stamp + ".csv",
         );
         saveBinaryFile(
@@ -2163,6 +2417,167 @@ export default function MapApp() {
     [buildReportData, dynConfig],
   );
 
+  /**
+   * The same three reports, shaped for the screen instead of for a file — the
+   * headline chart only.
+   *
+   * The chart is built from the SAME `ChartSpec` the .xlsx chart is, so the tab
+   * and the download cannot describe the run differently — that is the whole
+   * reason this returns a payload rather than drawing anything itself. The rows
+   * stay in the downloads: a flight-events table over a traffic day is 60,000+
+   * of them, and building, cloning and indexing that for a tab that is there to
+   * show a picture was most of what made it slow to open.
+   */
+  const buildReportPayload = useCallback(
+    async (kind: ReportKind): Promise<ReportPayload> => {
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const flights = trajectories.length;
+      const run = `${flights.toLocaleString()} flight${flights === 1 ? "" : "s"} · built ${stamp.slice(0, 10)} ${stamp.slice(11).replace(/-/g, ":")}Z`;
+
+      if (kind === "events") {
+        // The chart draws the first 25 flights by callsign, so events are built
+        // for THOSE — 25 flights of work instead of the whole sample's. If a
+        // full walk is already in hand (a download or the sector panel made
+        // one) it is reused; the answer is the same either way.
+        const hit = reportCacheRef.current;
+        let events: FlightEventRow[];
+        if (hit && isSameWalk(hit.key, [trajectories, sectorData])) {
+          events = hit.events;
+        } else {
+          const keep = trajectoryChartCallsigns(
+            trajectories.map((t) => t.meta.callsign),
+          );
+          const index = await loadReportAirspace(sectorData);
+          events = trajectories
+            .filter((t) => keep.has(t.meta.callsign))
+            .flatMap((t) => buildFlightEvents(toReportFlight(t), index));
+        }
+        const series = flightTrajectoryRows(events);
+        // Pairs, not columns: the trajectory chart carries two columns per
+        // flight, and the count is however many flights fitted on it.
+        const drawn = Math.floor((series[0]?.length ?? 0) / 2);
+        return {
+          kind: "events",
+          title: "Flight trajectories",
+          subtitle:
+            (drawn < flights
+              ? `The first ${drawn.toLocaleString()} of ${flights.toLocaleString()} flights by callsign`
+              : `All ${drawn.toLocaleString()} flight${drawn === 1 ? "" : "s"}`) +
+            ` · takeoff, filed fixes, TOC/TOD, sector boundaries and landing · ${run}`,
+          series,
+          spec: flightTrajectoryChart(drawn),
+        };
+      }
+
+      const data = await buildReportData(kind);
+
+      if (kind === "sectors") {
+        // The chart stays on the PUBLISHED sectors even with a configuration
+        // applied: it plots the plan against the sectors it was measured from,
+        // and measuring it against itself would flatten the very saving it is
+        // there to show.
+        const plan = planDynamicSectors(
+          data.sectorHours,
+          data.adjacency[dynConfig.layer] ?? new Map(),
+          dynConfig,
+        );
+        return {
+          kind: "sectors",
+          title: "Standard vs merged positions",
+          subtitle: `Published sectors against the positions the traffic needed, hour by hour · merge below ${dynConfig.mergeBelow} · ${run}`,
+          series: standardVsMergedRows(plan),
+          spec: STANDARD_VS_MERGED_CHART,
+        };
+      }
+
+      return {
+        kind: "dynamic",
+        title: "Conflicts by sector",
+        subtitle: `Which sectors produced the conflicts, and how many were resolved · ${run}`,
+        series: conflictBySectorRows(data.sectorHours, dynConfig.layer),
+        spec: CONFLICT_BY_SECTOR_CHART,
+      };
+    },
+    [buildReportData, dynConfig, trajectories, sectorData],
+  );
+
+  /**
+   * Open a run report in a second browser tab.
+   *
+   * The window is opened FIRST, empty, and the report posted to it once built.
+   * That order is not a style choice: `window.open` only counts as
+   * user-initiated inside the click that caused it, so opening it after the
+   * await — which is seconds of work over a whole traffic day — gets it eaten
+   * by the pop-up blocker.
+   *
+   * The new tab asks for its report until it is answered (see
+   * `lib/report/viewPayload.ts`), so neither side has to be ready first.
+   */
+  const handleViewReport = useCallback(
+    (kind: ReportKind) => {
+      const nonce = newNonce();
+      // No features string. Passing one — even "noopener=no" — asks for a popup
+      // WINDOW rather than a tab, which is both not what was asked for and the
+      // shape browsers are most willing to block. A bare "_blank" opens a tab
+      // and keeps `window.opener`, which is the channel the report arrives on.
+      const win = window.open(reportUrl(kind, nonce, theme), "_blank");
+      if (!win) {
+        setError(
+          "The browser blocked the report tab. Allow pop-ups for this site, then try View again.",
+        );
+        return;
+      }
+
+      type Delivery = {
+        type: "payload" | "error";
+        payload?: ReportPayload;
+        error?: string;
+      };
+      let delivery: Delivery | null = null;
+      let helloSeen = false;
+
+      // BOTH conditions, every time. Posting as soon as the build finishes
+      // looks right and silently loses the report whenever the build wins the
+      // race: a message to a tab that has not yet installed its listener is
+      // simply dropped, and the tab sits on "building" for ever. So the console
+      // waits to be asked, and the tab keeps asking until it is answered.
+      const answer = () => {
+        if (!delivery || !helloSeen || win.closed) return;
+        win.postMessage(
+          { channel: REPORT_CHANNEL, nonce, ...delivery },
+          window.location.origin,
+        );
+      };
+      const onHello = (e: MessageEvent) => {
+        if (e.origin !== window.location.origin) return;
+        if (!isHello(e.data) || e.data.nonce !== nonce) return;
+        helloSeen = true;
+        answer();
+      };
+      window.addEventListener("message", onHello);
+      // Answering every hello, rather than only the first, is what lets the
+      // report tab be reloaded and come back with its report. Stop listening
+      // once the tab has had longer than it will ever wait.
+      window.setTimeout(
+        () => window.removeEventListener("message", onHello),
+        HELLO_GIVE_UP_MS,
+      );
+
+      buildReportPayload(kind)
+        .then((payload) => {
+          delivery = { type: "payload", payload };
+        })
+        .catch((err: unknown) => {
+          delivery = {
+            type: "error",
+            error: err instanceof Error ? err.message : "The report could not be built.",
+          };
+        })
+        .finally(answer);
+    },
+    [buildReportPayload, theme],
+  );
+
   // --- Sector information panel ---------------------------------------------
   const [sectorAdjacency, setSectorAdjacency] = useState<Record<
     string,
@@ -2185,6 +2600,12 @@ export default function MapApp() {
     | null
   >(null);
   const [sectorHours, setSectorHours] = useState<SectorHourRow[] | null>(null);
+  /** The same traffic keyed by the positions in force. The PLANNER keeps
+   *  reading `sectorHours` above — its baseline must stay the AIP's — while
+   *  everything that reports what happened reads this when it exists. */
+  const [effectiveSectorHours, setEffectiveSectorHours] = useState<
+    SectorHourRow[] | null
+  >(null);
   const [sectorHoursLoading, setSectorHoursLoading] = useState(false);
   // Held in a ref, NOT listed as a dependency. `buildReportData` closes over
   // `sectorOfConflict`, which is rebuilt on most renders, so depending on it
@@ -2220,13 +2641,17 @@ export default function MapApp() {
       .then((d) => {
         if (cancelled) return;
         setSectorHours(d.sectorHours);
+        setEffectiveSectorHours(d.effectiveSectorHours);
         setSectorAdjacency(d.adjacency);
         setSectorShapesByLayer(d.shapes);
       })
       .catch(() => {
         // An empty table reads as "built, found nothing" — which the panel
         // says plainly. A failed build must not look like a running one.
-        if (!cancelled) setSectorHours([]);
+        if (!cancelled) {
+          setSectorHours([]);
+          setEffectiveSectorHours(null);
+        }
       })
       .finally(() => {
         if (!cancelled) setSectorHoursLoading(false);
@@ -2234,8 +2659,9 @@ export default function MapApp() {
     return () => {
       cancelled = true;
     };
-    // Only the real inputs: the panel opening, and the data it reads.
-  }, [cdrView, trajectories, conflictLog]);
+    // Only the real inputs: the panel opening, and the data it reads — which
+    // now includes the configuration in force, because that re-keys the table.
+  }, [cdrView, trajectories, conflictLog, effectiveSectors]);
 
   /** P and R areas that are ACTIVE in a given hour — the airspace a re-cut is
    *  not allowed to hand across. Danger areas are left out: they are a hazard
@@ -2267,7 +2693,6 @@ export default function MapApp() {
    * under them as a threshold is typed would mean the thing they applied is not
    * the thing they read. `runDynamic` is the only way it changes.
    */
-  const [dynamicPlan, setDynamicPlan] = useState<DynamicPlan | null>(null);
   const [dynamicApplied, setDynamicApplied] = useState(false);
 
   const runDynamic = useCallback(() => {
@@ -2467,28 +2892,99 @@ export default function MapApp() {
     [notifConflicts, planConflicts, appliedFixes],
   );
 
-  /** Go and work the blocker. With a conflict of its own, select it — through
+  /**
+   * The pair to open when a blocker has no conflict of its own.
+   *
+   * A blocker is an aircraft every candidate fix would run into. It is often in
+   * conflict with nobody, so there is no row in any list to open — which used
+   * to leave "Show AIQ101 →" panning the map and stopping there, an answer that
+   * names the problem and offers nothing to do about it.
+   *
+   * The encounter that matters is the one the blocking is ABOUT: the blocked
+   * aircraft against the blocker. So it is synthesised here from the real
+   * geometry of that pair and handed to the same Preview & fix modal, which
+   * then offers level / heading / speed / hold on either of them, checks the
+   * result against all traffic, and applies it like any other fix.
+   *
+   * `definite: false` is the honest flag: they are not losing separation on the
+   * current plan. They would, if the fix under consideration were applied.
+   */
+  const [blockerPair, setBlockerPair] = useState<{
+    conflict: PlanConflict;
+    /** Which half is the one in the way, for the modal's own labelling. */
+    blockerCallsign: string;
+  } | null>(null);
+
+  const makeBlockerPair = useCallback(
+    (blockerId: string, blockedId: string): PlanConflict | null => {
+      const A = planFlights.find((f) => f.id === blockedId);
+      const B = planFlights.find((f) => f.id === blockerId);
+      if (!A || !B) return null;
+      const sep = pairSeparation(A, B);
+      // Sorted, like every other conflict id, so the pair keeps one identity.
+      const [a, b] = blockedId < blockerId ? [A, B] : [B, A];
+      const cfg = cdr.config;
+      return {
+        id: `blocker:${a.id}|${b.id}`,
+        a: a.id,
+        b: b.id,
+        aCallsign: a.callsign,
+        bCallsign: b.callsign,
+        losStartAbsSec: null,
+        tCpaAbsSec: sep?.tCpaAbsSec ?? simTRef.current,
+        dCpaNm: sep?.minHNm ?? 0,
+        vSepAtCpaFt: sep?.vSepAtCpaFt ?? 0,
+        shNm: horizontalMinimumNm(cfg),
+        svFt: cfg.vertical.belowRvsmTopFt,
+        definite: false,
+      };
+    },
+    [planFlights, cdr.config],
+  );
+
+  /** Which aircraft a blocker is blocking: the one the suggestions were being
+   *  generated for. Either half of the pair will do — the blocker is in the way
+   *  of every candidate on both — so the first is taken. */
+  const targetOfPair = useCallback((c: PlanConflict) => c.a, []);
+  const blockedFlightId = useCallback(
+    (conflictId: string | null) => {
+      const c = planConflicts.find((x) => x.id === conflictId);
+      return c ? c.a : undefined;
+    },
+    [planConflicts],
+  );
+
+  /** Go and work the blocker. With a conflict of its own, select that — through
    *  the modal when the live stack has no row for it (a plan-scan conflict that
    *  has not entered the look-ahead yet, which the notification panel would
-   *  never show). Without one, there is nothing to resolve, so put the aircraft
-   *  on the map instead: the honest answer is "look at it and re-plan it". */
+   *  never show). Without one, open it against the aircraft it is blocking. */
   const workBlocker = useCallback(
-    (b: Blocker, conflictId: string | null) => {
+    (b: Blocker, conflictId: string | null, blockedId?: string) => {
       setPreviewIdx(null);
       if (conflictId) {
+        setBlockerPair(null);
         setSelectedConflictId(conflictId);
         if (!notifConflicts.some((c) => c.id === conflictId)) {
           setPreviewModalOpen(true);
         }
         return;
       }
+      const pair = blockedId ? makeBlockerPair(b.id, blockedId) : null;
+      if (pair) {
+        setBlockerPair({ conflict: pair, blockerCallsign: b.callsign });
+        setSelectedConflictId(pair.id);
+        setPreviewModalOpen(true);
+        return;
+      }
+      // Nothing to pair it with (the blocked flight is gone): the honest
+      // fallback is still to put the aircraft on the map.
       const i = idxByFlightKey.get(b.id);
       if (i != null) {
         setPreviewModalOpen(false);
         lockOnFlight(i);
       }
     },
-    [notifConflicts, idxByFlightKey, lockOnFlight],
+    [notifConflicts, idxByFlightKey, lockOnFlight, makeBlockerPair],
   );
 
   // Resolutions shown in the INLINE notification cards. These use the SAME
@@ -3445,7 +3941,9 @@ export default function MapApp() {
       },
 
       tool: {
-        active: profilePinsOn || measureOn,
+        // The flight filter lives in this menu now (it used to have a tab of
+        // its own), so an open filter panel is this tab's doing.
+        active: profilePinsOn || measureOn || filterOpen,
         disabled: !hasFlights,
         hint: hasFlights ? undefined : noFlightsHint,
         menu: (close) => (
@@ -3500,17 +3998,9 @@ export default function MapApp() {
           <TrajectoryMenu
             nav={nav}
             onNavChange={handleNavChange}
-            downloads={downloads}
             onPicked={close}
           />
         ),
-      },
-
-      filter: {
-        active: filterOpen,
-        disabled: !hasFlights,
-        hint: hasFlights ? undefined : noFlightsHint,
-        onSelect: () => setFilterOpen((v) => !v),
       },
 
       conflicts: {
@@ -3630,7 +4120,6 @@ export default function MapApp() {
     depConflicts.length,
     depPanelOpen,
     downloadOpen,
-    downloads,
     filterOpen,
     flightTagsOn,
     goHome,
@@ -3687,7 +4176,7 @@ export default function MapApp() {
         <MainNavigation
           slots={navSlots}
           theme={theme}
-          onTheme={setTheme}
+          onTheme={applyTheme}
           onZoomIn={handleZoomIn}
           onZoomOut={handleZoomOut}
           onToggleSidebar={toggleSidebar}
@@ -4051,6 +4540,7 @@ export default function MapApp() {
               downloads={downloads}
               onBeforeDownload={stampConflictMarks}
               onDownloadReport={handleDownloadReport}
+              onViewReport={handleViewReport}
               reportProgress={reportProgress}
             />
             {/* What the red outline on the map is, and the way to clear it —
@@ -4205,6 +4695,7 @@ export default function MapApp() {
               trajectories={trajectories}
               showTrails={trailOpts.show}
               flColorTrails={trailOpts.flColor}
+              colorBy={trailOpts.colorBy}
               trailDecaySec={trailOpts.decaySec}
               trailWeight={trailOpts.weight}
               showProfilePins={profilePinsOn}
@@ -4342,7 +4833,14 @@ export default function MapApp() {
               allRoutesHidden={allRoutesHidden}
               onToggleAllRoutes={toggleAllRoutesHidden}
             />
-            {trajectories.length > 0 && <AltitudeLegend />}
+            {/* The key follows "Display by": the altitude scale, or the aircraft
+                types on the map. Only one is ever up, in the same corner. */}
+            {trajectories.length > 0 &&
+              (trailOpts.colorBy === "type" ? (
+                <AircraftTypeLegend types={trajectoryTypes} />
+              ) : (
+                <AltitudeLegend />
+              ))}
 
             {/* CD&R toast notifications — NEW / ESCALATED conflicts. Clicking a
                 toast opens the realtime notification stack. */}
@@ -4494,7 +4992,10 @@ export default function MapApp() {
                       onApply={handleApply}
                       blockers={planAdvisory.blockers}
                       blockerConflictOf={blockerConflictOf}
-                      onWorkBlocker={workBlocker}
+                      onWorkBlocker={(b, cid) =>
+                        workBlocker(b, cid, blockedFlightId(selectedConflictId))
+                      }
+                      onEditBlockerPlan={(b) => handleOpenPlan(b.id)}
                       widened={planAdvisory.widened}
                     />
                   ) : null
@@ -4636,7 +5137,9 @@ export default function MapApp() {
                 the conflict columns simply read zero when no monitoring ran. */}
             {cdrView === "sectorinfo" && (
               <SectorInfoPanel
-                rows={sectorHours}
+                // What the traffic was worked by, not how the AIP divides it.
+                rows={effectiveSectorHours ?? sectorHours}
+                byPosition={!!effectiveSectorHours}
                 loading={sectorHoursLoading}
                 flightCount={trajectories.length}
                 dynamicConfig={dynConfig}
@@ -4647,6 +5150,10 @@ export default function MapApp() {
             {cdrView === "dynsector" && (
               <DynamicSectorPanel
                 plan={dynamicPlan}
+                inForce={positionsInForce(
+                  effectiveSectors,
+                  timelineOriginMs + sim.simT * 1000,
+                )}
                 applied={dynamicApplied}
                 onRun={runDynamic}
                 onApply={() => {
@@ -4679,7 +5186,16 @@ export default function MapApp() {
             {/* Before/after Preview & fix modal. */}
             {previewModalOpen &&
               (() => {
-                const c = planConflicts.find((x) => x.id === selectedConflictId);
+                // A synthesised blocker pair is not in the scan (it is not a
+                // conflict on the current plan), so it is looked up separately.
+                const scanned = planConflicts.find(
+                  (x) => x.id === selectedConflictId,
+                );
+                const blk =
+                  blockerPair?.conflict.id === selectedConflictId
+                    ? blockerPair
+                    : null;
+                const c = scanned ?? blk?.conflict ?? null;
                 if (!c) return null;
                 const ia = trajectories.findIndex((t) => t.meta.flightKey === c.a);
                 const ib = trajectories.findIndex((t) => t.meta.flightKey === c.b);
@@ -4699,20 +5215,16 @@ export default function MapApp() {
                     planSuggestions={planSuggestions}
                     planBlockers={planAdvisory.blockers}
                     blockerConflictOf={blockerConflictOf}
-                    onWorkBlocker={(b, id) => {
-                      // Already in the screen a conflict is worked from, so
-                      // just re-aim it at the blocker's pair (the `key` below
-                      // remounts it, so none of its manual state carries over).
-                      // With no conflict to open, step aside for the map.
-                      setPreviewIdx(null);
-                      if (id) {
-                        setSelectedConflictId(id);
-                        return;
-                      }
+                    // Re-aim the open modal at the blocker: its own conflict
+                    // when it has one, otherwise the pair it is blocking. The
+                    // `key` above remounts it, so no manual state carries over.
+                    onWorkBlocker={(b, id) => workBlocker(b, id, targetOfPair(c))}
+                    onEditBlockerPlan={(b) => {
                       setPreviewModalOpen(false);
-                      const i = idxByFlightKey.get(b.id);
-                      if (i != null) lockOnFlight(i);
+                      setBlockerPair(null);
+                      handleOpenPlan(b.id);
                     }}
+                    blockerCallsign={blk?.blockerCallsign}
                     nameOf={nameOf}
                     config={cdr.config}
                     allFlights={planFlights}
@@ -4720,7 +5232,10 @@ export default function MapApp() {
                     holdings={holdings}
                     sector={sectorOfConflict(c, c.tCpaAbsSec)}
                     onApply={(m) => commitManeuver(m)}
-                    onClose={() => setPreviewModalOpen(false)}
+                    onClose={() => {
+                      setPreviewModalOpen(false);
+                      setBlockerPair(null);
+                    }}
                   />
                 );
               })()}

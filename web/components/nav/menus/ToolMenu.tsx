@@ -3,16 +3,22 @@
 /**
  * Tool menu — what the map DRAWS about the flights already on it.
  *
- * Trails and Flight Tags are the existing map-toolbar panels, shown inline
- * here rather than re-implemented: both files export their rows separately
- * from the button that used to open them.
+ * "Display by" is the one control that is always on show: a two-way choice
+ * (Aircraft type | Altitude) that recolours the aircraft symbol and its trail
+ * together. Trails and Flight Tags are the existing map-toolbar panels, shown
+ * inline here rather than re-implemented — both files export their rows
+ * separately from the button that used to open them — but folded shut: each
+ * has half a dozen rows, and a menu that opens onto all of them at once buries
+ * the few things a controller reaches for. Open state lives in the fold, which
+ * unmounts with the dropdown, so every visit starts closed.
  */
 
-import { memo } from "react";
+import { memo, useId, useState, type ReactNode } from "react";
 
 import { TagFieldsBody, type TagFields } from "@/components/FlightTagsMenu";
 import { TrailsPanelBody, type TrailOpts } from "@/components/TrailsMenu";
-import NavIcon from "@/components/nav/NavIcon";
+import NavIcon, { type NavIconName } from "@/components/nav/NavIcon";
+import type { ColorBy } from "@/lib/displayColors";
 
 export interface ToolMenuProps {
   trailOpts: TrailOpts;
@@ -34,6 +40,75 @@ export interface ToolMenuProps {
   onFilter: () => void;
 }
 
+const COLOR_BY: { id: ColorBy; label: string; hint: string }[] = [
+  {
+    id: "type",
+    label: "Aircraft type",
+    hint: "One colour per aircraft type — symbol and trail",
+  },
+  {
+    id: "altitude",
+    label: "Altitude",
+    hint: "Colour by flight level — symbol and trail",
+  },
+];
+
+/** The tag fields that are on, in the order the label shows them. */
+function tagSummary(t: TagFields): string {
+  const on = [
+    t.callsign && "Callsign",
+    t.fl && "FL",
+    t.ias && "IAS",
+    t.hdg && "HDG",
+    t.airspace && "Airspace",
+  ].filter(Boolean);
+  return on.length > 0 ? on.join(" · ") : "off";
+}
+
+/** A dropdown block that opens on demand. */
+function Fold({
+  icon,
+  title,
+  summary,
+  children,
+}: {
+  icon: NavIconName;
+  title: string;
+  /** What is set inside, so a closed fold still says something. */
+  summary: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const bodyId = useId();
+  return (
+    <div className="mnav-group mnav-fold">
+      <button
+        type="button"
+        className={`mnav-row mnav-fold-head${open ? " active" : ""}`}
+        aria-expanded={open}
+        aria-controls={bodyId}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="mnav-row-ico">
+          <NavIcon name={icon} size={15} />
+        </span>
+        <span className="mnav-row-text">
+          <span className="mnav-row-title">{title}</span>
+          <span className="mnav-row-meta">{summary}</span>
+        </span>
+        <span className="mnav-row-state" aria-hidden="true">
+          {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {open && (
+        <div id={bodyId} className="mnav-fold-body">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ToolMenu({
   trailOpts,
   onTrailOpts,
@@ -52,21 +127,42 @@ function ToolMenu({
   return (
     <>
       <div className="mnav-group">
-        <span className="mnav-group-label">Trails</span>
+        <span className="mnav-group-label">Display by</span>
+        <div className="mnav-seg" role="radiogroup" aria-label="Display by">
+          {COLOR_BY.map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              role="radio"
+              aria-checked={trailOpts.colorBy === o.id}
+              className={trailOpts.colorBy === o.id ? "active" : undefined}
+              title={o.hint}
+              onClick={() => onTrailOpts({ ...trailOpts, colorBy: o.id })}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mnav-sep" role="separator" />
+
+      <Fold
+        icon="trails"
+        title="Trails"
+        summary={trailOpts.show ? "shown" : "hidden"}
+      >
         <TrailsPanelBody
           opts={trailOpts}
           onChange={onTrailOpts}
           flightTagsOn={flightTagsOn}
           onFlightTagsToggle={onFlightTagsToggle}
         />
-      </div>
+      </Fold>
 
-      <div className="mnav-sep" role="separator" />
-
-      <div className="mnav-group">
-        <span className="mnav-group-label">Flight Tags</span>
+      <Fold icon="tag" title="Flight Tags" summary={tagSummary(tagFields)}>
         <TagFieldsBody fields={tagFields} onChange={onTagFields} />
-      </div>
+      </Fold>
 
       <div className="mnav-sep" role="separator" />
 

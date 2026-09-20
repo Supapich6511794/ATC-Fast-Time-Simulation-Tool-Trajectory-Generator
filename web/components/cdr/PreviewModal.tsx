@@ -68,6 +68,16 @@ interface Props {
   /** Leave this conflict and go work the blocker instead. Closing the modal is
    *  the caller's job: it owns which conflict is selected. */
   onWorkBlocker?: (b: Blocker, conflictId: string | null) => void;
+  /** Open the blocker's FLIGHT PLAN in the generator. The other way out of a
+   *  blocked fix: when no maneuver on either aircraft clears it, the routing
+   *  itself is what has to change. */
+  onEditBlockerPlan?: (b: Blocker) => void;
+  /** Set when this pair was SYNTHESISED from a blocker rather than scanned: the
+   *  callsign that is in the way. The two are not in conflict on the current
+   *  plan — the modal must not claim they are — and there is nothing for the
+   *  advisory engine to resolve, so the manual controls are the whole point and
+   *  open from the start. */
+  blockerCallsign?: string;
   nameOf: (id: string) => string;
   config: CdrConfig;
   /** Every flight (for the constraint engine's re-check vs ALL traffic). */
@@ -176,6 +186,8 @@ export default function PreviewModal({
   planBlockers,
   blockerConflictOf,
   onWorkBlocker,
+  onEditBlockerPlan,
+  blockerCallsign,
   nameOf,
   config,
   allFlights,
@@ -511,7 +523,13 @@ export default function PreviewModal({
       ? nmBetween([acNowA.lat, acNowA.lon], [acNowB.lat, acNowB.lon])
       : null;
   const timeToCpa = conflict.tCpaAbsSec - simT;
-  const severity = conflict.definite ? "LOSS OF SEPARATION" : "PREDICTED";
+  // A blocker pair is neither: they are clear on the plan as it stands, and the
+  // reason this screen is open is that they would NOT be after a fix elsewhere.
+  const severity = blockerCallsign
+    ? "IN THE WAY"
+    : conflict.definite
+      ? "LOSS OF SEPARATION"
+      : "PREDICTED";
 
   // --- Controller phraseology (from the effective maneuver) ----------------
   const callTgt = nameOf(targetId);
@@ -547,20 +565,33 @@ export default function PreviewModal({
     };
     // 3-D re-check vs every other flight (a level change clears vertically even
     // though it stays horizontally close).
+    //
+    // The other half of THIS pair is kept separate from everyone else. Lumping
+    // them together reported the conflict partner as a "secondary conflict",
+    // which is the opposite of what it is: a secondary conflict is one the
+    // maneuver CREATES, and the partner is the one it was supposed to remove.
+    const partnerId = isA ? conflict.b : conflict.a;
     let clear = true;
     let tightestNm = Infinity;
-    let offenderCallsign: string | undefined;
+    let unresolved: { callsign?: string; dCpaNm: number } | undefined;
+    let secondary: { callsign?: string; dCpaNm: number; alsoCount?: number } | undefined;
+    let otherCount = 0;
     for (const f of allFlights) {
       if (f.id === targetId) continue;
       const c = pairConflict(afterFlight, f, config);
-      if (c) {
-        clear = false;
-        if (c.dCpaNm < tightestNm) {
-          tightestNm = c.dCpaNm;
-          offenderCallsign = f.callsign;
+      if (!c) continue;
+      clear = false;
+      if (c.dCpaNm < tightestNm) tightestNm = c.dCpaNm;
+      if (f.id === partnerId) {
+        unresolved = { callsign: f.callsign, dCpaNm: c.dCpaNm };
+      } else {
+        otherCount += 1;
+        if (!secondary || c.dCpaNm < secondary.dCpaNm) {
+          secondary = { callsign: f.callsign, dCpaNm: c.dCpaNm };
         }
       }
     }
+    if (secondary) secondary.alsoCount = otherCount - 1;
     return evaluateConstraints({
       maneuverType: effType,
       resolution,
@@ -574,11 +605,12 @@ export default function PreviewModal({
       recheck: {
         clear,
         minSepNm: clear ? (afterSep?.minHNm ?? 99) : tightestNm,
-        offenderCallsign,
+        unresolved,
+        secondary,
       },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [afterTargetSamples, afterTraj, effType, resolution, restricted, allFlights, targetId, targetOff, curTrk, config, winStart, winEnd]);
+  }, [afterTargetSamples, afterTraj, effType, resolution, restricted, allFlights, targetId, targetOff, curTrk, config, winStart, winEnd, isA, conflict.a, conflict.b]);
   const rejected = report.verdict === "reject";
 
   // A maneuver that changes nothing (e.g. "Increase 0 kt") isn't a resolution —
@@ -676,7 +708,11 @@ export default function PreviewModal({
 
           <div className="cdr-modal-controls">
             {/* Resolution summary. */}
-            <div className={`cdr-modal-summary sev-${conflict.definite ? "los" : "prd"}`}>
+            <div
+              className={`cdr-modal-summary sev-${
+                blockerCallsign ? "blk" : conflict.definite ? "los" : "prd"
+              }`}
+            >
               <div className="cdr-sum-sev">{severity}</div>
               <dl className="cdr-sum-grid">
                 <div>
@@ -804,29 +840,58 @@ export default function PreviewModal({
                       . Resolve {planBlockers[0].callsign} first, or override
                       below.
                     </p>
-                    {onWorkBlocker && (
-                      <button
-                        type="button"
-                        className="cdr-adv-blocked-btn"
-                        onClick={() =>
-                          onWorkBlocker(
-                            planBlockers[0],
-                            blockerConflictOf?.(planBlockers[0]) ?? null,
-                          )
-                        }
-                      >
-                        {blockerConflictOf?.(planBlockers[0])
-                          ? `Resolve ${planBlockers[0].callsign} first →`
-                          : `Show ${planBlockers[0].callsign} →`}
-                      </button>
-                    )}
+                    {/* Two ways out, because a blocker has two. Move it — level,
+                        heading, speed or hold, checked like any other fix — or
+                        change what it is doing, which is its flight plan. The
+                        old single "Show X" button did neither: it panned the map
+                        to the aircraft and stopped, naming the problem and
+                        offering nothing to do about it. */}
+                    <div className="cdr-adv-blocked-btns">
+                      {onWorkBlocker && (
+                        <button
+                          type="button"
+                          className="cdr-adv-blocked-btn"
+                          onClick={() =>
+                            onWorkBlocker(
+                              planBlockers[0],
+                              blockerConflictOf?.(planBlockers[0]) ?? null,
+                            )
+                          }
+                          title={`Level, heading, speed or hold on ${planBlockers[0].callsign}`}
+                        >
+                          Fix {planBlockers[0].callsign} →
+                        </button>
+                      )}
+                      {onEditBlockerPlan && (
+                        <button
+                          type="button"
+                          className="cdr-adv-blocked-btn ghost"
+                          onClick={() => onEditBlockerPlan(planBlockers[0])}
+                          title={`Open ${planBlockers[0].callsign}'s filed route in the generator`}
+                        >
+                          Edit {planBlockers[0].callsign}&rsquo;s plan
+                        </button>
+                      )}
+                    </div>
                   </>
                 )}
               </div>
             )}
 
-            <details className="cdr-manual">
-              <summary>Manual override</summary>
+            <details className="cdr-manual" open={!!blockerCallsign}>
+              <summary>
+                {/* Both halves, blocker first. The OTHER one is whichever is
+                    not the blocker — not "whichever is not the current target",
+                    which named the blocker twice the moment the target defaulted
+                    to the blocked aircraft. */}
+                {blockerCallsign
+                  ? `Move ${blockerCallsign} — or ${
+                      nameOf(conflict.a) === blockerCallsign
+                        ? nameOf(conflict.b)
+                        : nameOf(conflict.a)
+                    }`
+                  : "Manual override"}
+              </summary>
 
               {/* Which aircraft to maneuver. */}
               <div className="cdr-modal-field">

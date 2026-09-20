@@ -73,7 +73,7 @@ export interface ProcedureLineProperties {
   transition_identifier?: string | null;
 }
 
-/** `sid_line_thai.geojson` / `star_line.geojson` — drawn procedure tracks. */
+/** `aixm/sid_line.geojson` / `aixm/star_line.geojson` — drawn procedure tracks. */
 export type ProcedureLineCollection = FeatureCollection<
   LineString | MultiLineString,
   ProcedureLineProperties
@@ -95,7 +95,7 @@ export interface ProcedureWaypointProperties {
   altitude2?: number | null;
 }
 
-/** `sid_waypoint_thai.geojson` / `star_waypoint.geojson` — procedure fixes. */
+/** `aixm/sid_waypoint.geojson` / `aixm/star_waypoint.geojson` — procedure fixes. */
 export type ProcedureWaypointCollection = FeatureCollection<
   Point | MultiPoint,
   ProcedureWaypointProperties

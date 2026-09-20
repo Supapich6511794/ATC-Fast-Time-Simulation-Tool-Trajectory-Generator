@@ -44,6 +44,12 @@ const LAYER_ORDER = ["bacc", "subsector", "tma", "ctr"];
 
 interface Props {
   rows: SectorHourRow[] | null;
+  /** True when `rows` is keyed by the POSITIONS an applied dynamic
+   *  configuration put in force rather than by the published sectors. The
+   *  numbers are read the same way either way; what changes is what the reader
+   *  is looking at, which is worth saying rather than leaving them to infer it
+   *  from a label like "1N+3N". */
+  byPosition?: boolean;
   loading: boolean;
   /** How many trajectories exist. Only used to tell the two empty states
    *  apart: nothing generated yet, versus generated but nothing crossed. */
@@ -112,6 +118,7 @@ function dayLabel(hourUtc: string): string {
 
 export default function SectorInfoPanel({
   rows,
+  byPosition = false,
   loading,
   flightCount,
   dynamicConfig,
@@ -209,7 +216,16 @@ export default function SectorInfoPanel({
     <div className="cdr-panel sector-info" role="dialog" aria-label="Sector information">
       <div className="cdr-panel-head">
         <strong>
-          <NavIcon name="chart" size={14} /> Sector information
+          <NavIcon name="chart" size={14} />{" "}
+          {byPosition ? "Position information" : "Sector information"}
+          {byPosition && (
+            <em
+              className="si-by-position"
+              title="A dynamic configuration is applied: these rows are keyed by the position that worked the traffic, not by the published sector"
+            >
+              configuration in force
+            </em>
+          )}
         </strong>
         <span className="cdr-head-actions">
           <button

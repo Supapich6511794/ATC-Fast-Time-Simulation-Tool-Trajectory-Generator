@@ -57,6 +57,150 @@ export function pointInMultiPolygon(
   return false;
 }
 
+// --- edge-bucketed ring index ------------------------------------------------
+//
+// The ray cast above walks EVERY edge of a ring for every point tested. The
+// airspace polygons are not small — a BACC sector runs to 28 000 vertices and a
+// CTR to ~1 000 — so a single aircraft sample cost ~10 000 edge tests, and a
+// whole traffic day (hundreds of flights, thousands of samples each) spent
+// seconds in this loop. A horizontal ray only ever crosses edges whose latitude
+// span contains the point, so the edges are bucketed by latitude band once and
+// a point scans just its own band.
+//
+// EXACT, not approximate: a band holds every edge whose span overlaps it (a
+// superset of the edges that can straddle the point), and each edge that is
+// visited is put through the very same test as the plain loop, so the parity —
+// and therefore the answer — is identical. Only edges that could never have
+// toggled it are skipped.
+
+/** Rings shorter than this are scanned plainly: the lookup would cost more than
+ *  the loop it saves. */
+const RING_INDEX_MIN_VERTICES = 64;
+
+interface RingIndex {
+  minY: number;
+  maxY: number;
+  /** Bands per degree of latitude. */
+  scale: number;
+  /** Index of the last band. */
+  last: number;
+  /** Band b holds edges[start[b] .. start[b + 1]). */
+  start: Int32Array;
+  /** Each entry is the vertex i of an edge (ring[j] → ring[i], j = i − 1 wrapped). */
+  edges: Int32Array;
+}
+
+function buildRingIndex(ring: Position[]): RingIndex {
+  const n = ring.length;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const y = ring[i][1];
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  const bands = Math.max(16, Math.min(512, n >> 4));
+  const span = maxY - minY;
+  const scale = span > 0 ? bands / span : 0;
+  const last = bands - 1;
+  const bandOf = (y: number): number => {
+    const b = Math.floor((y - minY) * scale);
+    return b < 0 ? 0 : b > last ? last : b;
+  };
+  const start = new Int32Array(bands + 1);
+  // Two passes over the same edges: count per band, then fill.
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const yi = ring[i][1];
+    const yj = ring[j][1];
+    if (yi === yj) continue; // a level edge can never straddle a latitude
+    const lo = bandOf(yi < yj ? yi : yj);
+    const hi = bandOf(yi < yj ? yj : yi);
+    for (let b = lo; b <= hi; b++) start[b + 1]++;
+  }
+  for (let b = 0; b < bands; b++) start[b + 1] += start[b];
+  const edges = new Int32Array(start[bands]);
+  const fill = start.slice(0, bands);
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const yi = ring[i][1];
+    const yj = ring[j][1];
+    if (yi === yj) continue;
+    const lo = bandOf(yi < yj ? yi : yj);
+    const hi = bandOf(yi < yj ? yj : yi);
+    for (let b = lo; b <= hi; b++) edges[fill[b]++] = i;
+  }
+  return { minY, maxY, scale, last, start, edges };
+}
+
+/** Same answer as `pointInRing`, scanning only the point's latitude band. */
+function pointInRingIndexed(
+  lon: number,
+  lat: number,
+  ring: Position[],
+  idx: RingIndex,
+): boolean {
+  // Above or below every vertex: no edge straddles the latitude.
+  if (lat < idx.minY || lat > idx.maxY) return false;
+  const n = ring.length;
+  let b = Math.floor((lat - idx.minY) * idx.scale);
+  b = b < 0 ? 0 : b > idx.last ? idx.last : b;
+  let inside = false;
+  for (let k = idx.start[b], end = idx.start[b + 1]; k < end; k++) {
+    const i = idx.edges[k];
+    const j = i === 0 ? n - 1 : i - 1;
+    const xi = ring[i][0];
+    const yi = ring[i][1];
+    const xj = ring[j][0];
+    const yj = ring[j][1];
+    const intersect =
+      yi > lat !== yj > lat &&
+      lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+/** One index per ring of one feature's MultiPolygon, parallel to `mp`
+ *  (`undefined` for a ring too short to be worth one). */
+type MultiPolygonIndex = (RingIndex | undefined)[][];
+
+function buildMultiPolygonIndex(mp: Position[][][]): MultiPolygonIndex {
+  return mp.map((poly) =>
+    poly.map((ring) =>
+      ring.length >= RING_INDEX_MIN_VERTICES ? buildRingIndex(ring) : undefined,
+    ),
+  );
+}
+
+/** `pointInMultiPolygon`, using the prebuilt ring indexes. */
+function pointInMultiPolygonIndexed(
+  lon: number,
+  lat: number,
+  mp: Position[][][],
+  acc: MultiPolygonIndex,
+): boolean {
+  for (let p = 0; p < mp.length; p++) {
+    const poly = mp[p];
+    if (poly.length === 0) continue;
+    const rings = acc[p];
+    const inRing = (r: number): boolean => {
+      const ix = rings[r];
+      return ix
+        ? pointInRingIndexed(lon, lat, poly[r], ix)
+        : pointInRing(lon, lat, poly[r]);
+    };
+    if (!inRing(0)) continue;
+    let inHole = false;
+    for (let h = 1; h < poly.length; h++) {
+      if (inRing(h)) {
+        inHole = true;
+        break;
+      }
+    }
+    if (!inHole) return true;
+  }
+  return false;
+}
+
 // --- vertical bands --------------------------------------------------------
 
 /** Feet from a limit value. `isFL` treats a bare number as a flight level.
@@ -129,6 +273,9 @@ export interface IndexEntry {
   band: Band;
   bbox: [number, number, number, number]; // minLon, minLat, maxLon, maxLat
   mp: Position[][][];
+  /** Edge-bucketed ring indexes for `mp` (see RingIndex). Built with the index
+   *  and optional: an entry assembled by hand still works, just unaccelerated. */
+  acc?: MultiPolygonIndex;
 }
 
 export type AirspaceIndex = Partial<Record<SectorKey, IndexEntry[]>>;
@@ -177,6 +324,7 @@ export function buildAirspaceIndex(
         band: layerBand(props, key),
         bbox: bboxOf(mp),
         mp,
+        acc: buildMultiPolygonIndex(mp),
       });
     }
     idx[key] = entries;
@@ -204,7 +352,12 @@ export function airspaceAt(
     for (const e of entries) {
       if (lon < e.bbox[0] || lon > e.bbox[2] || lat < e.bbox[1] || lat > e.bbox[3])
         continue;
-      if (!pointInMultiPolygon(lon, lat, e.mp)) continue;
+      if (
+        !(e.acc
+          ? pointInMultiPolygonIndexed(lon, lat, e.mp, e.acc)
+          : pointInMultiPolygon(lon, lat, e.mp))
+      )
+        continue;
       if (altFt != null && key !== "subsector") {
         if (!(altFt >= e.band.lo && altFt <= e.band.hi)) continue;
       }

@@ -56,7 +56,7 @@
   /* Each signal as a TRIAD — text, the fill it sits on, and the line around
      it. Taken from the Flight Playback reference, which is where the idea of
      completing the set came from: a single colour per signal forces every
-     callout to hand-mix its own `#f8717166` border and `#7f1d1d22` fill, and
+     callout to hand-mix its own `#f8717166` border and `var(--danger-soft)` fill, and
      four of ours had drifted to four different mixes of the same intent. */
   --accent-ink: #9ae0ec;         /* accent text ON --accent-soft     */
   --live-soft: #10291a;
@@ -66,12 +66,27 @@
   --danger-soft: #2b1418;
   --danger-line: #4d2027;
 
+  /* A neutral recess INSIDE a panel — the summary block, the stat tile, the
+     select well. Translucent, so it works on both the opaque panels and the
+     blurred materials. This is the neutral the signal triads never covered,
+     and the CD&R / PDR / sector panels had each been hand-mixing it as
+     `var(--inset)`…`var(--inset-strong)`; opaque `--bg-sunken` cannot replace it, because
+     these sit on glass. Theme-aware, which the literals were not: 40% ink over
+     paper is a grey slab, so light mode dials it right down. */
+  --inset: rgba(15, 23, 42, 0.27);
+  --inset-strong: rgba(15, 23, 42, 0.4);
+
   /* Ink ON an accent or signal fill. Not in the guide's sweep table, which
      maps #06283d to --accent-soft; that is a fill, and this value is used as
      TEXT on top of one (.generate, the chips, the log tags). Swapping ink for
      fill would have made every primary button's label invisible. */
   --on-accent: #06283d;
   --on-warn: #2b1a02;
+
+  /* Scrollbar thumb. Transparent at rest, this while the pointer is in the
+     box, accent while the thumb itself is under it — see the section below. */
+  --scroll-thumb: rgba(255, 255, 255, 0.2);
+  --scroll-thumb-hot: rgba(255, 255, 255, 0.38);
 
   /* Geometry */
   --radius: 10px;
@@ -96,6 +111,78 @@
   --bg: var(--bg-chrome);
   --panel: var(--bg-elevated);
   --muted: var(--text-dim);
+}
+
+/* =========================================================================
+   Scrollbars
+   =========================================================================
+   VS Code's rule: the bar is not part of the picture until you are working in
+   that box. The thumb is transparent at rest and takes colour while the
+   pointer is anywhere inside the scrolling element — `:hover` propagates up
+   the ancestor chain, so hovering a row inside a card lights that card's bar.
+
+   The TRACK is always the same width, at rest and hovered; only the thumb's
+   colour changes. Showing the bar by widening it would reflow the content
+   under the cursor, which is the one moment it must not move.
+
+   The thumb is drawn as a padded content-box inside a transparent border, so
+   a 10px track carries a 4px bar with breathing room either side. One rule for
+   the whole app: a card that wants its own scrollbar colour is a card that
+   disagrees with the theme.
+   ========================================================================= */
+.app ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.app ::-webkit-scrollbar-track,
+.app ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+.app ::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border: 3px solid transparent;
+  border-radius: 8px;
+  background-clip: content-box;
+}
+.app :hover::-webkit-scrollbar-thumb {
+  background-color: var(--scroll-thumb);
+}
+.app ::-webkit-scrollbar-thumb:hover,
+.app ::-webkit-scrollbar-thumb:active {
+  background-color: var(--scroll-thumb-hot);
+}
+
+/* Firefox has no scrollbar pseudo-elements; `scrollbar-color` is the whole
+   API, and it accepts transparent, which is the same trick.
+
+   Fenced behind @supports, and the fence is load-bearing: Chrome understands
+   `scrollbar-color` too, and the moment it is set Chrome DROPS the
+   ::-webkit-scrollbar rules above and falls back to its classic scrollbar,
+   arrow buttons and all. Asking whether the pseudo-element selector parses
+   is the one question that separates the two engines here. The same goes for
+   a bare `scrollbar-width` on a component, which is why none are left inside
+   `.app`. */
+@supports not selector(::-webkit-scrollbar) {
+  .app * {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+  .app *:hover {
+    scrollbar-color: var(--scroll-thumb) transparent;
+  }
+}
+
+/* A touch device has no pointer to hover with, so the bar would never appear;
+   there, it is simply always drawn. */
+@media (hover: none) {
+  .app ::-webkit-scrollbar-thumb {
+    background-color: var(--scroll-thumb);
+  }
+  @supports not selector(::-webkit-scrollbar) {
+    .app * {
+      scrollbar-color: var(--scroll-thumb) transparent;
+    }
+  }
 }
 
 /* =========================================================================
@@ -868,6 +955,55 @@ body {
   color: var(--accent);
 }
 
+/* A block that opens on demand (Tool → Trails, Flight Tags). The head is an
+   ordinary row; what it reveals is set in from the left behind a hairline, so
+   the rows read as belonging to it and not as more siblings. */
+.mnav-fold-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 4px 18px;
+  padding: 2px 0 2px 6px;
+  border-left: 1px solid var(--hairline);
+}
+
+/* One-of-N inside a dropdown — the same pattern as .gen-entry, sized for a
+   menu. Cyan is the segmented control's, per the palette rule. */
+.mnav-seg {
+  display: flex;
+  gap: 2px;
+  margin: 2px 4px 0;
+  padding: 3px;
+  background: var(--bg-chrome);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+}
+.mnav-seg button {
+  flex: 1;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.mnav-seg button:hover {
+  background: var(--bg-elevated-hover);
+  color: var(--text);
+}
+.mnav-seg button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.mnav-seg button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 /* --------------------------------------------------------------------------
    Panels that used to be popovers of their own
    --------------------------------------------------------------------------
@@ -1025,7 +1161,6 @@ body {
   max-height: 150px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-width: thin;
 }
 
 .tm-item {
@@ -1726,10 +1861,39 @@ body {
 }
 
 .dlm-head h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   margin: 0;
   font-size: 14px;
   font-weight: 700;
   color: var(--text);
+}
+
+/* Drawn glyphs, not emoji. ⬇ and ⏳ are colour-font characters: the system
+   paints them in its own palette, at its own weight, so they ignored the theme
+   and sat next to the label as pictures rather than as marks. The nav icon set
+   is monochrome and inherits `currentColor`. */
+.dlm-head h3 .nav-icon,
+.dlm-go .nav-icon {
+  flex: none;
+}
+
+/* The wait, as a mark rather than an hourglass emoji. */
+.dlm-spin {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: dlm-spin 0.7s linear infinite;
+}
+@keyframes dlm-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dlm-spin { animation-duration: 2.4s; }
 }
 
 .dlm-close {
@@ -1925,22 +2089,9 @@ body {
      tall (padding 3+3 + content ~22 + border 2); 4 × 30 + 3 × 6 ≈ 138 px. */
   max-height: 138px;
   overflow-y: auto;
-  scrollbar-width: thin;
   scrollbar-gutter: stable;
 }
 
-.dlm-chips::-webkit-scrollbar {
-  width: 8px;
-}
-
-.dlm-chips::-webkit-scrollbar-thumb {
-  background: var(--hairline);
-  border-radius: 999px;
-}
-
-.dlm-chips::-webkit-scrollbar-thumb:hover {
-  background: var(--accent);
-}
 
 .dlm-chip {
   display: flex;
@@ -2053,8 +2204,6 @@ body {
   z-index: 4100;
   max-height: 176px; /* ~4 rows then scroll */
   overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: #475569 transparent;
 }
 
 .sc-list > li {
@@ -2124,24 +2273,8 @@ body {
      #3 scroll inside the dropdown. */
   max-height: 152px;
   overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: #475569 transparent;
 }
 
-/* Slim, themed scrollbar for the suggestion list (WebKit / Chromium). */
-.dlm-suggest::-webkit-scrollbar {
-  width: 6px;
-}
-.dlm-suggest::-webkit-scrollbar-track {
-  background: transparent;
-}
-.dlm-suggest::-webkit-scrollbar-thumb {
-  background: #475569;
-  border-radius: 3px;
-}
-.dlm-suggest::-webkit-scrollbar-thumb:hover {
-  background: var(--accent);
-}
 
 .dlm-suggest li {
   list-style: none;
@@ -2485,6 +2618,9 @@ body {
 }
 
 .dlm-go {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   background: var(--accent);
   color: var(--on-accent);
   border: none;
@@ -3342,7 +3478,7 @@ body {
 }
 
 .rt-summary-meta div + div {
-  border-top: 1px dashed #33415555;
+  border-top: 1px dashed var(--hairline);
 }
 
 .rt-summary-meta dt {
@@ -3734,15 +3870,94 @@ body {
 }
 
 /* ============================================================= *
- *  Light theme — overrides the dark :root variables. Because the
- *  variables are set on .app, every child picks them up.
+ *  Light theme — the WHOLE token set, re-stated for day use.
+ * ============================================================= *
+ *  This block used to override five tokens. Everything else in the
+ *  file kept resolving to the dark palette, which is what made light
+ *  mode look half-finished: `--hairline` is white at 8% (127 call
+ *  sites, every one of them invisible on paper), `--bg-chrome` is
+ *  near-black (the toolbar and the timeline strip), the signal triads
+ *  are dark tints, and `--on-accent` is dark ink for a bright cyan
+ *  fill that light mode does not use. Each of those was then patched
+ *  back per selector, which is why ~70 `.theme-light` rules had grown
+ *  underneath here. Tokens first; a per-selector rule below is now a
+ *  bug unless it says why it is not.
+ *
+ *  Two things run the OTHER WAY from the dark palette, deliberately:
+ *
+ *  - Elevation inverts. On paper a raised surface is the WHITEST, so
+ *    `--bg-chrome` (toolbar, panel base) is #fff and `--bg-elevated`
+ *    (buttons, chips) is a step DOWN into grey. The `--bg` / `--panel`
+ *    aliases therefore cannot stay aliases here — `--bg` is the recess
+ *    a button sits in, `--panel` the white it sits on — so both are
+ *    written out.
+ *
+ *  - `--on-accent` flips to white, because the light accent is a deep
+ *    sky blue rather than the dark theme's bright cyan. Dark ink on it
+ *    is the unreadable-label failure the :root comment warns about,
+ *    just mirrored.
  * ============================================================= */
 .app.theme-light {
+  /* Surfaces — white is the top of the stack, grey the bottom. */
+  --bg-chrome: #ffffff;
+  --bg-elevated: #f1f5f9;
+  --bg-elevated-hover: #e2e8f0;
+  --bg-sunken: #e6ecf3;
+
+  /* Lines */
+  --border: #cbd5e1;
+  --border-strong: #94a3b8;
+
+  /* Materials — panels float over the map, so the tint is white and the
+     hairline is ink. Less saturation than the dark blur: pushing a pale
+     map further towards colour makes the panel edge read as a smear. */
+  --material: rgba(255, 255, 255, 0.72);
+  --material-strong: rgba(255, 255, 255, 0.9);
+  --hairline: rgba(15, 23, 42, 0.1);
+  --blur: blur(24px) saturate(1.2);
+
+  /* Text */
+  --text: #0f172a;
+  --text-dim: #475569;
+  --text-faint: #7b8aa0;
+
+  /* Signal colours. The 600-weight tones are the compromise these have to
+     strike: they are read BOTH as text on white and as a fill with the
+     dark ink of `.sim-phase` / `.rt-speed-chip` on top, and the dark
+     theme's neon versions fail the first while a true dark green fails
+     the second. */
+  --accent: #0284c7;
+  --accent-press: #0369a1;
+  --accent-soft: rgba(2, 132, 199, 0.12);
+  --accent-ink: #075985;
+  --live: #16a34a;
+  --warn: #d97706;
+  --danger: #dc2626;
+
+  /* The triads as paper tints — a wash to fill, a line to bound it. */
+  --live-soft: #e9f8ee;
+  --live-line: #a7dfba;
+  --warn-soft: #fef3c7;
+  --warn-line: #f2cd7c;
+  --danger-soft: #fdeaec;
+  --danger-line: #f3b4bb;
+
+  /* Ink, not light, for the scrollbar on paper. */
+  --scroll-thumb: rgba(15, 23, 42, 0.26);
+  --scroll-thumb-hot: rgba(15, 23, 42, 0.45);
+
+  /* The neutral recess, as a whisper — see the note in :root. */
+  --inset: rgba(15, 23, 42, 0.04);
+  --inset-strong: rgba(15, 23, 42, 0.08);
+
+  /* Ink ON a fill. White on the blue; `--on-warn` stays dark ink, since
+     amber is still a light fill here. */
+  --on-accent: #ffffff;
+
+  /* --- The two aliases, written out (see the note above). --- */
   --bg: #eef2f7;
   --panel: #ffffff;
-  --text: #0f172a;
-  --muted: #475569;
-  --accent: #0284c7;
+  --muted: var(--text-dim);
 }
 
 .app.theme-light .sidebar {
@@ -4010,6 +4225,19 @@ body {
 
 .flight-tags-row:hover {
   background: #ffffff12;
+}
+
+/* A row that has nothing to switch right now (FL Color Trails while the map is
+   displayed by aircraft type). */
+.flight-tags-row.inert {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.flight-tags-row.inert:hover {
+  background: transparent;
+}
+.flight-tags-row.inert input {
+  cursor: not-allowed;
 }
 
 .flight-tags-row input {
@@ -5501,9 +5729,22 @@ select.fp-input {
   text-align: center;
   flex-shrink: 0;
 }
-.sim-time:first-of-type {
+.sim-time:first-of-type,
+.sim-clock {
   color: var(--accent);
   font-weight: 600;
+}
+
+/* The cursor carries a full UTC stamp ("2026-03-04 02:42:58 UTC") — wide
+   enough that it must never be squeezed into a wrap by the scrubber. */
+.sim-clock {
+  min-width: 165px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.sim-end {
+  min-width: 68px;
 }
 
 /* The scrubber takes whatever width is left, as in the reference where it
@@ -5612,7 +5853,6 @@ select.fp-input {
   z-index: 1500;
   max-height: 240px;
   overflow-y: auto;
-  scrollbar-width: thin;
 }
 
 .sim-route-menu li {
@@ -6566,7 +6806,6 @@ select.fp-input {
   padding-bottom: 2px;
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
-  scrollbar-width: thin;
 }
 
 .plan-tab {
@@ -7219,9 +7458,9 @@ select.fp-input {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-.log-tag.t-head-on { background: #7f1d1d66; color: var(--danger); }
-.log-tag.t-crossing { background: #78350f66; color: var(--warn); }
-.log-tag.t-in-trail { background: #1e3a8a66; color: #93c5fd; }
+.log-tag.t-head-on { background: var(--danger-soft); color: var(--danger); }
+.log-tag.t-crossing { background: var(--warn-soft); color: var(--warn); }
+.log-tag.t-in-trail { background: var(--accent-soft); color: var(--accent-ink); }
 .log-sep {
   display: flex;
   align-items: baseline;
@@ -8053,6 +8292,13 @@ select.fp-input {
   height: 110px;
   border-radius: 4px;
   border: 1px solid var(--hairline);
+  /* The gradient is sized and painted across the WHOLE border box, and never
+     tiled. Left at their defaults it is sized to the padding box but painted
+     across the border box, and because the default repeat is `repeat` those two
+     1px strips showed the far end of the gradient wrapping round: a yellow line
+     above FL400 and a blue line below zero. */
+  background-origin: border-box;
+  background-repeat: no-repeat;
 }
 
 .alt-legend-ticks {
@@ -8069,6 +8315,41 @@ select.fp-input {
 
 .app.theme-light .alt-legend {
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18);
+}
+
+/* The aircraft-type key that replaces the altitude scale while the map is
+   displayed by type. Same card, one swatch per type present. Capped in height
+   so a whole traffic day's fleet scrolls inside it rather than growing over
+   the map. */
+.alt-legend-types {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 168px;
+  overflow-y: auto;
+  font-size: 11px;
+  color: var(--text);
+  line-height: 1;
+}
+.alt-legend-types li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.alt-legend-swatch {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  border: 1px solid var(--hairline);
+}
+.alt-legend-count {
+  margin-left: auto;
+  padding-left: 10px;
+  color: var(--text-faint);
 }
 
 @media (max-width: 860px) {
@@ -8898,14 +9179,6 @@ select.fp-input {
   overflow-y: auto;
   pointer-events: none;
 }
-/* Let the scrollbar work when the stack overflows (children stay clickable). */
-.cdr-toasts::-webkit-scrollbar {
-  width: 6px;
-}
-.cdr-toasts::-webkit-scrollbar-thumb {
-  background: #ffffff22;
-  border-radius: 3px;
-}
 .cdr-toast {
   pointer-events: auto;
   display: flex;
@@ -9138,7 +9411,7 @@ select.fp-input {
   padding: 10px 10px 4px;
   border: 1px solid var(--line, var(--border));
   border-radius: 8px;
-  background: #0f172a66;
+  background: var(--inset-strong);
 }
 .si-chart-head {
   display: flex;
@@ -9179,7 +9452,7 @@ select.fp-input {
   letter-spacing: 0.3px;
   text-transform: uppercase;
   color: var(--muted);
-  background: #0f172a55;
+  background: var(--inset);
   border: 1px solid var(--hairline);
 }
 .cdr-count b {
@@ -9203,7 +9476,7 @@ select.fp-input {
   overflow-y: auto;
 }
 .cdr-section {
-  border-bottom: 1px solid #33415533;
+  border-bottom: 1px solid var(--hairline);
 }
 .cdr-section.los {
   background: #ef444410;
@@ -9423,7 +9696,21 @@ select.fp-input {
   color: var(--warn);
 }
 /* …and the way out of the dead end: naming the aircraft that blocks every
-   candidate is only useful if the controller can go and work it. */
+   candidate is only useful if the controller can go and work it.
+
+   Two of them, because a blocker can be dealt with two ways — moved (level,
+   heading, speed, hold) or re-planned. The primary is the maneuver; the plan
+   edit is a ghost beside it, because it means leaving the conflict screen and
+   regenerating. */
+.cdr-adv-blocked-btns {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.cdr-adv-blocked-btns .cdr-adv-blocked-btn {
+  flex: 1;
+  margin-top: 0;
+}
 .cdr-adv-blocked-btn {
   display: block;
   width: 100%;
@@ -9444,6 +9731,16 @@ select.fp-input {
   background: #f59e0b33;
   color: #fde3b4;
 }
+.cdr-adv-blocked-btn.ghost {
+  background: transparent;
+  color: var(--text-dim);
+  border-color: var(--border);
+}
+.cdr-adv-blocked-btn.ghost:hover {
+  background: var(--inset);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
 /* Badge on the advisory heading when the results only came from the wider
    fallback envelope — the maneuvers are bigger than the usual proposals. */
 .cdr-adv-wide {
@@ -9456,8 +9753,8 @@ select.fp-input {
   letter-spacing: 0.3px;
 }
 .cdr-card {
-  background: #0f172a55;
-  border: 1px solid #33415555;
+  background: var(--inset);
+  border: 1px solid var(--hairline);
   border-radius: 8px;
   padding: 8px 9px;
   margin-bottom: 6px;
@@ -9587,7 +9884,7 @@ select.fp-input {
 .cdr-modal-map {
   position: relative;
   min-height: 360px;
-  border-right: 1px solid #33415555;
+  border-right: 1px solid var(--hairline);
 }
 .cdr-modal-play {
   position: absolute;
@@ -9632,8 +9929,8 @@ select.fp-input {
   padding: 8px 10px;
   border-radius: 8px;
   font-size: 13px;
-  background: #0f172a55;
-  border: 1px solid #33415555;
+  background: var(--inset);
+  border: 1px solid var(--hairline);
   font-variant-numeric: tabular-nums;
 }
 .cdr-modal-outcome.ok { border-color: #22c55e66; }
@@ -9858,7 +10155,7 @@ select.fp-input {
   padding-bottom: 8px;
 }
 .cdr-dash-col.los {
-  border-right: 1px solid #33415555;
+  border-right: 1px solid var(--hairline);
 }
 .cdr-dash-h {
   position: sticky;
@@ -9897,13 +10194,19 @@ select.fp-input {
 
 /* ---- CD&R Preview modal: resolution summary + phraseology ---- */
 .cdr-modal-summary {
-  border: 1px solid #33415555;
+  border: 1px solid var(--hairline);
   border-radius: 8px;
   padding: 8px 10px;
-  background: #0f172a55;
+  background: var(--inset);
 }
 .cdr-modal-summary.sev-los { border-left: 3px solid var(--cdr-los); }
 .cdr-modal-summary.sev-prd { border-left: 3px solid var(--cdr-mtcd); }
+/* Opened from a blocker: this pair is NOT in conflict, it is the encounter a
+   fix elsewhere would create. Amber, like the banner it was reached from, so it
+   never reads as a loss of separation — which means the heading has to leave
+   the alert red too, not just the rule beside it. */
+.cdr-modal-summary.sev-blk { border-left: 3px solid var(--warn); }
+.cdr-modal-summary.sev-blk .cdr-sum-sev { color: var(--warn); }
 .cdr-sum-sev {
   font-size: 10px;
   font-weight: 700;
@@ -9952,7 +10255,7 @@ select.fp-input {
 
 /* ---- CD&R Preview modal: constraint check ---- */
 .cdr-modal-constraints {
-  border: 1px solid #33415555;
+  border: 1px solid var(--hairline);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -9964,7 +10267,7 @@ select.fp-input {
   align-items: center;
   justify-content: space-between;
   padding: 6px 10px;
-  background: #0f172a66;
+  background: var(--inset-strong);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.4px;
@@ -10042,7 +10345,7 @@ select.fp-input {
   border: 1px solid var(--hairline);
   border-left: 3px solid var(--accent);
   border-radius: 8px;
-  background: #0f172a66;
+  background: var(--inset-strong);
   padding: 8px 10px;
   font-size: 11px;
   line-height: 1.5;
@@ -10076,7 +10379,7 @@ select.fp-input {
   text-align: left;
   border: 1px solid var(--hairline);
   border-radius: 8px;
-  background: #0f172a55;
+  background: var(--inset);
   padding: 7px 9px;
   cursor: pointer;
   display: flex;
@@ -10206,10 +10509,10 @@ select.fp-input {
   padding: 0;
 }
 .arr-row {
-  border-top: 1px solid #33415555;
+  border-top: 1px solid var(--hairline);
 }
 .arr-row.short {
-  background: #7f1d1d22;
+  background: var(--danger-soft);
 }
 .arr-row.sel {
   outline: 1px solid #38bdf8aa;
@@ -10296,7 +10599,7 @@ select.fp-input {
 .arr-inherited {
   padding: 0 5px;
   border-radius: 3px;
-  background: #78350f55;
+  background: var(--warn-soft);
   color: var(--warn);
 }
 .arr-instr {
@@ -10370,7 +10673,7 @@ select.fp-input {
   margin-left: 8px;
   padding: 1px 6px;
   border-radius: 4px;
-  background: #16653455;
+  background: var(--live-soft);
   color: #4ade80;
   font-size: 10px;
 }
@@ -10595,8 +10898,8 @@ select.fp-input {
   text-align: left;
   cursor: pointer;
 }
-.pdr-flight:hover { background: #33415533; }
-.pdr-flight.active { background: #33415555; }
+.pdr-flight:hover { background: var(--inset); }
+.pdr-flight.active { background: var(--inset-strong); }
 .pdr-flight.sev-violation { border-left-color: var(--cdr-los); }
 .pdr-flight.sev-caution { border-left-color: #f59e0b; }
 .pdr-flight.sev-info { border-left-color: #64748b; }
@@ -10655,7 +10958,7 @@ select.fp-input {
   padding: 3px 9px;
   border: 1px solid #f87171aa;
   border-radius: 6px;
-  background: #7f1d1d66;
+  background: var(--danger-soft);
   color: #fecaca;
   font-size: 11px;
   font-weight: 600;
@@ -10691,7 +10994,7 @@ select.fp-input {
   padding: 8px 10px;
   border: 1px solid var(--hairline);
   border-radius: 8px;
-  background: #0f172a44;
+  background: var(--inset);
 }
 .pdr-sugg-top {
   display: flex;
@@ -10751,7 +11054,7 @@ select.fp-input {
   font-size: 11.5px;
   line-height: 1.45;
   color: var(--warn);
-  background: #78350f33;
+  background: var(--warn-soft);
   border-bottom: 1px solid var(--hairline);
 }
 .pdr-error { color: var(--danger); }
@@ -10784,7 +11087,7 @@ select.fp-input {
   color: var(--warn);
 }
 .pdr-conf-pointer:hover {
-  background: #78350f55;
+  background: var(--warn-soft);
 }
 /* Which picture the PDR panel is showing: filed plans (estimated profile) or
    generated trajectories (real ones). */
@@ -10959,10 +11262,10 @@ select.fp-input {
    state and must not disappear. */
 .pdr-conf-pointer.failed {
   border-color: #f8717166;
-  background: #7f1d1d33;
+  background: var(--danger-soft);
   color: var(--danger);
 }
-.pdr-conf-pointer.failed:hover { background: #7f1d1d55; }
+.pdr-conf-pointer.failed:hover { background: var(--danger-line); }
 
 /* Run reports in the download modal — whole-sample CSVs (flight events, sector
    hours), built in the browser rather than by the API, so they sit apart from
@@ -10974,14 +11277,14 @@ select.fp-input {
   flex-direction: column;
   gap: 6px;
 }
+/* Inside `.dlm-section-head`, which already sets the micro-caps treatment. */
 .dlm-reports-h {
-  margin: 0 0 2px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted);
+  margin: 0;
 }
+
+/* A report is now TICKED, not fired: same checkbox the formats use, so the
+   two halves of the dialog are picked the same way and emptied by the same
+   button. */
 .dlm-report-btn {
   display: flex;
   flex-direction: column;
@@ -10989,15 +11292,311 @@ select.fp-input {
   padding: 7px 10px;
   border: 1px solid var(--hairline);
   border-radius: 8px;
-  background: #0f172a44;
+  background: var(--inset);
   color: var(--text);
   text-align: left;
   cursor: pointer;
 }
 .dlm-report-btn:hover:not(:disabled) { background: var(--hairline); }
 .dlm-report-btn:disabled { opacity: 0.5; cursor: default; }
-.dlm-report-label { font-size: 12.5px; font-weight: 600; }
-.dlm-report-sub { font-size: 11px; color: var(--muted); }
+/* A ticked row stays readable while the basket empties — it is the row whose
+   progress the reader is watching. */
+.dlm-report-btn.on:disabled { opacity: 1; }
+
+/* The tick and the "View" action side by side. Two acts, so two buttons: one
+   puts the report in the download basket, the other opens it to read. */
+.dlm-report-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+.dlm-report-row .dlm-report-btn {
+  flex: 1;
+  min-width: 0;
+}
+.dlm-report-view {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  flex: none;
+  width: 60px;
+  padding: 6px 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--accent);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.dlm-report-view:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.dlm-report-view:disabled { opacity: 0.5; cursor: default; }
+
+/* =========================================================================
+   Report tab — one run report on a page of its own
+   =========================================================================
+   A second browser tab, opened from the Download dialog, so a report can be
+   READ rather than saved and opened in a spreadsheet. It reuses the console's
+   tokens (the page wraps itself in `.app theme-*`), which is also what gives
+   its table the same hover scrollbars as everything else.
+
+   One column: heading, the chart, then the table filling whatever is left. The
+   table is the part someone scrolls, so it gets the remaining height rather
+   than growing the page — a 100k-row report must not produce a 3,000,000px
+   document.
+   ========================================================================= */
+.rv {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px calc(20px + var(--safe-right)) calc(16px + var(--safe-bottom))
+    calc(20px + var(--safe-left));
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+
+.rv-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.rv-head-text h1 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.rv-head-text p {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.rv-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rv-filter {
+  width: 260px;
+  max-width: 44vw;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-chrome);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+.rv-filter:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.rv-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.rv-save:hover { color: var(--text); background: var(--bg-elevated-hover); }
+
+/* ---- the chart ---- */
+.rv-chart {
+  margin: 0;
+  padding: 10px 12px 4px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  background: var(--bg-chrome);
+}
+.rv-chart svg { display: block; width: 100%; }
+.rv-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 2px 4px 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.rv-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.rv-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: none;
+}
+.rv-legend-more { font-style: italic; }
+
+/* ---- the table ---- */
+.rv-table-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.rv-tabs { display: flex; gap: 4px; }
+.rv-tabs button {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+}
+.rv-tabs button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.rv-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+.rv-table {
+  flex: 1;
+  min-height: 160px;
+  overflow: auto;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  background: var(--bg-chrome);
+}
+.rv-table:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.rv-table-inner { position: relative; }
+
+/* Sticky INSIDE the scroller, so the header scrolls sideways with the columns
+   it names and stays put vertically. A separate header element would need its
+   horizontal scroll synced by hand, one frame late. */
+.rv-thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+}
+.rv-thead span {
+  flex: none;
+  padding: 8px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The spacer carries the full height of the data; only the slice inside is
+   real. `will-change` keeps the translate on its own layer, which is what
+   stops a fast scroll from tearing. */
+.rv-tbody { position: relative; }
+.rv-rows { position: absolute; inset: 0 auto auto 0; will-change: transform; }
+.rv-row {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--hairline);
+}
+.rv-row:hover { background: var(--inset); }
+.rv-row span {
+  flex: none;
+  padding: 0 10px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rv-table-empty {
+  margin: 0;
+  padding: 24px 14px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ---- waiting, and the dead end ---- */
+.rv-blank { align-items: center; justify-content: center; }
+.rv-blank-card {
+  max-width: 460px;
+  padding: 26px 28px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--bg-chrome);
+  text-align: center;
+}
+.rv-blank-card .dlm-spin {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  margin-bottom: 10px;
+  color: var(--accent);
+}
+.rv-blank-card h1 { margin: 0 0 8px; font-size: 16px; font-weight: 700; }
+.rv-blank-card p { margin: 0; font-size: 12.5px; color: var(--text-dim); }
+.rv-blank-hint { margin-top: 12px !important; }
+
+@media (max-width: 640px) {
+  .rv { padding: 12px; gap: 10px; }
+  .rv-head-actions { width: 100%; }
+  .rv-filter { flex: 1; max-width: none; width: auto; }
+}
+.dlm-report-btn.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.dlm-report-btn.on .dlm-fmt-check {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.dlm-report-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+/* What ticking this one costs, in files — the footer's total is the sum. */
+.dlm-report-files {
+  margin-left: auto;
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.dlm-report-sub {
+  font-size: 11px;
+  color: var(--muted);
+  padding-left: 22px;
+}
 
 /* The area highlighted on the map by "Show area", and the way back. Sits above
    the map, clear of the left-hand panel rail. */
@@ -11063,7 +11662,7 @@ select.fp-input {
   margin: 0 12px 8px;
   padding: 6px 9px;
   border-left: 3px solid #f59e0b;
-  background: #78350f22;
+  background: var(--warn-soft);
   font-size: 11.5px;
   line-height: 1.45;
   color: #fcd34d;
@@ -11081,7 +11680,7 @@ select.fp-input {
   display: flex;
   gap: 8px;
   padding: 6px 0;
-  border-bottom: 1px solid #33415533;
+  border-bottom: 1px solid var(--hairline);
   font-size: 11.5px;
   line-height: 1.45;
 }
@@ -11112,10 +11711,10 @@ select.fp-input {
    fix, and must not look like the green-lit action. */
 .pdr-sugg-apply.unresolved {
   border-color: #f59e0b88;
-  background: #78350f33;
+  background: var(--warn-soft);
   color: #fcd34d;
 }
-.pdr-sugg-apply.unresolved:hover { background: #78350f66; }
+.pdr-sugg-apply.unresolved:hover { background: var(--warn-line); }
 
 /* Several highlighted areas at once — each removable, plus a clear-all. */
 .pdr-focus-one {
@@ -11124,7 +11723,7 @@ select.fp-input {
   gap: 5px;
   padding: 2px 4px 2px 6px;
   border-radius: 999px;
-  background: #0f172a99;
+  background: var(--inset-strong);
 }
 
 /* ==========================================================================
@@ -11152,7 +11751,7 @@ select.fp-input {
   padding: 5px 7px;
   border: 1px solid var(--hairline);
   border-radius: 6px;
-  background: #0f172a88;
+  background: var(--inset-strong);
   color: var(--text);
   font-size: 12px;
 }
@@ -11175,10 +11774,10 @@ select.fp-input {
   padding: 8px;
   border: 1px solid var(--hairline);
   border-radius: 8px;
-  background: #0f172a55;
+  background: var(--inset);
   text-align: center;
 }
-.si-stat.resolved { border-color: #22c55e55; background: #14532d22; }
+.si-stat.resolved { border-color: var(--live-line); background: var(--live-soft); }
 .si-num { font-size: 20px; font-weight: 700; line-height: 1.1; }
 .si-stat.resolved .si-num { color: #4ade80; }
 .si-lbl { font-size: 10.5px; color: var(--text); }
@@ -11493,7 +12092,7 @@ select.fp-input {
   align-items: start;
   gap: 10px;
   padding: 9px 0;
-  border-top: 1px solid #33415555;
+  border-top: 1px solid var(--hairline);
   font-size: 11.5px;
 }
 .dynsec-log-when {
@@ -11542,7 +12141,7 @@ select.fp-input {
 .dynsec-view.split,
 .dynsec-view.overload {
   border-color: #fbbf24aa;
-  background: #78350f66;
+  background: var(--warn-soft);
   color: #fde68a;
 }
 .dynsec-view.split:hover,
@@ -11553,6 +12152,33 @@ select.fp-input {
   color: var(--on-warn);
   background: var(--warn);
   border-color: var(--warn);
+}
+
+/* The sector panel, when its rows are keyed by position rather than by the
+   published sector. Quiet: it qualifies the heading, it is not a warning. */
+.si-by-position {
+  margin-left: 7px;
+  padding: 1px 6px;
+  border: 1px solid var(--warn-line);
+  border-radius: 999px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-style: normal;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* What the applied configuration has open right now. The accept row said only
+   that a plan had been accepted; this says what that did. */
+.dynsec-inforce {
+  display: block;
+  margin-top: 3px;
+  font-style: normal;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
 }
 
 /* An hour a person decided, rather than the traffic. */
@@ -11621,7 +12247,7 @@ select.fp-input {
   grid-template-columns: 104px minmax(0, 1fr);
   gap: 3px 10px;
   padding: 9px 0;
-  border-top: 1px solid #33415555;
+  border-top: 1px solid var(--hairline);
 }
 .dynsec-when {
   font-weight: 600;
@@ -11652,5 +12278,113 @@ select.fp-input {
 .pdr-pending {
   font-size: 10.5px;
   font-style: italic;
+  color: var(--muted);
+}
+
+/* All / Clear / Check / Rejected — splits the flight list by verdict. The dot
+   before each verdict tab is the same colour its rows' chip and left border
+   use, so a tab reads as "the flights carrying this mark". */
+.pdr-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--hairline);
+  flex: 0 0 auto;
+}
+.pdr-tablist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+/* Search — on the tab row, to the right of the tabs; wraps under them when the
+   panel is too narrow for both. Searches inside whichever tab is open. */
+.pdr-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 170px;
+  min-width: 150px;
+  max-width: 260px;
+  margin-left: auto;
+}
+.pdr-search-icon {
+  position: absolute;
+  left: 9px;
+  display: inline-flex;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+.pdr-search input {
+  width: 100%;
+  padding: 5px 8px 5px 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-chrome);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+.pdr-search input::placeholder { color: var(--text-faint); }
+.pdr-search input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.pdr-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.pdr-tab:hover {
+  background: var(--bg-elevated-hover);
+  color: var(--text);
+}
+.pdr-tab.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.pdr-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.pdr-tab.tone-clear::before,
+.pdr-tab.tone-check::before,
+.pdr-tab.tone-rejected::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--tone);
+}
+.pdr-tab.tone-clear { --tone: var(--live); }
+.pdr-tab.tone-check { --tone: #f59e0b; }
+.pdr-tab.tone-rejected { --tone: var(--cdr-los); }
+.pdr-tab-count {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--inset);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  color: var(--text-faint);
+}
+.pdr-tab.active .pdr-tab-count {
+  color: inherit;
+}
+.pdr-tab-empty {
+  margin: 0;
+  padding: 10px;
+  font-size: 12px;
   color: var(--muted);
 }

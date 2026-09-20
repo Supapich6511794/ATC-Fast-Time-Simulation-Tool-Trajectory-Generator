@@ -27,7 +27,7 @@
  * would be a different (and much worse) tool.
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import type {
   PdrFinding,
@@ -36,6 +36,14 @@ import type {
   RouteSuggestion,
 } from "@/lib/pdr/detect";
 import type { PdrArea } from "@/lib/pdr/types";
+import { matchesPdrSearch, pdrSearchTerms } from "@/lib/pdr/search";
+import {
+  inPdrTab,
+  PDR_TABS,
+  pdrTabCounts,
+  pdrVerdict,
+  type PdrTab,
+} from "@/lib/pdr/verdict";
 import NavIcon from "@/components/nav/NavIcon";
 
 export interface PdrFlightRow {
@@ -97,6 +105,14 @@ const SEVERITY_LABEL = {
 function severityChip(sev: PdrFinding["severity"]) {
   return <span className={"pdr-chip sev-" + sev}>{SEVERITY_LABEL[sev]}</span>;
 }
+
+/** What each tab holds, for its tooltip. */
+const TAB_HINT: Record<PdrTab, string> = {
+  all: "Every flight, including any the check has not reached yet",
+  clear: "Nothing to act on — no restricted area or published-route finding",
+  check: "Something to look at, but nothing outright forbidden",
+  rejected: "Breaches a published restriction — cannot be filed as it stands",
+};
 
 /** Is the plan being checked outside the AIRAC cycle the data came from? */
 function staleNote(validTo: string | null): string | null {
@@ -299,6 +315,40 @@ export default function PdrPanel({
   const stale = staleNote(validTo);
   const shown = useMemo(() => new Set(shownAreas ?? []), [shownAreas]);
 
+  // Clear / Check / Rejected — the list is split by verdict so a bank of plans
+  // can be worked one kind at a time. One verdict per flight, computed once, so
+  // the tab counts and the rows below cannot disagree.
+  const [tab, setTab] = useState<PdrTab>("all");
+  const verdicts = useMemo(
+    () => flights.map((f) => pdrVerdict(reports.get(f.flightKey))),
+    [flights, reports],
+  );
+
+  // Search: finds one flight among thousands, inside whichever tab is open. It
+  // sits BEFORE the tab split, so the tab counts are counts of the matches —
+  // search "THA" and Clear / Check / Rejected say how many THA flights are in
+  // each, which is how you learn which tab a flight is on without opening all
+  // three. The query survives a tab change, for the same reason.
+  const [query, setQuery] = useState("");
+  const terms = useMemo(() => pdrSearchTerms(query), [query]);
+  const searching = terms.length > 0;
+  const found = useMemo(
+    () =>
+      flights
+        .map((f, i) => ({ f, verdict: verdicts[i] }))
+        .filter((row) => matchesPdrSearch(row.f, terms)),
+    [flights, verdicts, terms],
+  );
+  const tabCounts = useMemo(
+    () => pdrTabCounts(found.map((row) => row.verdict)),
+    [found],
+  );
+  const visible = useMemo(
+    () => found.filter((row) => inPdrTab(row.verdict, tab)),
+    [found, tab],
+  );
+  const tabLabel = PDR_TABS.find((t) => t.id === tab)!.label;
+
   return (
     <div className="cdr-panel pdr-panel" role="dialog" aria-label="PDR conflict check">
       <div className="cdr-panel-head">
@@ -340,18 +390,78 @@ export default function PdrPanel({
       )}
 
       {!loading && !error && flights.length > 0 && (
+        <div className="pdr-tabs">
+          <div
+            className="pdr-tablist"
+            role="tablist"
+            aria-label="Filter flights by verdict"
+          >
+            {PDR_TABS.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={tab === t.id}
+                className={"pdr-tab tone-" + t.id + (tab === t.id ? " active" : "")}
+                onClick={() => setTab(t.id)}
+                title={TAB_HINT[t.id]}
+              >
+                {t.label}
+                <span className="pdr-tab-count">{tabCounts[t.id]}</span>
+              </button>
+            ))}
+          </div>
+          <label className="pdr-search">
+            <span className="pdr-search-icon" aria-hidden="true">
+              <NavIcon name="search" size={13} />
+            </span>
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                // Escape empties the box first; only an empty one lets it
+                // reach whatever else listens for Escape.
+                if (e.key === "Escape" && query) {
+                  e.stopPropagation();
+                  setQuery("");
+                }
+              }}
+              placeholder="Search callsign, ADEP, ADES…"
+              aria-label="Search flights by callsign or aerodrome"
+              title="Searches inside the tab that is open. The counts on the tabs show how many matches each one holds."
+              spellCheck={false}
+              autoComplete="off"
+            />
+          </label>
+        </div>
+      )}
+
+      {!loading && !error && flights.length > 0 && (
         <div className="pdr-cols">
           <section className="pdr-list">
-            <h3 className="cdr-dash-h">Flights ({flights.length})</h3>
+            <h3 className="cdr-dash-h">
+              {tab === "all" && !searching
+                ? "Flights (" + flights.length + ")"
+                : (tab === "all" ? "Flights" : tabLabel) +
+                  " (" + visible.length + " of " + flights.length + ")"}
+            </h3>
+            {visible.length === 0 && (
+              <p className="pdr-tab-empty">
+                {searching
+                  ? "No flight matches “" + query.trim() + "”" +
+                    (tab === "all"
+                      ? "."
+                      : " in " + tabLabel + " — the counts on the tabs show where the matches are.")
+                  : "No flights in " + tabLabel + " — pick another tab."}
+              </p>
+            )}
             <ul>
-              {flights.map((f) => {
-                // A flight the scan has not reached yet has NO verdict. It used
-                // to fall through to the "clear" branch, so an unchecked flight
-                // was indistinguishable from one that had passed.
-                const r = reports.get(f.flightKey);
-                const worst = r?.worst ?? null;
-                const actionable =
-                  r?.findings.filter((x) => x.severity !== "info").length ?? 0;
+              {visible.map(({ f, verdict }) => {
+                // A flight the scan has not reached yet has NO verdict ("pending"),
+                // and is never shown as clear: an unchecked flight must not be
+                // indistinguishable from one that passed.
+                const worst = reports.get(f.flightKey)?.worst ?? null;
                 return (
                   <li key={f.flightKey}>
                     <button
@@ -370,10 +480,12 @@ export default function PdrPanel({
                         {f.adep}→{f.ades}
                       </span>
                       <span className="pdr-flight-state">
-                        {r === undefined ? (
+                        {verdict === "pending" ? (
                           <span className="pdr-pending">checking…</span>
-                        ) : actionable > 0 ? (
-                          severityChip(worst ?? "caution")
+                        ) : verdict === "rejected" ? (
+                          severityChip("violation")
+                        ) : verdict === "check" ? (
+                          severityChip("caution")
                         ) : (
                           <span className="pdr-ok">clear</span>
                         )}

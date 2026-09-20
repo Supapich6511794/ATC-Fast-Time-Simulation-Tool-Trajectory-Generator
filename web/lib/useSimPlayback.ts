@@ -46,6 +46,10 @@ export interface SimPlayback {
   simT: number;
   /** Total trajectory duration (seconds). */
   total: number;
+  /** UTC epoch (ms) the clock's t=0 sits on — the first sample's timestamp.
+   *  Lets the bar read out the dataset's own UTC time rather than elapsed
+   *  seconds. Null when the points carry no parseable stamp. */
+  originMs: number | null;
   playing: boolean;
   speed: SimSpeed;
   /** Whether a trajectory is loaded and animatable. */
@@ -153,6 +157,15 @@ export function useSimPlayback(
   const total = samples.length ? samples[samples.length - 1].t : 0;
   const ready = samples.length > 1;
 
+  // The replay clock runs on the data's own UTC, not wall time: t=0 is the
+  // first sample's timestamp, so simT + originMs is the stamp the exported
+  // track rows are keyed by.
+  const originMs = useMemo<number | null>(() => {
+    const iso = points?.[0]?.epoch_ts;
+    const ms = iso ? new Date(iso).getTime() : NaN;
+    return Number.isFinite(ms) ? ms : null;
+  }, [points]);
+
   const [simT, setSimT] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<SimSpeed>(1);
@@ -228,6 +241,7 @@ export function useSimPlayback(
     aircraft,
     simT,
     total,
+    originMs,
     playing,
     speed,
     ready,
