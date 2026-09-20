@@ -954,6 +954,155 @@ def _altitude_after_descent(
     return max(cur, floor_ft)
 
 
+# ---------------------------------------------------------------------------
+# Performance provenance — which dataset actually backs a given airframe.
+#
+# Three lookups in this module silently substitute the B738 when a type is
+# unknown: :func:`_segments_for` (climb/descent RATES), :func:`aircraft_speeds`
+# (the CAS/Mach schedule) and :func:`service_ceiling_ft`. That substitution is
+# fine for *drawing* a trajectory — better a plausible 737 profile than no
+# flight — but it is NOT acceptable for validating one, because the flight-time
+# check would then grade an ATR 72 against 737 numbers and report a bogus
+# FAIL (the original symptom this API exists to prevent).
+#
+# So anything that validates must go through :func:`require_apm_performance`,
+# which refuses to substitute. The rule it enforces:
+#
+#   * the loaded dataset really is the Thai APM (not the hand-coded
+#     ``_LEGACY_PERF_TABLES`` last resort), AND
+#   * the exact ICAO type has its own rate table in it (no B738 stand-in), AND
+#   * the type has its OWN operational speed schedule (no B738 M0.78 on a
+#     turboprop).
+#
+# The rates cover 66 types and the speed schedules 23, so the usable set is
+# the intersection — see :func:`estimator_types`.
+# ---------------------------------------------------------------------------
+
+#: The airframe every unknown type would otherwise be substituted with.
+SUBSTITUTE_TYPE = "B738"
+
+
+class UnknownAircraftPerformance(LookupError):
+    """A type's performance is not available without substituting another.
+
+    Raised instead of quietly returning :data:`SUBSTITUTE_TYPE` data, so a
+    caller that needs *this* airframe's numbers fails loudly.
+    """
+
+
+@dataclass(frozen=True)
+class PerformanceProvenance:
+    """Where one airframe's performance numbers actually come from."""
+
+    aircraft_type: str
+    #: Label of the loaded rate dataset (:data:`PERFORMANCE_SOURCE`).
+    dataset: str
+    #: The loaded dataset is the Thai APM, not the hand-coded last resort.
+    dataset_is_thai_apm: bool
+    #: This exact type has its own rate table (no substitution).
+    rates_exact: bool
+    #: This exact type has its own CAS/Mach schedule (no substitution).
+    speeds_exact: bool
+
+    @property
+    def substituted(self) -> bool:
+        """Would any lookup fall back to :data:`SUBSTITUTE_TYPE`?"""
+        return not (self.rates_exact and self.speeds_exact)
+
+    @property
+    def usable_for_validation(self) -> bool:
+        """Safe to derive a reference flight time from this airframe."""
+        return self.dataset_is_thai_apm and not self.substituted
+
+    def why_not(self) -> str:
+        """Human-readable reason :attr:`usable_for_validation` is False."""
+        if not self.dataset_is_thai_apm:
+            return f"performance dataset is not the Thai APM ({self.dataset})"
+        missing = []
+        if not self.rates_exact:
+            missing.append("climb/descent rates")
+        if not self.speeds_exact:
+            missing.append("speed schedule")
+        if missing:
+            return (
+                f"{self.aircraft_type} has no own "
+                + " or ".join(missing)
+                + f" — would substitute {SUBSTITUTE_TYPE}"
+            )
+        return ""
+
+
+def dataset_is_thai_apm() -> bool:
+    """True when the loaded rate tables came from the Thai APM dataset."""
+    return PERFORMANCE_SOURCE.startswith("Thai APM")
+
+
+def thai_apm_types() -> frozenset[str]:
+    """ICAO types with their own climb/descent rates in the loaded dataset."""
+    return frozenset(_PERF_TABLES)
+
+
+def estimator_types() -> frozenset[str]:
+    """Types a reference flight time can honestly be derived for.
+
+    The intersection of the rate tables and the operational speed
+    schedules — both must be the type's own for the estimate to mean
+    anything. Empty when the Thai APM is not the loaded dataset.
+    """
+    if not dataset_is_thai_apm():
+        return frozenset()
+    return frozenset(_PERF_TABLES) & frozenset(_SPEED_SCHEDULES)
+
+
+def performance_provenance(aircraft_type: str) -> PerformanceProvenance:
+    """Report where ``aircraft_type``'s performance numbers come from.
+
+    Never raises — use it to decide whether to validate. Call
+    :func:`require_apm_performance` when you need the numbers themselves.
+    """
+    t = aircraft_type.strip().upper()
+    return PerformanceProvenance(
+        aircraft_type=t,
+        dataset=PERFORMANCE_SOURCE,
+        dataset_is_thai_apm=dataset_is_thai_apm(),
+        rates_exact=t in _PERF_TABLES,
+        speeds_exact=t in _SPEED_SCHEDULES,
+    )
+
+
+def require_apm_performance(aircraft_type: str) -> PerformanceProvenance:
+    """Assert this airframe's own Thai APM performance is available.
+
+    Returns:
+        The provenance record when every lookup resolves to
+        ``aircraft_type`` itself.
+
+    Raises:
+        UnknownAircraftPerformance: when any lookup would substitute
+            :data:`SUBSTITUTE_TYPE`, or the Thai APM is not loaded.
+    """
+    prov = performance_provenance(aircraft_type)
+    if not prov.usable_for_validation:
+        raise UnknownAircraftPerformance(prov.why_not())
+    return prov
+
+
+def time_to_climb_s(aircraft_type: str, from_ft: float, to_ft: float) -> float:
+    """Seconds to climb ``from_ft`` → ``to_ft`` on this type's rate table."""
+    climb_segs, _ = _segments_for(aircraft_type)
+    return _time_to_climb(climb_segs, from_ft, to_ft)
+
+
+def time_to_descend_s(aircraft_type: str, from_ft: float, to_ft: float) -> float:
+    """Seconds to descend ``from_ft`` → ``to_ft`` on this type's rate table.
+
+    The descent table is banded by altitude exactly like the climb one, so
+    the same band integration applies with the endpoints swapped.
+    """
+    _, desc_segs = _segments_for(aircraft_type)
+    return _time_to_climb(desc_segs, to_ft, from_ft)
+
+
 def aircraft_speeds(aircraft_type: str) -> SpeedSchedule:
     """Return the climb / cruise / descent speed schedule for an airframe.
 

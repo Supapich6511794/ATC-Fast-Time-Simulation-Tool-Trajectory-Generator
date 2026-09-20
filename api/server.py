@@ -71,9 +71,11 @@ from trajectory_sim.output import (
 from trajectory_sim.performance import (
     PERFORMANCE_SOURCE,
     aircraft_speeds,
+    estimator_types,
     cas_to_tas_kt,
     climb_distance_nm,
     crossover_altitude_ft,
+    field_elevation_ft,
     get_speed_restriction,
     reachable_ceiling_ft,
     register_field_elevations,
@@ -94,7 +96,12 @@ from trajectory_sim.turns import (
     turn_arc,
     turn_radius_nm,
 )
-from trajectory_sim.validation import CAT62Reference
+from trajectory_sim.validation import (
+    REFERENCE_MARGIN_MIN,
+    CAT62Reference,
+    estimate_sim_min,
+)
+from trajectory_sim.performance import UnknownAircraftPerformance
 
 # Project root = parent of this `api/` package.
 _ROOT = Path(__file__).resolve().parent.parent
@@ -627,14 +634,63 @@ def cat62_reference() -> dict[str, object]:
     return {
         "threshold_min": _CAT62_REF.threshold_min,
         "routes": _CAT62_REF.table(),
+        # Types the flight-time estimate can be derived for. Anything else
+        # gets no estimate rather than another airframe's numbers.
+        "estimator_types": sorted(estimator_types()),
+        "performance_source": PERFORMANCE_SOURCE,
+    }
+
+
+#: Distances (NM) the client-side flight-time curve is sampled at. Denser
+#: where the profile bends (short hops that never reach cruise), sparse in
+#: the linear cruise-dominated range.
+_CURVE_DISTANCES_NM: tuple[float, ...] = (
+    0, 20, 40, 60, 80, 100, 130, 160, 200, 260, 320,
+    400, 500, 650, 800, 1000, 1300,
+)
+
+
+@app.get("/api/flight_time_curve")
+def flight_time_curve(
+    actype: str = "",
+    cruise_alt_ft: float | None = None,
+) -> dict[str, object]:
+    """Distance to flight-time curve for ONE airframe at ONE cruise level.
+
+    The route picker interpolates this to pre-screen candidate routes
+    without a /api/generate round-trip each. It replaces the hard-coded
+    B738 table the client used to carry: the curve is computed here with
+    the same estimator the server validates with, so client and server
+    always agree, and an airframe with no Thai APM data of its own comes
+    back ``supported: false`` instead of a 737 curve wearing its name.
+    """
+    ac = actype.strip().upper()
+    if not ac:
+        return {"aircraft_type": "", "supported": False,
+                "reason": "no aircraft type given", "points": []}
+    try:
+        points = [
+            [d, round(estimate_sim_min(d, ac, cruise_alt_ft=cruise_alt_ft), 2)]
+            for d in _CURVE_DISTANCES_NM
+        ]
+    except UnknownAircraftPerformance as exc:
+        return {"aircraft_type": ac, "supported": False,
+                "reason": str(exc), "points": []}
+    return {
+        "aircraft_type": ac,
+        "supported": True,
+        "dataset": PERFORMANCE_SOURCE,
+        "cruise_alt_ft": cruise_alt_ft,
+        "reachable_ceiling_ft": reachable_ceiling_ft(ac),
+        "margin_min": REFERENCE_MARGIN_MIN,
+        "points": points,
     }
 
 
 # --- SID/STAR procedures ----------------------------------------------------
 # Coded terminal procedures come from the AIXM 5.1.1 export (AIRAC 2608),
 # converted to the DFD GeoJSON schema by scripts/ingest_aixm_procedures.py.
-# NavData reads + indexes them on first use. The superseded DFD exports are
-# still under web/public/data/{sid,star,pbn,ils}/ for comparison.
+# NavData reads + indexes them on first use.
 _SID_SOURCE = _DATA / "aixm" / "sid_waypoint.geojson"
 _STAR_SOURCE = _DATA / "aixm" / "star_waypoint.geojson"
 _APPROACH_SOURCE = _DATA / "aixm" / "pbn_waypoint.geojson"
@@ -2553,9 +2609,28 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
         gdf["epoch_ts"].iloc[-1] - gdf["epoch_ts"].iloc[0]
     ).total_seconds() / 60.0
 
-    # Flight-time validation — real CAT62 sample where we have one, else a
-    # distance-based estimate so every routable pair reports a delta.
-    _val = _CAT62_REF.validate(adep, ades, elapsed_min, distance_nm=distance_nm)
+    # Flight-time validation — real CAT62 sample where we have one, else an
+    # estimate derived from THIS airframe's Thai APM performance. The
+    # estimate needs the aircraft type and the level actually cruised: it
+    # used to be a distance-only curve measured on a B738 to RFL350, which
+    # graded every type against a 737 and failed turboprops that were
+    # simulated correctly. A type with no Thai APM data of its own yields no
+    # estimate at all (validate() returns None) rather than borrowing the
+    # B738's numbers.
+    _peak_alt_ft = max(
+        (a for a in gdf["altitude_ft"].tolist() if a is not None),
+        default=None,
+    )
+    _val = _CAT62_REF.validate(
+        adep,
+        ades,
+        elapsed_min,
+        distance_nm=distance_nm,
+        aircraft_type=actype,
+        cruise_alt_ft=_peak_alt_ft,
+        dep_elev_ft=field_elevation_ft(adep),
+        arr_elev_ft=field_elevation_ft(ades),
+    )
     validation = _val.to_dict() if _val is not None else None
 
     # Top of Climb / Top of Descent — the FIRST and LAST samples at the
@@ -2602,13 +2677,29 @@ def _generate_one(req: GenerateRequest) -> dict[str, object]:
             return None
         return float(rows.mean())
 
-    def _phase_minutes(phase: str) -> float | None:
-        rows = gdf[gdf["phase"] == phase]["epoch_ts"]
-        if rows.empty:
-            return None
-        return float(
-            (rows.iloc[-1] - rows.iloc[0]).total_seconds() / 60.0
+    # Time per phase = the SUM of the sample intervals carrying that label,
+    # NOT the span from its first to its last sample. A route with altitude
+    # constraints can re-enter "climb" after a level-off (see
+    # trajectory._phase_for, which re-derives the phase from the altitude
+    # trend), so the climb's first->last span swallowed the whole cruise and
+    # the three phases added up to more than the flight lasted — an AT76 leg
+    # reported climb 52.2 + cruise 26.4 + descent 18.0 = 96.6 min for a
+    # 70-minute flight. Charging each interval to the phase of the sample
+    # that opens it makes the three sum to the total exactly.
+    _ph_seq = gdf["phase"].tolist()
+    _ts_seq = gdf["epoch_ts"].tolist()
+    _phase_secs: dict[str, float] = {}
+    for _i in range(len(_ts_seq) - 1):
+        _p = _ph_seq[_i]
+        _phase_secs[_p] = (
+            _phase_secs.get(_p, 0.0)
+            + (_ts_seq[_i + 1] - _ts_seq[_i]).total_seconds()
         )
+
+    def _phase_minutes(phase: str) -> float | None:
+        if phase not in _ph_seq:
+            return None
+        return float(_phase_secs.get(phase, 0.0) / 60.0)
 
     speed_schedule = {
         "climb_cas_kt": applied_sched.climb_cas_kt,

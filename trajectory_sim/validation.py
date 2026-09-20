@@ -19,8 +19,10 @@ Typical loop:
     3. if FAIL, tune the speed schedule       (performance.tune_speed_schedule)
     4. rebuild + re-validate until PASS
 
-This module is pure (no I/O beyond reading the reference JSON) and has no
-third-party dependencies.
+This module has no third-party dependencies and does no I/O beyond reading
+the reference JSON. It does depend on :mod:`trajectory_sim.performance`,
+because the reference time for a pair with no CAT62 sample is derived from
+the aircraft's own Thai APM performance rather than a fixed curve.
 """
 
 from __future__ import annotations
@@ -28,6 +30,15 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+
+from .performance import (
+    UnknownAircraftPerformance,
+    average_phase_tas_kt,
+    reachable_ceiling_ft,
+    require_apm_performance,
+    time_to_climb_s,
+    time_to_descend_s,
+)
 
 #: Acceptance threshold — a flight passes when |delta| is strictly below
 #: this many minutes.
@@ -37,62 +48,239 @@ _DEFAULT_REFERENCE_PATH = (
     Path(__file__).resolve().parent / "data" / "cat62_reference.json"
 )
 
-# --- Distance → time model (measured lookup table, interpolated) -----------
-# Simulated total time (minutes) vs great-circle distance (NM) for a B738
-# to RFL350, sampled from build_flight_timeline. Calibrated against the
-# real BADA 3.16 (ISA+20) climb/descent RATES plus the operational CAS/Mach
-# speed schedule (B738 ~M0.78) now driving performance.py, so it must be
-# re-measured if either changes. A single
-# affine fit overshoots short hops that never reach cruise (e.g. a 51 NM
-# leg tops out ~8 600 ft and takes ~9 min, not ~14) — so we interpolate
-# this measured curve instead. The client mirrors the same table
-# (web/lib/cat62.ts) so its PASS/FAIL prediction matches the server.
-_SIM_TIME_TABLE: tuple[tuple[float, float], ...] = (
-    (0, 0.0), (20, 3.7), (40, 7.4), (60, 11.0), (80, 14.7), (100, 18.2),
-    (130, 23.2), (160, 27.9), (200, 34.1), (260, 42.6), (320, 50.7),
-    (400, 61.4), (500, 74.8), (650, 94.9), (800, 114.9), (1000, 141.6),
-    (1300, 181.8),
-)
+# --- Reference flight time, derived from the aircraft's own performance ----
+# This used to be a measured distance-to-time curve for a B738 to RFL350,
+# applied to EVERY airframe. It made the check grade an ATR 72 against 737
+# numbers: a real 285 NM VTBS->VTPO leg simulated at 70 min was compared to a
+# 49 min "reference" (349 kt average -- a jet) and reported FAIL, though the
+# simulation was right and matched real ATR 72 block times.
+#
+# The reference is now built from the SAME data the simulator flies: the
+# type's own Thai APM climb/descent rates and its own operational CAS/Mach
+# schedule. A three-phase analytic profile (climb -> cruise -> descent) is
+# cheap enough to run per candidate route, while tracking the airframe.
+#
+# There is deliberately NO fallback: a type without its own Thai APM rates
+# AND its own speed schedule raises UnknownAircraftPerformance rather than
+# borrowing the B738's. See performance.require_apm_performance.
 
-# Reference estimate (for pairs with no real CAT62 sample) = predicted sim
-# time + a small terminal-area margin, so a nominal route lands a few
-# minutes UNDER the reference (PASS) instead of failing. Replace with a
-# measured CAT062 figure where accuracy matters.
-_REF_MARGIN_MIN = 3.0
+#: Reference = predicted sim time + this terminal-area margin, so a nominal
+#: route lands a few minutes UNDER the reference (PASS) instead of failing.
+REFERENCE_MARGIN_MIN = 3.0
+
+#: Bisection tolerance (feet) when solving the top a short hop can reach.
+_TOP_SOLVE_TOL_FT = 50.0
 
 
-def estimate_sim_min(distance_nm: float) -> float:
-    """Predicted *simulated* flight time (minutes) for a route distance.
+@dataclass(frozen=True)
+class ProfileEstimate:
+    """Analytic climb/cruise/descent breakdown for one route."""
 
-    Piecewise-linear interpolation of the measured calibration curve, so
-    the UI can pre-screen candidate routes cheaply and the prediction
-    tracks the real timeline across short hops AND long sectors. Beyond
-    the table it extrapolates along the final segment.
+    aircraft_type: str
+    distance_nm: float
+    #: Altitude actually reached -- the requested cruise level, or lower on a
+    #: hop too short to get there.
+    top_ft: float
+    #: False when the leg is too short to level off at ``cruise_alt_ft``.
+    reached_cruise: bool
+    climb_min: float
+    cruise_min: float
+    descent_min: float
+    #: Provenance of the numbers used, for the acceptance check.
+    dataset: str
+
+    @property
+    def total_min(self) -> float:
+        return self.climb_min + self.cruise_min + self.descent_min
+
+    def to_dict(self) -> dict[str, object]:
+        """JSON-friendly dict (for an API response or a report file)."""
+        return {
+            "aircraft_type": self.aircraft_type,
+            "distance_nm": round(self.distance_nm, 1),
+            "top_ft": round(self.top_ft, 0),
+            "reached_cruise": self.reached_cruise,
+            "climb_min": round(self.climb_min, 1),
+            "cruise_min": round(self.cruise_min, 1),
+            "descent_min": round(self.descent_min, 1),
+            "total_min": round(self.total_min, 1),
+            "dataset": self.dataset,
+        }
+
+
+def _vertical_legs(
+    aircraft_type: str,
+    top_ft: float,
+    dep_elev_ft: float,
+    arr_elev_ft: float,
+) -> tuple[float, float, float, float]:
+    """(climb_min, climb_nm, descent_min, descent_nm) for a given top.
+
+    Distances use each phase's time-weighted average TAS -- the same law
+    :func:`~trajectory_sim.performance.climb_distance_nm` and the timeline
+    builder use, so the estimate and the simulation agree by construction.
     """
-    tbl = _SIM_TIME_TABLE
-    d = max(0.0, distance_nm)
-    if d <= tbl[0][0]:
-        return tbl[0][1]
-    for (d0, t0), (d1, t1) in zip(tbl, tbl[1:]):
-        if d <= d1:
-            return t0 + (t1 - t0) * (d - d0) / (d1 - d0)
-    (d0, t0), (d1, t1) = tbl[-2], tbl[-1]
-    return t1 + (t1 - t0) / (d1 - d0) * (d - d1)
+    climb_s = time_to_climb_s(aircraft_type, dep_elev_ft, top_ft)
+    desc_s = time_to_descend_s(aircraft_type, top_ft, arr_elev_ft)
+    climb_nm = 0.0
+    desc_nm = 0.0
+    if climb_s > 0:
+        tas = average_phase_tas_kt(aircraft_type, dep_elev_ft, top_ft, "climb")
+        climb_nm = tas * climb_s / 3600.0
+    if desc_s > 0:
+        tas = average_phase_tas_kt(aircraft_type, top_ft, arr_elev_ft, "descent")
+        desc_nm = tas * desc_s / 3600.0
+    return climb_s / 60.0, climb_nm, desc_s / 60.0, desc_nm
+
+
+def _solve_top_ft(
+    aircraft_type: str,
+    distance_nm: float,
+    floor_ft: float,
+    ceiling_ft: float,
+    dep_elev_ft: float,
+    arr_elev_ft: float,
+) -> float:
+    """Highest top whose climb + descent still fits inside ``distance_nm``.
+
+    Bisection, because climb/descent distance rises monotonically with the
+    top. Mirrors the simulator's behaviour on a hop too short to reach the
+    filed level (a 51 NM leg tops out around 8 600 ft, not at cruise).
+    """
+    lo, hi = floor_ft, ceiling_ft
+    while hi - lo > _TOP_SOLVE_TOL_FT:
+        mid = (lo + hi) / 2.0
+        _, c_nm, _, d_nm = _vertical_legs(
+            aircraft_type, mid, dep_elev_ft, arr_elev_ft
+        )
+        if c_nm + d_nm <= distance_nm:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def estimate_profile(
+    distance_nm: float,
+    aircraft_type: str,
+    *,
+    cruise_alt_ft: float | None = None,
+    dep_elev_ft: float = 0.0,
+    arr_elev_ft: float = 0.0,
+) -> ProfileEstimate:
+    """Analytic flight profile for ``aircraft_type`` over ``distance_nm``.
+
+    Args:
+        distance_nm: Along-route distance.
+        aircraft_type: ICAO designator. Must have its OWN Thai APM rates
+            and speed schedule -- no airframe is substituted.
+        cruise_alt_ft: Planned cruise level. Clamped to the type's
+            reachable ceiling; defaults to that ceiling.
+        dep_elev_ft: Departure threshold elevation.
+        arr_elev_ft: Arrival threshold elevation.
+
+    Returns:
+        The phase breakdown, including the top actually reached.
+
+    Raises:
+        UnknownAircraftPerformance: if using this type's numbers would mean
+            falling back to another airframe's.
+    """
+    prov = require_apm_performance(aircraft_type)
+    ac = prov.aircraft_type
+    d = max(0.0, float(distance_nm))
+
+    ceiling = reachable_ceiling_ft(ac)
+    top = ceiling if cruise_alt_ft is None else min(float(cruise_alt_ft), ceiling)
+    floor = max(dep_elev_ft, arr_elev_ft)
+    top = max(top, floor)
+
+    climb_min, climb_nm, desc_min, desc_nm = _vertical_legs(
+        ac, top, dep_elev_ft, arr_elev_ft
+    )
+
+    if climb_nm + desc_nm <= d:
+        cruise_nm = d - climb_nm - desc_nm
+        cruise_tas = average_phase_tas_kt(ac, top, top, "cruise")
+        cruise_min = cruise_nm / cruise_tas * 60.0 if cruise_tas > 0 else 0.0
+        return ProfileEstimate(
+            aircraft_type=ac,
+            distance_nm=d,
+            top_ft=top,
+            reached_cruise=True,
+            climb_min=climb_min,
+            cruise_min=cruise_min,
+            descent_min=desc_min,
+            dataset=prov.dataset,
+        )
+
+    # Too short to level off: find the top the leg can actually reach.
+    solved = _solve_top_ft(ac, d, floor, top, dep_elev_ft, arr_elev_ft)
+    climb_min, _, desc_min, _ = _vertical_legs(
+        ac, solved, dep_elev_ft, arr_elev_ft
+    )
+    return ProfileEstimate(
+        aircraft_type=ac,
+        distance_nm=d,
+        top_ft=solved,
+        reached_cruise=False,
+        climb_min=climb_min,
+        cruise_min=0.0,
+        descent_min=desc_min,
+        dataset=prov.dataset,
+    )
+
+
+def estimate_sim_min(
+    distance_nm: float,
+    aircraft_type: str,
+    *,
+    cruise_alt_ft: float | None = None,
+    dep_elev_ft: float = 0.0,
+    arr_elev_ft: float = 0.0,
+) -> float:
+    """Predicted *simulated* flight time (minutes) for this type and route.
+
+    Raises:
+        UnknownAircraftPerformance: see :func:`estimate_profile`.
+    """
+    return estimate_profile(
+        distance_nm,
+        aircraft_type,
+        cruise_alt_ft=cruise_alt_ft,
+        dep_elev_ft=dep_elev_ft,
+        arr_elev_ft=arr_elev_ft,
+    ).total_min
 
 
 def estimate_reference_min(
     distance_nm: float,
+    aircraft_type: str,
     *,
-    margin_min: float = _REF_MARGIN_MIN,
+    margin_min: float = REFERENCE_MARGIN_MIN,
+    cruise_alt_ft: float | None = None,
+    dep_elev_ft: float = 0.0,
+    arr_elev_ft: float = 0.0,
 ) -> float:
-    """Distance-based reference estimate (minutes) for a pair with no real
-    CAT62 sample.
+    """Reference estimate (minutes) for a pair with no real CAT62 sample.
 
     Predicted sim time plus a small terminal-area margin, so the simulator
     passes its own self-consistency check while still flagging gross
     outliers (huge detours) as FAIL. Surfaced as ``source="estimate"``.
+
+    Raises:
+        UnknownAircraftPerformance: see :func:`estimate_profile`.
     """
-    return estimate_sim_min(distance_nm) + margin_min
+    return (
+        estimate_sim_min(
+            distance_nm,
+            aircraft_type,
+            cruise_alt_ft=cruise_alt_ft,
+            dep_elev_ft=dep_elev_ft,
+            arr_elev_ft=arr_elev_ft,
+        )
+        + margin_min
+    )
 
 
 def _route_key(adep: str, ades: str) -> str:
@@ -549,17 +737,25 @@ class CAT62Reference:
         ades: str,
         simulated_min: float,
         distance_nm: float | None = None,
+        aircraft_type: str | None = None,
+        cruise_alt_ft: float | None = None,
+        dep_elev_ft: float = 0.0,
+        arr_elev_ft: float = 0.0,
     ) -> FlightTimeValidation | None:
         """Validate a simulated time against the matched reference.
 
         Resolution order:
           1. Real CAT62 sample for the pair (``source="cat62"``).
-          2. Distance-based estimate when ``distance_nm`` is given but the
-             pair has no sample (``source="estimate"``).
+          2. Performance-derived estimate when the pair has no sample but
+             ``distance_nm`` and an ``aircraft_type`` with its own Thai APM
+             data are given (``source="estimate"``).
           3. ``None`` when neither is available.
 
-        This lets *every* routable pair report a delta + PASS/FAIL, while
-        keeping real samples authoritative where they exist.
+        Real samples stay authoritative. Step 2 deliberately yields
+        ``None`` rather than a number for a type whose performance would
+        have to be borrowed from another airframe: a check computed from
+        the wrong aircraft is worse than no check, since it reports a
+        confident PASS/FAIL that means nothing.
         """
         ref = self.lookup(adep, ades)
         if ref is not None:
@@ -570,10 +766,20 @@ class CAT62Reference:
                 threshold_min=self.threshold_min,
                 source="cat62",
             )
-        if distance_nm is not None and distance_nm > 0:
+        if distance_nm is not None and distance_nm > 0 and aircraft_type:
+            try:
+                estimate = estimate_reference_min(
+                    distance_nm,
+                    aircraft_type,
+                    cruise_alt_ft=cruise_alt_ft,
+                    dep_elev_ft=dep_elev_ft,
+                    arr_elev_ft=arr_elev_ft,
+                )
+            except UnknownAircraftPerformance:
+                return None
             return validate_flight_time(
                 route=_route_key(adep, ades),
-                cat62_min=estimate_reference_min(distance_nm),
+                cat62_min=estimate,
                 simulated_min=simulated_min,
                 threshold_min=self.threshold_min,
                 source="estimate",
