@@ -78,9 +78,18 @@ class _TableParser(HTMLParser):
         self._cell_span = 1
         self._cell_rowspan = 1
         self._col = 0
+        # Depth inside <del>. The eAIP marks text an AIRAC amendment REMOVED as
+        # <del class="AmdtDeletedAIRAC"> right beside the <ins> that replaces it
+        # ("…BEKOD DCT <ins>BEVKU</ins><del>TK</del> W26 KADAV"), and the
+        # published route is the one WITHOUT it. Reading both glued them into
+        # "BEVKUTK", a fix that does not exist.
+        self._del_depth = 0
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
+        if tag == "del":
+            self._del_depth += 1
+            return
         if tag == "br" and self._in_cell:
             self._cell.append("\n")
             return
@@ -114,6 +123,9 @@ class _TableParser(HTMLParser):
             self._cell_rowspan = int(a.get("rowspan", "1") or "1")
 
     def handle_endtag(self, tag):
+        if tag == "del":
+            self._del_depth = max(0, self._del_depth - 1)
+            return
         if tag == "table" and self._in_table:
             self._in_table = False
             self.tables.append(self._grid)
@@ -138,7 +150,7 @@ class _TableParser(HTMLParser):
                 self._grid.append(self._row)
 
     def handle_data(self, data):
-        if self._in_cell:
+        if self._in_cell and not self._del_depth:
             self._cell.append(data)
 
 

@@ -1,6 +1,6 @@
 {
   "_comment": "Predefined AIP flight-planning routes (ENR 1.10), scraped by scripts/ingest_aip_routes.py. route = published fixes/airways only (no ADEP/ADES ICAO); directional; rnav split; conditional options carry a 'condition' note. Entries with a 'via' field are overfly-mix routes — synthesized for a pair with no direct filed route by joining its two halves at the named overfly hub fix (e.g. VTCC->VTSP = PANTA Y7 BKK Y8 SAVSA, via BKK).",
-  "airac": "2026-08-06",
+  "airac": "2026-09-03",
   "routes": [
     {
       "adep": "VTBD",
@@ -105,7 +105,7 @@
       "adep": "VTBD",
       "ades": "VTPM",
       "rnav": false,
-      "route": "SEMBO A464 BEKOD DCT TK W26 KADAV"
+      "route": "SEMBO A464 BEKOD DCT BEVKU W26 KADAV"
     },
     {
       "adep": "VTBD",
@@ -130,18 +130,6 @@
       "ades": "VTPP",
       "rnav": false,
       "route": "SEMBO A464 BEKOD DCT PSL"
-    },
-    {
-      "adep": "VTBD",
-      "ades": "VTPT",
-      "rnav": true,
-      "route": "OLVUK Y26 NUVLU DCT TK"
-    },
-    {
-      "adep": "VTBD",
-      "ades": "VTPT",
-      "rnav": false,
-      "route": "SEMBO A464 BEKOD DCT TK"
     },
     {
       "adep": "VTBD",
@@ -528,7 +516,7 @@
       "adep": "VTBS",
       "ades": "VTPM",
       "rnav": false,
-      "route": "SEMBO A464 BEKOD DCT TK W26 KADAV"
+      "route": "SEMBO A464 BEKOD DCT BEVKU W26 KADAV"
     },
     {
       "adep": "VTBS",
@@ -553,18 +541,6 @@
       "ades": "VTPP",
       "rnav": false,
       "route": "SEMBO A464 BEKOD DCT PSL"
-    },
-    {
-      "adep": "VTBS",
-      "ades": "VTPT",
-      "rnav": true,
-      "route": "OLVUK Y26 NUVLU DCT TK"
-    },
-    {
-      "adep": "VTBS",
-      "ades": "VTPT",
-      "rnav": false,
-      "route": "SEMBO A464 BEKOD DCT TK"
     },
     {
       "adep": "VTBS",
